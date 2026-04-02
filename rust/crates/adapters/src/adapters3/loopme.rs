@@ -93,7 +93,11 @@ impl Bidder for LoopmeAdapter {
         let mut errs = Vec::new();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
-                match get_bid_type_from_mtype(bid.mtype) {
+                let mtype = bid.ext.as_ref()
+                    .and_then(|e| e.get("mtype"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32;
+                match get_bid_type_from_mtype(mtype) {
                     Ok(bid_type) => result.bids.push(TypedBid::new(bid, bid_type)),
                     Err(e) => errs.push(e),
                 }

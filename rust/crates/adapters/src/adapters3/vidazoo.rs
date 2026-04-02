@@ -12,10 +12,10 @@ impl VidazooAdapter {
     }
 }
 
-fn get_bid_type_from_mtype(mtype: Option<u32>, imp_id: &str) -> Result<BidType, BidderError> {
+fn get_bid_type_from_mtype(mtype: u32, imp_id: &str) -> Result<BidType, BidderError> {
     match mtype {
-        Some(1) => Ok(BidType::Banner),
-        Some(2) => Ok(BidType::Video),
+        1 => Ok(BidType::Banner),
+        2 => Ok(BidType::Video),
         _ => Err(BidderError::BadInput(format!(
             "Could not define bid type for imp: {}", imp_id
         ))),
@@ -114,7 +114,11 @@ impl Bidder for VidazooAdapter {
         let mut errs = Vec::new();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
-                match get_bid_type_from_mtype(bid.mtype, &bid.impid) {
+                let mtype = bid.ext.as_ref()
+                    .and_then(|e| e.get("mtype"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32;
+                match get_bid_type_from_mtype(mtype, &bid.impid) {
                     Ok(bid_type) => result.bids.push(TypedBid::new(bid, bid_type)),
                     Err(e) => errs.push(e),
                 }
