@@ -258,8 +258,8 @@ impl Bidder for EplanningAdapter {
                         price,
                         adm: Some(ad.adm),
                         crid: Some(ad.cr_id),
-                        w: Some(ad.width as i64),
-                        h: Some(ad.height as i64),
+                        w: Some(ad.width as i32),
+                        h: Some(ad.height as i32),
                         adid: if ad.ad_id.is_empty() { None } else { Some(ad.ad_id) },
                         adomain: if ad.adomain.is_empty() { None } else { Some(vec![ad.adomain]) },
                         ..Default::default()
