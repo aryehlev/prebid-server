@@ -14,13 +14,15 @@ impl RtbhouseAdapter {
     }
 }
 
-fn get_bid_type_from_mtype(mtype: u32) -> Result<BidType, BidderError> {
+/// Get bid type from bid.mtype stored in ext or direct field.
+/// RTBHouse uses mtype: 1=Banner, 4=Native
+fn get_bid_type_from_mtype(mtype: u64) -> Result<BidType, BidderError> {
     match mtype {
         1 => Ok(BidType::Banner),
         4 => Ok(BidType::Native),
-        _ => Err(BidderError::BadServerResponse(format!(
-            "unrecognized bid type in response from rtbhouse"
-        ))),
+        _ => Err(BidderError::BadServerResponse(
+            "unrecognized bid type in response from rtbhouse".to_string()
+        )),
     }
 }
 
@@ -48,16 +50,15 @@ impl Bidder for RtbhouseAdapter {
         let mut publisher_id = String::new();
 
         for imp in &request.imp {
-            // Extract bidder ext
-            let rtbhouse_ext = imp.ext.as_ref()
-                .and_then(|e| e.get("bidder"));
-
-            if let Some(ext) = rtbhouse_ext {
-                if publisher_id.is_empty() {
-                    if let Some(pid) = ext.get("publisherId").and_then(|v| v.as_str()) {
-                        if !pid.is_empty() {
-                            publisher_id = pid.to_string();
-                        }
+            // Extract publisherId from bidder ext
+            if publisher_id.is_empty() {
+                if let Some(pid) = imp.ext.as_ref()
+                    .and_then(|e| e.get("bidder"))
+                    .and_then(|b| b.get("publisherId"))
+                    .and_then(|v| v.as_str())
+                {
+                    if !pid.is_empty() {
+                        publisher_id = pid.to_string();
                     }
                 }
             }
@@ -76,8 +77,7 @@ impl Bidder for RtbhouseAdapter {
             // Remove PMP
             imp.pmp = None;
 
-            // Set currency
-            req_copy.cur = vec![BIDDER_CURRENCY.to_string()];
+            req_copy.cur = Some(vec![BIDDER_CURRENCY.to_string()]);
             req_copy.imp.push(imp);
         }
 
@@ -161,15 +161,13 @@ impl Bidder for RtbhouseAdapter {
                     *adm = adm.replace("${AUCTION_PRICE}", &price_str);
                 }
 
+                // Get mtype from bid.ext
                 let mtype = bid.ext.as_ref()
                     .and_then(|e| e.get("mtype"))
                     .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as u32;
+                    .unwrap_or(0);
 
-                // Also check top-level mtype if available via bid struct
-                let bid_mtype = mtype;
-
-                let bid_type = match get_bid_type_from_mtype(bid_mtype) {
+                let bid_type = match get_bid_type_from_mtype(mtype) {
                     Ok(t) => t,
                     Err(e) => {
                         errs.push(e);
@@ -193,10 +191,6 @@ impl Bidder for RtbhouseAdapter {
             }
         }
 
-        if errs.is_empty() {
-            Ok(result)
-        } else {
-            Ok(result)
-        }
+        Ok(result)
     }
 }

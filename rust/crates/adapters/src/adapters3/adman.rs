@@ -102,10 +102,6 @@ impl Bidder for AdmanAdapter {
             }
         }
 
-        if errs.is_empty() {
-            Ok(result)
-        } else {
-            Ok(result)
-        }
+        Ok(result)
     }
 }

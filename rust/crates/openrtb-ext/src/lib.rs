@@ -292,7 +292,7 @@ pub const BIDDER_YIELDMO: &str = "yieldmo";
 pub const BIDDER_YIELDONE: &str = "yieldone";
 pub const BIDDER_ZENTOTEM: &str = "zentotem";
 pub const BIDDER_ZEROCLICKFRAUD: &str = "zeroclickfraud";
-pub const BIDDER_ZETAGLOBALSSP: &str = "zetaglobalssp";
+pub const BIDDER_ZETAGLOBALSSP: &str = "zeta_global_ssp";
 pub const BIDDER_ZMATICOO: &str = "zmaticoo";
 
 // Reserved bidder names
@@ -545,4 +545,544 @@ pub struct ExtHttpCall {
     #[serde(rename = "responsebody")]
     pub response_body: String,
     pub status: i32,
+}
+
+/// Generic bidder ext wrapper used in imp.ext
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExtImpBidder {
+    pub bidder: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prebid: Option<serde_json::Value>,
+}
+
+// ── Bidder name constructor functions ────────────────────────────────────────
+// Each function returns a BidderName with the canonical string value from Go.
+
+pub fn bidder_33across() -> BidderName { BidderName::new(BIDDER_33ACROSS) }
+pub fn bidder_aax() -> BidderName { BidderName::new(BIDDER_AAX) }
+pub fn bidder_aceex() -> BidderName { BidderName::new(BIDDER_ACEEX) }
+pub fn bidder_acuityads() -> BidderName { BidderName::new(BIDDER_ACUITYADS) }
+pub fn bidder_adagio() -> BidderName { BidderName::new(BIDDER_ADAGIO) }
+pub fn bidder_adelement() -> BidderName { BidderName::new(BIDDER_ADELEMENT) }
+pub fn bidder_adf() -> BidderName { BidderName::new(BIDDER_ADF) }
+pub fn bidder_adgeneration() -> BidderName { BidderName::new(BIDDER_ADGENERATION) }
+pub fn bidder_adhese() -> BidderName { BidderName::new(BIDDER_ADHESE) }
+pub fn bidder_adkernel() -> BidderName { BidderName::new(BIDDER_ADKERNEL) }
+pub fn bidder_adkerneladn() -> BidderName { BidderName::new(BIDDER_ADKERNELADN) }
+pub fn bidder_adman() -> BidderName { BidderName::new(BIDDER_ADMAN) }
+pub fn bidder_admatic() -> BidderName { BidderName::new(BIDDER_ADMATIC) }
+pub fn bidder_admixer() -> BidderName { BidderName::new(BIDDER_ADMIXER) }
+pub fn bidder_adnuntius() -> BidderName { BidderName::new(BIDDER_ADNUNTIUS) }
+pub fn bidder_adot() -> BidderName { BidderName::new(BIDDER_ADOT) }
+pub fn bidder_adpone() -> BidderName { BidderName::new(BIDDER_ADPONE) }
+pub fn bidder_adprime() -> BidderName { BidderName::new(BIDDER_ADPRIME) }
+pub fn bidder_adquery() -> BidderName { BidderName::new(BIDDER_ADQUERY) }
+pub fn bidder_adrino() -> BidderName { BidderName::new(BIDDER_ADRINO) }
+pub fn bidder_adtarget() -> BidderName { BidderName::new(BIDDER_ADTARGET) }
+pub fn bidder_adtrgtme() -> BidderName { BidderName::new(BIDDER_ADTRGTME) }
+pub fn bidder_adtonos() -> BidderName { BidderName::new(BIDDER_ADTONOS) }
+pub fn bidder_adtelligent() -> BidderName { BidderName::new(BIDDER_ADTELLIGENT) }
+pub fn bidder_aduptech() -> BidderName { BidderName::new(BIDDER_ADUPTECH) }
+pub fn bidder_advangelists() -> BidderName { BidderName::new(BIDDER_ADVANGELISTS) }
+pub fn bidder_adverxo() -> BidderName { BidderName::new(BIDDER_ADVERXO) }
+pub fn bidder_adview() -> BidderName { BidderName::new(BIDDER_ADVIEW) }
+pub fn bidder_adxcg() -> BidderName { BidderName::new(BIDDER_ADXCG) }
+pub fn bidder_adyoulike() -> BidderName { BidderName::new(BIDDER_ADYOULIKE) }
+pub fn bidder_afront() -> BidderName { BidderName::new(BIDDER_AFRONT) }
+pub fn bidder_aidem() -> BidderName { BidderName::new(BIDDER_AIDEM) }
+pub fn bidder_aja() -> BidderName { BidderName::new(BIDDER_AJA) }
+pub fn bidder_akcelo() -> BidderName { BidderName::new(BIDDER_AKCELO) }
+pub fn bidder_algorix() -> BidderName { BidderName::new(BIDDER_ALGORIX) }
+pub fn bidder_alkimi() -> BidderName { BidderName::new(BIDDER_ALKIMI) }
+pub fn bidder_alliance_gravity() -> BidderName { BidderName::new(BIDDER_ALLIANCE_GRAVITY) }
+pub fn bidder_amx() -> BidderName { BidderName::new(BIDDER_AMX) }
+pub fn bidder_apacdex() -> BidderName { BidderName::new(BIDDER_APACDEX) }
+pub fn bidder_appnexus() -> BidderName { BidderName::new(BIDDER_APPNEXUS) }
+pub fn bidder_appush() -> BidderName { BidderName::new(BIDDER_APPUSH) }
+pub fn bidder_aso() -> BidderName { BidderName::new(BIDDER_ASO) }
+pub fn bidder_audiencenetwork() -> BidderName { BidderName::new(BIDDER_AUDIENCENETWORK) }
+pub fn bidder_automatad() -> BidderName { BidderName::new(BIDDER_AUTOMATAD) }
+pub fn bidder_avocet() -> BidderName { BidderName::new(BIDDER_AVOCET) }
+pub fn bidder_axis() -> BidderName { BidderName::new(BIDDER_AXIS) }
+pub fn bidder_axonix() -> BidderName { BidderName::new(BIDDER_AXONIX) }
+pub fn bidder_beachfront() -> BidderName { BidderName::new(BIDDER_BEACHFRONT) }
+pub fn bidder_beintoo() -> BidderName { BidderName::new(BIDDER_BEINTOO) }
+pub fn bidder_bematterfull() -> BidderName { BidderName::new(BIDDER_BEMATTERFULL) }
+pub fn bidder_beop() -> BidderName { BidderName::new(BIDDER_BEOP) }
+pub fn bidder_between() -> BidderName { BidderName::new(BIDDER_BETWEEN) }
+pub fn bidder_beyondmedia() -> BidderName { BidderName::new(BIDDER_BEYONDMEDIA) }
+pub fn bidder_bidmachine() -> BidderName { BidderName::new(BIDDER_BIDMACHINE) }
+pub fn bidder_bidmatic() -> BidderName { BidderName::new(BIDDER_BIDMATIC) }
+pub fn bidder_bidmyadz() -> BidderName { BidderName::new(BIDDER_BIDMYADZ) }
+pub fn bidder_bidscube() -> BidderName { BidderName::new(BIDDER_BIDSCUBE) }
+pub fn bidder_bidstack() -> BidderName { BidderName::new(BIDDER_BIDSTACK) }
+pub fn bidder_bidtheatre() -> BidderName { BidderName::new(BIDDER_BIDTHEATRE) }
+pub fn bidder_bigoad() -> BidderName { BidderName::new(BIDDER_BIGOAD) }
+pub fn bidder_blasto() -> BidderName { BidderName::new(BIDDER_BLASTO) }
+pub fn bidder_bliink() -> BidderName { BidderName::new(BIDDER_BLIINK) }
+pub fn bidder_blis() -> BidderName { BidderName::new(BIDDER_BLIS) }
+pub fn bidder_blue() -> BidderName { BidderName::new(BIDDER_BLUE) }
+pub fn bidder_bluesea() -> BidderName { BidderName::new(BIDDER_BLUESEA) }
+pub fn bidder_bmtm() -> BidderName { BidderName::new(BIDDER_BMTM) }
+pub fn bidder_boldwin() -> BidderName { BidderName::new(BIDDER_BOLDWIN) }
+pub fn bidder_boldwin_rapid() -> BidderName { BidderName::new(BIDDER_BOLDWIN_RAPID) }
+pub fn bidder_brave() -> BidderName { BidderName::new(BIDDER_BRAVE) }
+pub fn bidder_bwx() -> BidderName { BidderName::new(BIDDER_BWX) }
+pub fn bidder_cadent_aperture_mx() -> BidderName { BidderName::new(BIDDER_CADENT_APERTURE_MX) }
+pub fn bidder_ccx() -> BidderName { BidderName::new(BIDDER_CCX) }
+pub fn bidder_clydo() -> BidderName { BidderName::new(BIDDER_CLYDO) }
+pub fn bidder_cointraffic() -> BidderName { BidderName::new(BIDDER_COINTRAFFIC) }
+pub fn bidder_coinzilla() -> BidderName { BidderName::new(BIDDER_COINZILLA) }
+pub fn bidder_colossus() -> BidderName { BidderName::new(BIDDER_COLOSSUS) }
+pub fn bidder_compass() -> BidderName { BidderName::new(BIDDER_COMPASS) }
+pub fn bidder_concert() -> BidderName { BidderName::new(BIDDER_CONCERT) }
+pub fn bidder_connatix() -> BidderName { BidderName::new(BIDDER_CONNATIX) }
+pub fn bidder_connectad() -> BidderName { BidderName::new(BIDDER_CONNECTAD) }
+pub fn bidder_consumable() -> BidderName { BidderName::new(BIDDER_CONSUMABLE) }
+pub fn bidder_contxtful() -> BidderName { BidderName::new(BIDDER_CONTXTFUL) }
+pub fn bidder_conversant() -> BidderName { BidderName::new(BIDDER_CONVERSANT) }
+pub fn bidder_copper6ssp() -> BidderName { BidderName::new(BIDDER_COPPER6SSP) }
+pub fn bidder_cpmstar() -> BidderName { BidderName::new(BIDDER_CPMSTAR) }
+pub fn bidder_criteo() -> BidderName { BidderName::new(BIDDER_CRITEO) }
+pub fn bidder_cwire() -> BidderName { BidderName::new(BIDDER_CWIRE) }
+pub fn bidder_datablocks() -> BidderName { BidderName::new(BIDDER_DATABLOCKS) }
+pub fn bidder_decenterads() -> BidderName { BidderName::new(BIDDER_DECENTERADS) }
+pub fn bidder_deepintent() -> BidderName { BidderName::new(BIDDER_DEEPINTENT) }
+pub fn bidder_definemedia() -> BidderName { BidderName::new(BIDDER_DEFINEMEDIA) }
+pub fn bidder_dianomi() -> BidderName { BidderName::new(BIDDER_DIANOMI) }
+pub fn bidder_displayio() -> BidderName { BidderName::new(BIDDER_DISPLAYIO) }
+pub fn bidder_edge226() -> BidderName { BidderName::new(BIDDER_EDGE226) }
+pub fn bidder_dmx() -> BidderName { BidderName::new(BIDDER_DMX) }
+pub fn bidder_driftpixel() -> BidderName { BidderName::new(BIDDER_DRIFTPIXEL) }
+pub fn bidder_elementaltv() -> BidderName { BidderName::new(BIDDER_ELEMENTALTV) }
+pub fn bidder_emtv() -> BidderName { BidderName::new(BIDDER_EMTV) }
+pub fn bidder_emx_digital() -> BidderName { BidderName::new(BIDDER_EMX_DIGITAL) }
+pub fn bidder_eplanning() -> BidderName { BidderName::new(BIDDER_EPLANNING) }
+pub fn bidder_epom() -> BidderName { BidderName::new(BIDDER_EPOM) }
+pub fn bidder_escalax() -> BidderName { BidderName::new(BIDDER_ESCALAX) }
+pub fn bidder_exco() -> BidderName { BidderName::new(BIDDER_EXCO) }
+pub fn bidder_e_volution() -> BidderName { BidderName::new(BIDDER_E_VOLUTION) }
+pub fn bidder_feedad() -> BidderName { BidderName::new(BIDDER_FEEDAD) }
+pub fn bidder_flatads() -> BidderName { BidderName::new(BIDDER_FLATADS) }
+pub fn bidder_flipp() -> BidderName { BidderName::new(BIDDER_FLIPP) }
+pub fn bidder_freewheelssp() -> BidderName { BidderName::new(BIDDER_FREEWHEELSSP) }
+pub fn bidder_fwssp() -> BidderName { BidderName::new(BIDDER_FWSSP) }
+pub fn bidder_frvradn() -> BidderName { BidderName::new(BIDDER_FRVRADN) }
+pub fn bidder_gamma() -> BidderName { BidderName::new(BIDDER_GAMMA) }
+pub fn bidder_gamoshi() -> BidderName { BidderName::new(BIDDER_GAMOSHI) }
+pub fn bidder_globalsun() -> BidderName { BidderName::new(BIDDER_GLOBALSUN) }
+pub fn bidder_goldbach() -> BidderName { BidderName::new(BIDDER_GOLDBACH) }
+pub fn bidder_grid() -> BidderName { BidderName::new(BIDDER_GRID) }
+pub fn bidder_gumgum() -> BidderName { BidderName::new(BIDDER_GUMGUM) }
+pub fn bidder_huaweiads() -> BidderName { BidderName::new(BIDDER_HUAWEIADS) }
+pub fn bidder_imds() -> BidderName { BidderName::new(BIDDER_IMDS) }
+pub fn bidder_impactify() -> BidderName { BidderName::new(BIDDER_IMPACTIFY) }
+pub fn bidder_improvedigital() -> BidderName { BidderName::new(BIDDER_IMPROVEDIGITAL) }
+pub fn bidder_infytv() -> BidderName { BidderName::new(BIDDER_INFYTV) }
+pub fn bidder_inmobi() -> BidderName { BidderName::new(BIDDER_INMOBI) }
+pub fn bidder_insticator() -> BidderName { BidderName::new(BIDDER_INSTICATOR) }
+pub fn bidder_intenze() -> BidderName { BidderName::new(BIDDER_INTENZE) }
+pub fn bidder_interactiveoffers() -> BidderName { BidderName::new(BIDDER_INTERACTIVEOFFERS) }
+pub fn bidder_invibes() -> BidderName { BidderName::new(BIDDER_INVIBES) }
+pub fn bidder_iqx() -> BidderName { BidderName::new(BIDDER_IQX) }
+pub fn bidder_iqzone() -> BidderName { BidderName::new(BIDDER_IQZONE) }
+pub fn bidder_ix() -> BidderName { BidderName::new(BIDDER_IX) }
+pub fn bidder_jixie() -> BidderName { BidderName::new(BIDDER_JIXIE) }
+pub fn bidder_kargo() -> BidderName { BidderName::new(BIDDER_KARGO) }
+pub fn bidder_kayzen() -> BidderName { BidderName::new(BIDDER_KAYZEN) }
+pub fn bidder_kidoz() -> BidderName { BidderName::new(BIDDER_KIDOZ) }
+pub fn bidder_kiviads() -> BidderName { BidderName::new(BIDDER_KIVIADS) }
+pub fn bidder_lm_kiviads() -> BidderName { BidderName::new(BIDDER_LM_KIVIADS) }
+pub fn bidder_kobler() -> BidderName { BidderName::new(BIDDER_KOBLER) }
+pub fn bidder_krushmedia() -> BidderName { BidderName::new(BIDDER_KRUSHMEDIA) }
+pub fn bidder_kueezrtb() -> BidderName { BidderName::new(BIDDER_KUEEZRTB) }
+pub fn bidder_lemmadigital() -> BidderName { BidderName::new(BIDDER_LEMMADIGITAL) }
+pub fn bidder_limelightdigital() -> BidderName { BidderName::new(BIDDER_LIMELIGHTDIGITAL) }
+pub fn bidder_lockerdome() -> BidderName { BidderName::new(BIDDER_LOCKERDOME) }
+pub fn bidder_logan() -> BidderName { BidderName::new(BIDDER_LOGAN) }
+pub fn bidder_logicad() -> BidderName { BidderName::new(BIDDER_LOGICAD) }
+pub fn bidder_loopme() -> BidderName { BidderName::new(BIDDER_LOOPME) }
+pub fn bidder_loyal() -> BidderName { BidderName::new(BIDDER_LOYAL) }
+pub fn bidder_lunamedia() -> BidderName { BidderName::new(BIDDER_LUNAMEDIA) }
+pub fn bidder_mabidder() -> BidderName { BidderName::new(BIDDER_MABIDDER) }
+pub fn bidder_madsense() -> BidderName { BidderName::new(BIDDER_MADSENSE) }
+pub fn bidder_madvertise() -> BidderName { BidderName::new(BIDDER_MADVERTISE) }
+pub fn bidder_marsmedia() -> BidderName { BidderName::new(BIDDER_MARSMEDIA) }
+pub fn bidder_mediafuse() -> BidderName { BidderName::new(BIDDER_MEDIAFUSE) }
+pub fn bidder_mediago() -> BidderName { BidderName::new(BIDDER_MEDIAGO) }
+pub fn bidder_medianet() -> BidderName { BidderName::new(BIDDER_MEDIANET) }
+pub fn bidder_mediasquare() -> BidderName { BidderName::new(BIDDER_MEDIASQUARE) }
+pub fn bidder_melozen() -> BidderName { BidderName::new(BIDDER_MELOZEN) }
+pub fn bidder_metax() -> BidderName { BidderName::new(BIDDER_METAX) }
+pub fn bidder_mgid() -> BidderName { BidderName::new(BIDDER_MGID) }
+pub fn bidder_mgidx() -> BidderName { BidderName::new(BIDDER_MGIDX) }
+pub fn bidder_microsoft() -> BidderName { BidderName::new(BIDDER_MICROSOFT) }
+pub fn bidder_minutemedia() -> BidderName { BidderName::new(BIDDER_MINUTEMEDIA) }
+pub fn bidder_missena() -> BidderName { BidderName::new(BIDDER_MISSENA) }
+pub fn bidder_mobfoxpb() -> BidderName { BidderName::new(BIDDER_MOBFOXPB) }
+pub fn bidder_mobilefuse() -> BidderName { BidderName::new(BIDDER_MOBILEFUSE) }
+pub fn bidder_mobkoi() -> BidderName { BidderName::new(BIDDER_MOBKOI) }
+pub fn bidder_motorik() -> BidderName { BidderName::new(BIDDER_MOTORIK) }
+pub fn bidder_nativery() -> BidderName { BidderName::new(BIDDER_NATIVERY) }
+pub fn bidder_nativo() -> BidderName { BidderName::new(BIDDER_NATIVO) }
+pub fn bidder_nextmillennium() -> BidderName { BidderName::new(BIDDER_NEXTMILLENNIUM) }
+pub fn bidder_nexx360() -> BidderName { BidderName::new(BIDDER_NEXX360) }
+pub fn bidder_nobid() -> BidderName { BidderName::new(BIDDER_NOBID) }
+pub fn bidder_ogury() -> BidderName { BidderName::new(BIDDER_OGURY) }
+pub fn bidder_oms() -> BidderName { BidderName::new(BIDDER_OMS) }
+pub fn bidder_onetag() -> BidderName { BidderName::new(BIDDER_ONETAG) }
+pub fn bidder_openweb() -> BidderName { BidderName::new(BIDDER_OPENWEB) }
+pub fn bidder_openx() -> BidderName { BidderName::new(BIDDER_OPENX) }
+pub fn bidder_operaads() -> BidderName { BidderName::new(BIDDER_OPERAADS) }
+pub fn bidder_optidigital() -> BidderName { BidderName::new(BIDDER_OPTIDIGITAL) }
+pub fn bidder_oraki() -> BidderName { BidderName::new(BIDDER_ORAKI) }
+pub fn bidder_orbidder() -> BidderName { BidderName::new(BIDDER_ORBIDDER) }
+pub fn bidder_outbrain() -> BidderName { BidderName::new(BIDDER_OUTBRAIN) }
+pub fn bidder_ownadx() -> BidderName { BidderName::new(BIDDER_OWNADX) }
+pub fn bidder_pangle() -> BidderName { BidderName::new(BIDDER_PANGLE) }
+pub fn bidder_pgamssp() -> BidderName { BidderName::new(BIDDER_PGAMSSP) }
+pub fn bidder_playdigo() -> BidderName { BidderName::new(BIDDER_PLAYDIGO) }
+pub fn bidder_pubmatic() -> BidderName { BidderName::new(BIDDER_PUBMATIC) }
+pub fn bidder_pubrise() -> BidderName { BidderName::new(BIDDER_PUBRISE) }
+pub fn bidder_pubnative() -> BidderName { BidderName::new(BIDDER_PUBNATIVE) }
+pub fn bidder_pulsepoint() -> BidderName { BidderName::new(BIDDER_PULSEPOINT) }
+pub fn bidder_pwbid() -> BidderName { BidderName::new(BIDDER_PWBID) }
+pub fn bidder_qt() -> BidderName { BidderName::new(BIDDER_QT) }
+pub fn bidder_readpeak() -> BidderName { BidderName::new(BIDDER_READPEAK) }
+pub fn bidder_rediads() -> BidderName { BidderName::new(BIDDER_REDIADS) }
+pub fn bidder_relevantdigital() -> BidderName { BidderName::new(BIDDER_RELEVANTDIGITAL) }
+pub fn bidder_resetdigital() -> BidderName { BidderName::new(BIDDER_RESETDIGITAL) }
+pub fn bidder_revcontent() -> BidderName { BidderName::new(BIDDER_REVCONTENT) }
+pub fn bidder_richaudience() -> BidderName { BidderName::new(BIDDER_RICHAUDIENCE) }
+pub fn bidder_rise() -> BidderName { BidderName::new(BIDDER_RISE) }
+pub fn bidder_roulax() -> BidderName { BidderName::new(BIDDER_ROULAX) }
+pub fn bidder_rtbhouse() -> BidderName { BidderName::new(BIDDER_RTBHOUSE) }
+pub fn bidder_rubicon() -> BidderName { BidderName::new(BIDDER_RUBICON) }
+pub fn bidder_seedingalliance() -> BidderName { BidderName::new(BIDDER_SEEDINGALLIANCE) }
+pub fn bidder_seedtag() -> BidderName { BidderName::new(BIDDER_SEEDTAG) }
+pub fn bidder_sa_lunamedia() -> BidderName { BidderName::new(BIDDER_SA_LUNAMEDIA) }
+pub fn bidder_sharethrough() -> BidderName { BidderName::new(BIDDER_SHARETHROUGH) }
+pub fn bidder_showheroes() -> BidderName { BidderName::new(BIDDER_SHOWHEROES) }
+pub fn bidder_silvermob() -> BidderName { BidderName::new(BIDDER_SILVERMOB) }
+pub fn bidder_silverpush() -> BidderName { BidderName::new(BIDDER_SILVERPUSH) }
+pub fn bidder_smaato() -> BidderName { BidderName::new(BIDDER_SMAATO) }
+pub fn bidder_smartadserver() -> BidderName { BidderName::new(BIDDER_SMARTADSERVER) }
+pub fn bidder_smarthub() -> BidderName { BidderName::new(BIDDER_SMARTHUB) }
+pub fn bidder_smartrtb() -> BidderName { BidderName::new(BIDDER_SMARTRTB) }
+pub fn bidder_smartx() -> BidderName { BidderName::new(BIDDER_SMARTX) }
+pub fn bidder_smartyads() -> BidderName { BidderName::new(BIDDER_SMARTYADS) }
+pub fn bidder_smilewanted() -> BidderName { BidderName::new(BIDDER_SMILEWANTED) }
+pub fn bidder_smoot() -> BidderName { BidderName::new(BIDDER_SMOOT) }
+pub fn bidder_smrtconnect() -> BidderName { BidderName::new(BIDDER_SMRTCONNECT) }
+pub fn bidder_sonobi() -> BidderName { BidderName::new(BIDDER_SONOBI) }
+pub fn bidder_sovrn() -> BidderName { BidderName::new(BIDDER_SOVRN) }
+pub fn bidder_sovrnxsp() -> BidderName { BidderName::new(BIDDER_SOVRNXSP) }
+pub fn bidder_sparteo() -> BidderName { BidderName::new(BIDDER_SPARTEO) }
+pub fn bidder_sspbc() -> BidderName { BidderName::new(BIDDER_SSPBC) }
+pub fn bidder_startio() -> BidderName { BidderName::new(BIDDER_STARTIO) }
+pub fn bidder_stroeercore() -> BidderName { BidderName::new(BIDDER_STROEERCORE) }
+pub fn bidder_taboola() -> BidderName { BidderName::new(BIDDER_TABOOLA) }
+pub fn bidder_tappx() -> BidderName { BidderName::new(BIDDER_TAPPX) }
+pub fn bidder_teads() -> BidderName { BidderName::new(BIDDER_TEADS) }
+pub fn bidder_telaria() -> BidderName { BidderName::new(BIDDER_TELARIA) }
+pub fn bidder_teqblaze() -> BidderName { BidderName::new(BIDDER_TEQBLAZE) }
+pub fn bidder_theadx() -> BidderName { BidderName::new(BIDDER_THEADX) }
+pub fn bidder_thetradedesk() -> BidderName { BidderName::new(BIDDER_THETRADEDESK) }
+pub fn bidder_tpmn() -> BidderName { BidderName::new(BIDDER_TPMN) }
+pub fn bidder_tradplus() -> BidderName { BidderName::new(BIDDER_TRADPLUS) }
+pub fn bidder_trafficgate() -> BidderName { BidderName::new(BIDDER_TRAFFICGATE) }
+pub fn bidder_triplelift() -> BidderName { BidderName::new(BIDDER_TRIPLELIFT) }
+pub fn bidder_triplelift_native() -> BidderName { BidderName::new(BIDDER_TRIPLELIFT_NATIVE) }
+pub fn bidder_trustedstack() -> BidderName { BidderName::new(BIDDER_TRUSTEDSTACK) }
+pub fn bidder_trustx() -> BidderName { BidderName::new(BIDDER_TRUSTX) }
+pub fn bidder_ucfunnel() -> BidderName { BidderName::new(BIDDER_UCFUNNEL) }
+pub fn bidder_undertone() -> BidderName { BidderName::new(BIDDER_UNDERTONE) }
+pub fn bidder_unicorn() -> BidderName { BidderName::new(BIDDER_UNICORN) }
+pub fn bidder_unruly() -> BidderName { BidderName::new(BIDDER_UNRULY) }
+pub fn bidder_vidazoo() -> BidderName { BidderName::new(BIDDER_VIDAZOO) }
+pub fn bidder_videobyte() -> BidderName { BidderName::new(BIDDER_VIDEOBYTE) }
+pub fn bidder_videoheroes() -> BidderName { BidderName::new(BIDDER_VIDEOHEROES) }
+pub fn bidder_vidoomy() -> BidderName { BidderName::new(BIDDER_VIDOOMY) }
+pub fn bidder_visiblemeasures() -> BidderName { BidderName::new(BIDDER_VISIBLEMEASURES) }
+pub fn bidder_visx() -> BidderName { BidderName::new(BIDDER_VISX) }
+pub fn bidder_vox() -> BidderName { BidderName::new(BIDDER_VOX) }
+pub fn bidder_vrtcal() -> BidderName { BidderName::new(BIDDER_VRTCAL) }
+pub fn bidder_vungle() -> BidderName { BidderName::new(BIDDER_VUNGLE) }
+pub fn bidder_xeworks() -> BidderName { BidderName::new(BIDDER_XEWORKS) }
+pub fn bidder_yahooads() -> BidderName { BidderName::new(BIDDER_YAHOOADS) }
+pub fn bidder_yandex() -> BidderName { BidderName::new(BIDDER_YANDEX) }
+pub fn bidder_yeahmobi() -> BidderName { BidderName::new(BIDDER_YEAHMOBI) }
+pub fn bidder_yieldlab() -> BidderName { BidderName::new(BIDDER_YIELDLAB) }
+pub fn bidder_yieldmo() -> BidderName { BidderName::new(BIDDER_YIELDMO) }
+pub fn bidder_yieldone() -> BidderName { BidderName::new(BIDDER_YIELDONE) }
+pub fn bidder_zentotem() -> BidderName { BidderName::new(BIDDER_ZENTOTEM) }
+pub fn bidder_zeroclickfraud() -> BidderName { BidderName::new(BIDDER_ZEROCLICKFRAUD) }
+pub fn bidder_zetaglobalssp() -> BidderName { BidderName::new(BIDDER_ZETAGLOBALSSP) }
+pub fn bidder_zmaticoo() -> BidderName { BidderName::new(BIDDER_ZMATICOO) }
+
+/// Returns a Vec of all core bidder names.
+pub fn all_bidder_names() -> Vec<BidderName> {
+    vec![
+        bidder_33across(),
+        bidder_aax(),
+        bidder_aceex(),
+        bidder_acuityads(),
+        bidder_adagio(),
+        bidder_adelement(),
+        bidder_adf(),
+        bidder_adgeneration(),
+        bidder_adhese(),
+        bidder_adkernel(),
+        bidder_adkerneladn(),
+        bidder_adman(),
+        bidder_admatic(),
+        bidder_admixer(),
+        bidder_adnuntius(),
+        bidder_adot(),
+        bidder_adpone(),
+        bidder_adprime(),
+        bidder_adquery(),
+        bidder_adrino(),
+        bidder_adtarget(),
+        bidder_adtrgtme(),
+        bidder_adtonos(),
+        bidder_adtelligent(),
+        bidder_aduptech(),
+        bidder_advangelists(),
+        bidder_adverxo(),
+        bidder_adview(),
+        bidder_adxcg(),
+        bidder_adyoulike(),
+        bidder_afront(),
+        bidder_aidem(),
+        bidder_aja(),
+        bidder_akcelo(),
+        bidder_algorix(),
+        bidder_alkimi(),
+        bidder_alliance_gravity(),
+        bidder_amx(),
+        bidder_apacdex(),
+        bidder_appnexus(),
+        bidder_appush(),
+        bidder_aso(),
+        bidder_audiencenetwork(),
+        bidder_automatad(),
+        bidder_avocet(),
+        bidder_axis(),
+        bidder_axonix(),
+        bidder_beachfront(),
+        bidder_beintoo(),
+        bidder_bematterfull(),
+        bidder_beop(),
+        bidder_between(),
+        bidder_beyondmedia(),
+        bidder_bidmachine(),
+        bidder_bidmatic(),
+        bidder_bidmyadz(),
+        bidder_bidscube(),
+        bidder_bidstack(),
+        bidder_bidtheatre(),
+        bidder_bigoad(),
+        bidder_blasto(),
+        bidder_bliink(),
+        bidder_blis(),
+        bidder_blue(),
+        bidder_bluesea(),
+        bidder_bmtm(),
+        bidder_boldwin(),
+        bidder_boldwin_rapid(),
+        bidder_brave(),
+        bidder_bwx(),
+        bidder_cadent_aperture_mx(),
+        bidder_ccx(),
+        bidder_clydo(),
+        bidder_cointraffic(),
+        bidder_coinzilla(),
+        bidder_colossus(),
+        bidder_compass(),
+        bidder_concert(),
+        bidder_connatix(),
+        bidder_connectad(),
+        bidder_consumable(),
+        bidder_contxtful(),
+        bidder_conversant(),
+        bidder_copper6ssp(),
+        bidder_cpmstar(),
+        bidder_criteo(),
+        bidder_cwire(),
+        bidder_datablocks(),
+        bidder_decenterads(),
+        bidder_deepintent(),
+        bidder_definemedia(),
+        bidder_dianomi(),
+        bidder_displayio(),
+        bidder_edge226(),
+        bidder_dmx(),
+        bidder_driftpixel(),
+        bidder_elementaltv(),
+        bidder_emtv(),
+        bidder_emx_digital(),
+        bidder_eplanning(),
+        bidder_epom(),
+        bidder_escalax(),
+        bidder_exco(),
+        bidder_e_volution(),
+        bidder_feedad(),
+        bidder_flatads(),
+        bidder_flipp(),
+        bidder_freewheelssp(),
+        bidder_fwssp(),
+        bidder_frvradn(),
+        bidder_gamma(),
+        bidder_gamoshi(),
+        bidder_globalsun(),
+        bidder_goldbach(),
+        bidder_grid(),
+        bidder_gumgum(),
+        bidder_huaweiads(),
+        bidder_imds(),
+        bidder_impactify(),
+        bidder_improvedigital(),
+        bidder_infytv(),
+        bidder_inmobi(),
+        bidder_insticator(),
+        bidder_intenze(),
+        bidder_interactiveoffers(),
+        bidder_invibes(),
+        bidder_iqx(),
+        bidder_iqzone(),
+        bidder_ix(),
+        bidder_jixie(),
+        bidder_kargo(),
+        bidder_kayzen(),
+        bidder_kidoz(),
+        bidder_kiviads(),
+        bidder_lm_kiviads(),
+        bidder_kobler(),
+        bidder_krushmedia(),
+        bidder_kueezrtb(),
+        bidder_lemmadigital(),
+        bidder_limelightdigital(),
+        bidder_lockerdome(),
+        bidder_logan(),
+        bidder_logicad(),
+        bidder_loopme(),
+        bidder_loyal(),
+        bidder_lunamedia(),
+        bidder_mabidder(),
+        bidder_madsense(),
+        bidder_madvertise(),
+        bidder_marsmedia(),
+        bidder_mediafuse(),
+        bidder_mediago(),
+        bidder_medianet(),
+        bidder_mediasquare(),
+        bidder_melozen(),
+        bidder_metax(),
+        bidder_mgid(),
+        bidder_mgidx(),
+        bidder_microsoft(),
+        bidder_minutemedia(),
+        bidder_missena(),
+        bidder_mobfoxpb(),
+        bidder_mobilefuse(),
+        bidder_mobkoi(),
+        bidder_motorik(),
+        bidder_nativery(),
+        bidder_nativo(),
+        bidder_nextmillennium(),
+        bidder_nexx360(),
+        bidder_nobid(),
+        bidder_ogury(),
+        bidder_oms(),
+        bidder_onetag(),
+        bidder_openweb(),
+        bidder_openx(),
+        bidder_operaads(),
+        bidder_optidigital(),
+        bidder_oraki(),
+        bidder_orbidder(),
+        bidder_outbrain(),
+        bidder_ownadx(),
+        bidder_pangle(),
+        bidder_pgamssp(),
+        bidder_playdigo(),
+        bidder_pubmatic(),
+        bidder_pubrise(),
+        bidder_pubnative(),
+        bidder_pulsepoint(),
+        bidder_pwbid(),
+        bidder_qt(),
+        bidder_readpeak(),
+        bidder_rediads(),
+        bidder_relevantdigital(),
+        bidder_resetdigital(),
+        bidder_revcontent(),
+        bidder_richaudience(),
+        bidder_rise(),
+        bidder_roulax(),
+        bidder_rtbhouse(),
+        bidder_rubicon(),
+        bidder_seedingalliance(),
+        bidder_seedtag(),
+        bidder_sa_lunamedia(),
+        bidder_sharethrough(),
+        bidder_showheroes(),
+        bidder_silvermob(),
+        bidder_silverpush(),
+        bidder_smaato(),
+        bidder_smartadserver(),
+        bidder_smarthub(),
+        bidder_smartrtb(),
+        bidder_smartx(),
+        bidder_smartyads(),
+        bidder_smilewanted(),
+        bidder_smoot(),
+        bidder_smrtconnect(),
+        bidder_sonobi(),
+        bidder_sovrn(),
+        bidder_sovrnxsp(),
+        bidder_sparteo(),
+        bidder_sspbc(),
+        bidder_startio(),
+        bidder_stroeercore(),
+        bidder_taboola(),
+        bidder_tappx(),
+        bidder_teads(),
+        bidder_telaria(),
+        bidder_teqblaze(),
+        bidder_theadx(),
+        bidder_thetradedesk(),
+        bidder_tpmn(),
+        bidder_tradplus(),
+        bidder_trafficgate(),
+        bidder_triplelift(),
+        bidder_triplelift_native(),
+        bidder_trustedstack(),
+        bidder_trustx(),
+        bidder_ucfunnel(),
+        bidder_undertone(),
+        bidder_unicorn(),
+        bidder_unruly(),
+        bidder_vidazoo(),
+        bidder_videobyte(),
+        bidder_videoheroes(),
+        bidder_vidoomy(),
+        bidder_visiblemeasures(),
+        bidder_visx(),
+        bidder_vox(),
+        bidder_vrtcal(),
+        bidder_vungle(),
+        bidder_xeworks(),
+        bidder_yahooads(),
+        bidder_yandex(),
+        bidder_yeahmobi(),
+        bidder_yieldlab(),
+        bidder_yieldmo(),
+        bidder_yieldone(),
+        bidder_zentotem(),
+        bidder_zeroclickfraud(),
+        bidder_zetaglobalssp(),
+        bidder_zmaticoo(),
+    ]
 }

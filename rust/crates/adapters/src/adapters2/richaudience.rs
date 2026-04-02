@@ -85,14 +85,17 @@ impl Bidder for RichaudienceAdapter {
                 imp.bidfloorcur = Some(bid_floor_cur);
             }
 
-            let secure: i8 = if is_url_secure { 1 } else { 0 };
+            let secure: i32 = if is_url_secure { 1 } else { 0 };
             imp.secure = Some(secure);
 
             // Validate banner
             if let Some(banner) = imp.banner.as_ref() {
-                if banner.w.is_none() && banner.h.is_none() && banner.format.is_empty() {
-                    errs.push(BidderError::BadInput("request.Banner.Format is required".to_string()));
-                    continue;
+                if banner.w.is_none() && banner.h.is_none() {
+                    let has_formats = banner.format.as_ref().map(|f| !f.is_empty()).unwrap_or(false);
+                    if !has_formats {
+                        errs.push(BidderError::BadInput("request.Banner.Format is required".to_string()));
+                        continue;
+                    }
                 }
             }
 
