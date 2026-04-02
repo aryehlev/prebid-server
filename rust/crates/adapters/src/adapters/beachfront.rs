@@ -366,7 +366,8 @@ impl Bidder for BeachfrontAdapter {
                 Ok(b) => {
                     if is_nurl {
                         // Prepend {"isPrebid":true, to the JSON
-                        let mut full = b"{"isPrebid\":true,".to_vec();
+                        let prefix = br#"{"isPrebid":true,"#;
+                        let mut full = prefix.to_vec();
                         if b.len() > 1 {
                             full.extend_from_slice(&b[1..]);
                         }
@@ -467,7 +468,6 @@ impl Bidder for BeachfrontAdapter {
                                 }
                             }
 
-                            let mut dur = BeachfrontVideoBidExt::default();
                             let bid_video = bid_copy.ext.as_ref()
                                 .and_then(|e| serde_json::from_value::<BeachfrontVideoBidExt>(e.clone()).ok())
                                 .filter(|d| d.duration > 0)
