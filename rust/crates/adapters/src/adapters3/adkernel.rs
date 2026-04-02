@@ -12,14 +12,14 @@ impl AdkernelAdapter {
     }
 }
 
-fn get_bid_type_from_mtype(mtype: Option<u32>) -> Result<BidType, BidderError> {
+fn get_bid_type_from_mtype(mtype: u32) -> Result<BidType, BidderError> {
     match mtype {
-        Some(1) => Ok(BidType::Banner),
-        Some(2) => Ok(BidType::Video),
-        Some(3) => Ok(BidType::Audio),
-        Some(4) => Ok(BidType::Native),
+        1 => Ok(BidType::Banner),
+        2 => Ok(BidType::Video),
+        3 => Ok(BidType::Audio),
+        4 => Ok(BidType::Native),
         other => Err(BidderError::BadServerResponse(format!(
-            "Unsupported MType {:?}", other
+            "Unsupported MType {}", other
         ))),
     }
 }
@@ -140,7 +140,11 @@ impl Bidder for AdkernelAdapter {
                 bid.impid = bid.impid[..new_len].to_string();
             }
 
-            let bid_type = get_bid_type_from_mtype(bid.mtype)
+            let mtype = bid.ext.as_ref()
+                .and_then(|e| e.get("mtype"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            let bid_type = get_bid_type_from_mtype(mtype)
                 .map_err(|e| vec![e])?;
             result.bids.push(TypedBid::new(bid, bid_type));
         }

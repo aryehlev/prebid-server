@@ -12,14 +12,14 @@ impl LoopmeAdapter {
     }
 }
 
-fn get_bid_type_from_mtype(mtype: Option<u32>) -> Result<BidType, BidderError> {
+fn get_bid_type_from_mtype(mtype: u32) -> Result<BidType, BidderError> {
     match mtype {
-        Some(1) => Ok(BidType::Banner),
-        Some(2) => Ok(BidType::Video),
-        Some(3) => Ok(BidType::Audio),
-        Some(4) => Ok(BidType::Native),
+        1 => Ok(BidType::Banner),
+        2 => Ok(BidType::Video),
+        3 => Ok(BidType::Audio),
+        4 => Ok(BidType::Native),
         other => Err(BidderError::BadServerResponse(format!(
-            "Unsupported MType {:?}", other
+            "Unsupported MType {}", other
         ))),
     }
 }
