@@ -1,0 +1,22 @@
+[package]
+name = "pbs-exchange"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+uuid = { workspace = true }
+reqwest = { workspace = true }
+openrtb = { path = "../openrtb" }
+openrtb-ext = { path = "../openrtb-ext" }
+pbs-adapters = { path = "../adapters" }
+pbs-metrics = { path = "../metrics" }
+pbs-config = { path = "../config" }
+pbs-currency = { path = "../currency" }
