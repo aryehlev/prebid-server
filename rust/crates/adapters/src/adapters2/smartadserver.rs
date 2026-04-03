@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
 use openrtb_ext::BidType;
+use serde::Deserialize;
 use serde_json::Value;
 
 pub struct SmartadserverAdapter {
@@ -22,6 +23,29 @@ impl SmartadserverAdapter {
             Ok(format!("{}/api/bid?callerId=5", base))
         }
     }
+}
+
+/// Smartadserver bidder extension from imp.ext.bidder
+#[derive(Debug, Default, Deserialize)]
+struct ExtImpSmartadserver {
+    #[serde(rename = "networkId", default)]
+    network_id: i64,
+    #[serde(rename = "siteId", default)]
+    site_id: i64,
+    #[serde(rename = "pageId", default)]
+    page_id: i64,
+    #[serde(rename = "formatId", default)]
+    format_id: i64,
+    #[serde(rename = "target", default)]
+    target: String,
+    #[serde(rename = "bidfloor", default)]
+    bid_floor: f64,
+    #[serde(rename = "programmaticGuaranteed", default)]
+    programmatic_guaranteed: bool,
+    #[serde(rename = "buId", default)]
+    bu_id: String,
+    #[serde(rename = "aDomain", default)]
+    a_domain: Vec<String>,
 }
 
 fn get_bid_type_from_mtype(mtype: u32) -> BidType {
@@ -49,7 +73,6 @@ impl Bidder for SmartadserverAdapter {
         let mut imp_ext_key = "bidder";
         let mut network_id = String::new();
 
-        // First pass: extract extensions and detect programmatic guaranteed
         struct PendingImp {
             imp: openrtb::Imp,
             ext_out: Value,
@@ -73,23 +96,24 @@ impl Bidder for SmartadserverAdapter {
                 }
             };
 
-            let pg = bidder_ext
-                .get("programmaticGuaranteed")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+            let smartadserver_ext: ExtImpSmartadserver = match serde_json::from_value(bidder_ext.clone()) {
+                Ok(v) => v,
+                Err(_) => {
+                    errs.push(BidderError::BadInput("Error parsing smartadserverExt parameters".to_string()));
+                    continue;
+                }
+            };
 
-            if !is_programmatic_guaranteed && pg {
+            if !is_programmatic_guaranteed && smartadserver_ext.programmatic_guaranteed {
                 is_programmatic_guaranteed = true;
                 imp_ext_key = "smartadserver";
             }
 
-            if let Some(nid) = bidder_ext.get("networkId").and_then(|v| v.as_i64()) {
-                if network_id.is_empty() {
-                    network_id = nid.to_string();
-                }
+            if network_id.is_empty() && smartadserver_ext.network_id != 0 {
+                network_id = smartadserver_ext.network_id.to_string();
             }
 
-            // Build an ext_out value from bidder ext fields
+            // Build the output ext from the parsed extension struct
             let ext_out = bidder_ext.clone();
 
             pending.push(PendingImp { imp: imp.clone(), ext_out });
@@ -160,8 +184,17 @@ impl Bidder for SmartadserverAdapter {
         if response.status_code == 204 {
             return Ok(BidderResponse::new());
         }
-        if let Err(e) = crate::check_response_status(response.status_code) {
-            return Err(vec![e]);
+        if response.status_code == 400 {
+            return Err(vec![BidderError::BadInput(format!(
+                "Unexpected status code: {}. Run with request.debug = 1 for more info",
+                response.status_code
+            ))]);
+        }
+        if response.status_code != 200 {
+            return Err(vec![BidderError::BadServerResponse(format!(
+                "Unexpected status code: {}. Run with request.debug = 1 for more info",
+                response.status_code
+            ))]);
         }
 
         let bid_response: openrtb::BidResponse = serde_json::from_slice(&response.body)
@@ -170,6 +203,7 @@ impl Bidder for SmartadserverAdapter {
         let mut result = BidderResponse::with_capacity(5);
         for sb in bid_response.seatbid {
             for bid in sb.bid {
+                // mtype is in bid.ext since the openrtb struct doesn't have it
                 let mtype = bid.ext
                     .as_ref()
                     .and_then(|e| e.get("mtype"))

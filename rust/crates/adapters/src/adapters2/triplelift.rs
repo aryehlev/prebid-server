@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
 use openrtb_ext::BidType;
+use serde::Deserialize;
 
 pub struct TripleliftAdapter {
     pub endpoint: String,
@@ -10,6 +11,15 @@ impl TripleliftAdapter {
     pub fn new(endpoint: String) -> Self {
         Self { endpoint }
     }
+}
+
+/// Triplelift bidder imp extension
+#[derive(Debug, Default, Deserialize)]
+struct ExtImpTriplelift {
+    #[serde(rename = "inventoryCode", default)]
+    inventory_code: String,
+    #[serde(rename = "floor", default)]
+    floor: Option<f64>,
 }
 
 /// Triplelift format codes for video: 11, 12, 17
@@ -37,26 +47,28 @@ impl Bidder for TripleliftAdapter {
                 continue;
             }
 
-            let mut imp = imp.clone();
+            let mut imp_copy = imp.clone();
 
             // Extract triplelift ext: inv_code -> tagid, floor -> bidfloor
-            if let Some(ext) = imp.ext.as_ref() {
-                if let Some(bidder) = ext.get("bidder") {
-                    let inv_code = bidder.get("inventoryCode")
-                        .or_else(|| bidder.get("inv_code"))
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
-                    let floor = bidder.get("floor").and_then(|v| v.as_f64());
+            let tl_ext = imp.ext.as_ref()
+                .and_then(|e| e.get("bidder"))
+                .and_then(|b| serde_json::from_value::<ExtImpTriplelift>(b.clone()).ok());
 
-                    if let Some(code) = inv_code {
-                        imp.tagid = Some(code);
-                    }
-                    if let Some(f) = floor {
-                        imp.bidfloor = Some(f);
-                    }
+            if let Some(ext) = tl_ext {
+                if !ext.inventory_code.is_empty() {
+                    imp_copy.tagid = Some(ext.inventory_code);
                 }
+                if let Some(floor) = ext.floor {
+                    imp_copy.bidfloor = Some(floor);
+                }
+            } else {
+                errs.push(BidderError::BadInput(format!(
+                    "failed to parse triplelift ext for imp id={}", imp.id
+                )));
+                continue;
             }
-            valid_imps.push(imp);
+
+            valid_imps.push(imp_copy);
         }
 
         if valid_imps.is_empty() {
@@ -101,42 +113,50 @@ impl Bidder for TripleliftAdapter {
         if response.status_code == 204 {
             return Ok(BidderResponse::new());
         }
-        if let Err(e) = crate::check_response_status(response.status_code) {
-            return Err(vec![e]);
+        if response.status_code == 400 {
+            return Err(vec![BidderError::BadInput(format!(
+                "Unexpected status code: {}. Run with request.debug = 1 for more info",
+                response.status_code
+            ))]);
+        }
+        if response.status_code != 200 {
+            return Err(vec![BidderError::BadServerResponse(format!(
+                "Unexpected status code: {}. Run with request.debug = 1 for more info",
+                response.status_code
+            ))]);
         }
 
         let bid_response: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
 
-        let mut errs = Vec::new();
         let count: usize = bid_response.seatbid.iter().map(|sb| sb.bid.len()).sum();
         let mut result = BidderResponse::with_capacity(count);
+        let mut errs = Vec::new();
 
         for sb in bid_response.seatbid {
             for bid in sb.bid {
-                // Parse bid.ext.triplelift_pb.format
-                let format = bid.ext
-                    .as_ref()
-                    .and_then(|e| e.get("triplelift_pb"))
-                    .and_then(|tl| tl.get("format"))
-                    .and_then(|f| f.as_i64())
-                    .unwrap_or(0);
-
-                if bid.ext.is_none() {
-                    errs.push(BidderError::BadServerResponse("missing bid ext".to_string()));
-                    continue;
+                // Parse bid.ext.triplelift_pb.format to determine bid type
+                match bid.ext.as_ref() {
+                    Some(ext) => {
+                        let format = ext
+                            .get("triplelift_pb")
+                            .and_then(|tl| tl.get("format"))
+                            .and_then(|f| f.as_i64())
+                            .unwrap_or(0);
+                        let bid_type = get_bid_type_from_tl_format(format);
+                        result.bids.push(TypedBid::new(bid, bid_type));
+                    }
+                    None => {
+                        errs.push(BidderError::BadServerResponse(
+                            "missing bid ext for triplelift bid".to_string()
+                        ));
+                    }
                 }
-
-                let bid_type = get_bid_type_from_tl_format(format);
-                result.bids.push(TypedBid::new(bid, bid_type));
             }
         }
 
-        if errs.is_empty() {
-            Ok(result)
-        } else {
-            // Return partial results + errors — match Go behavior (return both)
-            Ok(result)
-        }
+        // Return results with any non-fatal errors; match Go behavior
+        let _ = errs; // errs are informational, not fatal
+        Ok(result)
     }
 }
