@@ -1,11 +1,9 @@
 use std::collections::HashMap;
-use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_bid_type_from_imp, get_imp_ids};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
 use openrtb_ext::BidType;
 
 pub struct SmartrtbAdapter { pub endpoint: String }
-impl SmartrtbAdapter {
-    pub fn new(endpoint: String) -> Self { Self { endpoint } }
-}
+impl SmartrtbAdapter { pub fn new(endpoint: String) -> Self { Self { endpoint } } }
 
 impl Bidder for SmartrtbAdapter {
     fn make_requests(&self, request: &openrtb::BidRequest, _: &ExtraRequestInfo) -> (Vec<RequestData>, Vec<BidderError>) {
@@ -19,18 +17,34 @@ impl Bidder for SmartrtbAdapter {
         (vec![RequestData { method: "POST".to_string(), uri: self.endpoint.clone(), body, headers, imp_ids: get_imp_ids(&request.imp) }], vec![])
     }
 
-    fn make_bids(&self, internal: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
+    fn make_bids(&self, _: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
         if response.status_code == 204 { return Ok(BidderResponse::new()); }
         if let Err(e) = crate::check_response_status(response.status_code) { return Err(vec![e]); }
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
         let mut result = BidderResponse::with_capacity(5);
+        let mut errs = Vec::new();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
-                let bid_type = internal.imp.iter().find(|i| i.id == bid.impid).map(get_bid_type_from_imp).unwrap_or(BidType::Banner);
+                // bid.ext.format contains creative type: BANNER, VIDEO
+                let creative_type = bid.ext.as_ref()
+                    .and_then(|e| e.get("format"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let bid_type = match creative_type {
+                    "BANNER" => BidType::Banner,
+                    "VIDEO" => BidType::Video,
+                    "NATIVE" => BidType::Native,
+                    "AUDIO" => BidType::Audio,
+                    other => {
+                        errs.push(BidderError::BadServerResponse(format!("Unsupported creative type {}.", other)));
+                        continue;
+                    }
+                };
                 result.bids.push(TypedBid::new(bid, bid_type));
             }
         }
+        if !errs.is_empty() && result.bids.is_empty() { return Err(errs); }
         Ok(result)
     }
 }

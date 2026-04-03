@@ -1,11 +1,8 @@
 use std::collections::HashMap;
-use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_bid_type_from_imp, get_imp_ids};
-use openrtb_ext::BidType;
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_bid_type_from_mtype, get_bid_type_from_imp, get_imp_ids};
 
 pub struct ResetdigitalAdapter { pub endpoint: String }
-impl ResetdigitalAdapter {
-    pub fn new(endpoint: String) -> Self { Self { endpoint } }
-}
+impl ResetdigitalAdapter { pub fn new(endpoint: String) -> Self { Self { endpoint } } }
 
 impl Bidder for ResetdigitalAdapter {
     fn make_requests(&self, request: &openrtb::BidRequest, _: &ExtraRequestInfo) -> (Vec<RequestData>, Vec<BidderError>) {
@@ -25,12 +22,25 @@ impl Bidder for ResetdigitalAdapter {
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
         let mut result = BidderResponse::with_capacity(5);
+        if let Some(cur) = &bid_resp.cur { if !cur.is_empty() { result.currency = cur.clone(); } }
+        let mut errs = Vec::new();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
-                let bid_type = internal.imp.iter().find(|i| i.id == bid.impid).map(get_bid_type_from_imp).unwrap_or(BidType::Banner);
+                let bid_type = if bid.mtype.map(|m| m > 0).unwrap_or(false) {
+                    get_bid_type_from_mtype(bid.mtype.unwrap())
+                } else {
+                    // fall back to imp-based
+                    if let Some(imp) = internal.imp.iter().find(|i| i.id == bid.impid) {
+                        get_bid_type_from_imp(imp)
+                    } else {
+                        errs.push(BidderError::BadServerResponse(format!("no matching impression found for ImpID: {}", bid.impid)));
+                        continue;
+                    }
+                };
                 result.bids.push(TypedBid::new(bid, bid_type));
             }
         }
+        if !errs.is_empty() && result.bids.is_empty() { return Err(errs); }
         Ok(result)
     }
 }
