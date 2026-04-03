@@ -6,6 +6,9 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
 
+pub mod stored_requests;
+pub use stored_requests::StoredRequestFetcher;
+
 /// Shared application state threaded through axum handlers.
 pub type AppState = Arc<AppStateInner>;
 
@@ -21,6 +24,8 @@ pub struct AppStateInner {
     pub host_cookie: HostCookieConfig,
     /// Status response override
     pub status_response: Option<String>,
+    /// Stored requests fetcher
+    pub stored_requests: Arc<StoredRequestFetcher>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -142,25 +147,80 @@ pub struct AmpParams {
 }
 
 pub async fn amp_handler(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Query(params): Query<AmpParams>,
 ) -> Response {
     let tag_id = match &params.tag_id {
         Some(t) if !t.is_empty() => t.clone(),
-        _ => {
-            return (StatusCode::BAD_REQUEST, "AMP request missing required tag_id query parameter").into_response();
-        }
+        _ => return (StatusCode::BAD_REQUEST, "AMP request missing required tag_id").into_response(),
     };
 
-    // In a full implementation this would load the stored request by tag_id,
-    // merge AMP targeting parameters, run the auction, and return AMP targeting.
-    // For now return a stub response indicating the endpoint is wired up.
-    let response = serde_json::json!({
-        "tag_id": tag_id,
-        "targeting": {},
-        "errors": { "prebid": [{"code": 999, "message": "stored request loading not yet implemented"}] }
-    });
-    (StatusCode::OK, Json(response)).into_response()
+    // Look up the stored request
+    let stored = match state.stored_requests.get(&tag_id) {
+        Some(v) => v.clone(),
+        None => return (StatusCode::BAD_REQUEST,
+            format!("No stored request found for tag_id: {}", tag_id)).into_response(),
+    };
+
+    // Merge AMP params into the stored request
+    // (width, height, slot targeting, gdpr, etc.)
+    // For now just run the stored request through the auction
+    let mut bid_request: openrtb::BidRequest = match serde_json::from_value(stored) {
+        Ok(r) => r,
+        Err(e) => return (StatusCode::BAD_REQUEST,
+            format!("Invalid stored request: {}", e)).into_response(),
+    };
+
+    // Apply AMP targeting parameters
+    if let (Some(w), Some(h)) = (params.w, params.h) {
+        for imp in &mut bid_request.imp {
+            if let Some(banner) = &mut imp.banner {
+                banner.w = Some(w);
+                banner.h = Some(h);
+            }
+        }
+    }
+
+    // Run the auction
+    let auction_req = pbs_exchange::AuctionRequest {
+        bid_request,
+        account: None,
+        user_syncs: None,
+        start_time: std::time::Instant::now(),
+    };
+
+    match state.exchange.hold_auction(auction_req).await {
+        Ok(r) => {
+            // AMP returns targeting from the bid response
+            let targeting = extract_amp_targeting(&r.bid_response);
+            let response = serde_json::json!({
+                "tag_id": tag_id,
+                "targeting": targeting,
+            });
+            (StatusCode::OK, Json(response)).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+fn extract_amp_targeting(resp: &openrtb::BidResponse) -> serde_json::Value {
+    let mut targeting = serde_json::Map::new();
+    for seatbid in &resp.seatbid {
+        for bid in &seatbid.bid {
+            // Extract hb_pb, hb_bidder, hb_adid targeting keys
+            if bid.price > 0.0 {
+                targeting.insert("hb_pb".to_string(),
+                    serde_json::Value::String(format!("{:.2}", bid.price)));
+                if let Some(seat) = &seatbid.seat {
+                    targeting.insert("hb_bidder".to_string(),
+                        serde_json::Value::String(seat.clone()));
+                }
+                targeting.insert("hb_adid".to_string(),
+                    serde_json::Value::String(bid.id.clone()));
+            }
+        }
+    }
+    serde_json::Value::Object(targeting)
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

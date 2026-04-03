@@ -1,9 +1,19 @@
 use std::collections::HashMap;
-use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_bid_type_from_imp, get_imp_ids};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids, check_response_status};
+use openrtb::BidResponse;
 use openrtb_ext::BidType;
 
 pub struct SaLunamediaAdapter { pub endpoint: String }
 impl SaLunamediaAdapter { pub fn new(endpoint: String) -> Self { Self { endpoint } } }
+
+fn parse_bid_type(media_type: &str) -> Result<BidType, BidderError> {
+    match media_type {
+        "banner" => Ok(BidType::Banner),
+        "video" => Ok(BidType::Video),
+        "native" => Ok(BidType::Native),
+        _ => Err(BidderError::BadServerResponse(format!("invalid bid type: {}", media_type))),
+    }
+}
 
 impl Bidder for SaLunamediaAdapter {
     fn make_requests(&self, request: &openrtb::BidRequest, _: &ExtraRequestInfo) -> (Vec<RequestData>, Vec<BidderError>) {
@@ -14,20 +24,50 @@ impl Bidder for SaLunamediaAdapter {
         let mut headers = HashMap::new();
         headers.insert("Content-Type".to_string(), "application/json;charset=utf-8".to_string());
         headers.insert("Accept".to_string(), "application/json".to_string());
-        (vec![RequestData { method: "POST".to_string(), uri: self.endpoint.clone(), body, headers, imp_ids: get_imp_ids(&request.imp) }], vec![])
+        (vec![RequestData {
+            method: "POST".to_string(),
+            uri: self.endpoint.clone(),
+            body,
+            headers,
+            imp_ids: get_imp_ids(&request.imp),
+        }], vec![])
     }
-    fn make_bids(&self, internal: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
+
+    fn make_bids(&self, _: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
         if response.status_code == 204 { return Ok(BidderResponse::new()); }
-        if let Err(e) = crate::check_response_status(response.status_code) { return Err(vec![e]); }
-        let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
-            .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
-        let mut result = BidderResponse::with_capacity(5);
-        for sb in bid_resp.seatbid {
-            for bid in sb.bid {
-                let bid_type = internal.imp.iter().find(|i| i.id == bid.impid).map(get_bid_type_from_imp).unwrap_or(BidType::Banner);
-                result.bids.push(TypedBid::new(bid, bid_type));
-            }
+        if response.status_code == 400 {
+            return Err(vec![BidderError::BadInput(
+                format!("Bad Request. {}", String::from_utf8_lossy(&response.body))
+            )]);
         }
+        if response.status_code == 503 {
+            return Err(vec![BidderError::BadInput(
+                "Bidder unavailable. Please contact the bidder support.".to_string()
+            )]);
+        }
+        if let Err(e) = check_response_status(response.status_code) { return Err(vec![e]); }
+        let bid_resp: BidResponse = serde_json::from_slice(&response.body)
+            .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
+        if bid_resp.seatbid.is_empty() {
+            return Err(vec![BidderError::BadServerResponse("Empty SeatBid".to_string())]);
+        }
+        let bids = &bid_resp.seatbid[0].bid;
+        if bids.is_empty() {
+            return Err(vec![BidderError::BadServerResponse("Empty SeatBid.Bids".to_string())]);
+        }
+        let bid = bids[0].clone();
+        // Get media_type from bid.ext.mediaType
+        let media_type = bid.ext.as_ref()
+            .and_then(|e| e.get("mediaType"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if media_type.is_empty() {
+            return Err(vec![BidderError::BadServerResponse("Missing BidExt".to_string())]);
+        }
+        let bid_type = parse_bid_type(media_type)
+            .map_err(|e| vec![e])?;
+        let mut result = BidderResponse::with_capacity(1);
+        result.bids.push(TypedBid::new(bid, bid_type));
         Ok(result)
     }
 }

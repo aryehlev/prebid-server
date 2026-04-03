@@ -19,6 +19,12 @@ async fn main() -> anyhow::Result<()> {
     // Adapter registration will be wired in here once adapter crates are complete.
     let exchange = pbs_exchange::Exchange::new(std::collections::HashMap::new());
 
+    let stored_requests_dir = std::env::var("PBS_STORED_REQUESTS_DIR")
+        .unwrap_or_else(|_| "./stored_requests".to_string());
+    let stored_requests = Arc::new(
+        pbs_endpoints::StoredRequestFetcher::from_directory(&stored_requests_dir)
+    );
+
     let state = Arc::new(pbs_endpoints::AppStateInner {
         exchange,
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -27,6 +33,7 @@ async fn main() -> anyhow::Result<()> {
         bidder_params: std::collections::HashMap::new(),
         host_cookie: pbs_endpoints::HostCookieConfig::default(),
         status_response: None,
+        stored_requests,
     });
 
     let app = pbs_endpoints::create_router(state);

@@ -28,6 +28,20 @@ pub struct Configuration {
     pub gdpr: GDPRConfig,
     #[serde(default)]
     pub ccpa: CCPAConfig,
+    #[serde(default)]
+    pub auction_timeouts: AuctionTimeouts,
+    #[serde(default)]
+    pub currency: CurrencyConfig,
+    #[serde(default)]
+    pub max_request_size: i64,
+    #[serde(default = "default_true")]
+    pub auto_gen_source_tid: bool,
+    #[serde(default)]
+    pub generate_bid_id: bool,
+    #[serde(default)]
+    pub account_required: bool,
+    #[serde(default = "default_static_dir")]
+    pub static_dir: String,
 }
 
 fn default_host() -> String {
@@ -40,6 +54,10 @@ fn default_port() -> u16 {
 
 fn default_admin_port() -> u16 {
     6060
+}
+
+fn default_static_dir() -> String {
+    "./static".to_string()
 }
 
 /// Per-adapter configuration
@@ -113,6 +131,10 @@ pub struct CacheConfig {
     #[serde(default)]
     pub host: String,
     #[serde(default)]
+    pub port: u16,
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
     pub query: String,
     #[serde(default)]
     pub expected_millis: u64,
@@ -125,6 +147,8 @@ pub struct StoredRequestConfig {
     pub filesystem: Option<FilesystemConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub http: Option<HttpConfig>,
+    #[serde(default)]
+    pub in_memory_cache: InMemoryCacheConfig,
 }
 
 /// Filesystem stored request configuration
@@ -145,15 +169,42 @@ pub struct HttpConfig {
     pub amp_endpoint: String,
 }
 
-/// GDPR configuration
+/// In-memory cache configuration for stored requests
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct InMemoryCacheConfig {
+    #[serde(default)]
+    pub ttl_seconds: i32,
+    #[serde(default)]
+    pub request_cache_size_bytes: i32,
+    #[serde(default)]
+    pub imp_cache_size_bytes: i32,
+}
+
+/// GDPR configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GDPRConfig {
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub enabled: bool,
     #[serde(default)]
     pub host_vendor_id: u32,
     #[serde(default = "default_gdpr_default_value")]
     pub default_value: String,
+    #[serde(default)]
+    pub enforce_vendor_list: bool,
+    #[serde(default)]
+    pub eea_countries: Vec<String>,
+}
+
+impl Default for GDPRConfig {
+    fn default() -> Self {
+        GDPRConfig {
+            enabled: false,
+            host_vendor_id: 0,
+            default_value: default_gdpr_default_value(),
+            enforce_vendor_list: false,
+            eea_countries: Vec::new(),
+        }
+    }
 }
 
 fn default_gdpr_default_value() -> String {
@@ -167,6 +218,52 @@ pub struct CCPAConfig {
     pub enforce: bool,
 }
 
+/// Auction timeout configuration (milliseconds)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AuctionTimeouts {
+    #[serde(default = "default_auction_timeout_default")]
+    pub default: u64,
+    #[serde(default = "default_auction_timeout_max")]
+    pub max: u64,
+}
+
+fn default_auction_timeout_default() -> u64 {
+    1000
+}
+
+fn default_auction_timeout_max() -> u64 {
+    5000
+}
+
+/// Currency conversion configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CurrencyConfig {
+    #[serde(default)]
+    pub rates: HashMap<String, HashMap<String, f64>>,
+    #[serde(default = "default_currency_fetch_url")]
+    pub fetch_url: String,
+    #[serde(default = "default_currency_fetch_interval_seconds")]
+    pub fetch_interval_seconds: u64,
+}
+
+impl Default for CurrencyConfig {
+    fn default() -> Self {
+        CurrencyConfig {
+            rates: HashMap::new(),
+            fetch_url: default_currency_fetch_url(),
+            fetch_interval_seconds: default_currency_fetch_interval_seconds(),
+        }
+    }
+}
+
+fn default_currency_fetch_url() -> String {
+    "https://cdn.jsdelivr.net/gh/prebid/currency-file@1/latest.json".to_string()
+}
+
+fn default_currency_fetch_interval_seconds() -> u64 {
+    1800
+}
+
 impl Configuration {
     /// Load configuration from an optional file path plus environment variables.
     /// Environment variables override file settings.
@@ -175,7 +272,21 @@ impl Configuration {
             .set_default("host", "0.0.0.0")?
             .set_default("port", 8000)?
             .set_default("admin_port", 6060)?
-            .set_default("enable_cors", false)?;
+            .set_default("enable_cors", false)?
+            .set_default("auction_timeouts.default", 1000)?
+            .set_default("auction_timeouts.max", 5000)?
+            .set_default("gdpr.enabled", false)?
+            .set_default("gdpr.default_value", "1")?
+            .set_default("max_request_size", 0)?
+            .set_default("auto_gen_source_tid", true)?
+            .set_default("generate_bid_id", false)?
+            .set_default("account_required", false)?
+            .set_default("static_dir", "./static")?
+            .set_default(
+                "currency.fetch_url",
+                "https://cdn.jsdelivr.net/gh/prebid/currency-file@1/latest.json",
+            )?
+            .set_default("currency.fetch_interval_seconds", 1800)?;
 
         if let Some(path) = config_file {
             builder = builder.add_source(config::File::with_name(path).required(false));
