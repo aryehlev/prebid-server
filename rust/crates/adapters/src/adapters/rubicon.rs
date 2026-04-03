@@ -209,11 +209,8 @@ impl Bidder for RubiconAdapter {
                     "rp": { "site_id": site_id }
                 }));
                 site_copy.publisher = Some(openrtb::Publisher {
-                    id: None,
-                    name: None,
-                    cat: None,
-                    domain: None,
                     ext: Some(pub_ext.clone()),
+                    ..Default::default()
                 });
                 req_copy.site = Some(site_copy);
             } else if let Some(app) = &request.app {
@@ -222,11 +219,8 @@ impl Bidder for RubiconAdapter {
                     "rp": { "site_id": site_id }
                 }));
                 app_copy.publisher = Some(openrtb::Publisher {
-                    id: None,
-                    name: None,
-                    cat: None,
-                    domain: None,
                     ext: Some(pub_ext.clone()),
+                    ..Default::default()
                 });
                 req_copy.app = Some(app_copy);
             }

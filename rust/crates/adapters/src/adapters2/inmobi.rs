@@ -12,7 +12,9 @@ impl InmobiAdapter {
     }
 }
 
-fn get_media_type_from_mtype(mtype: u32, bid_id: &str) -> Result<BidType, BidderError> {
+/// Get media type from mtype value (from bid ext or response mtype field).
+/// InMobi: 1=Banner, 2=Video, 4=Native
+fn get_media_type_from_mtype(mtype: u64, bid_id: &str) -> Result<BidType, BidderError> {
     match mtype {
         1 => Ok(BidType::Banner),
         2 => Ok(BidType::Video),
@@ -56,10 +58,14 @@ impl Bidder for InmobiAdapter {
             if let Some(banner) = imp.banner.as_mut() {
                 let needs_size = banner.w.map(|w| w == 0).unwrap_or(true)
                     || banner.h.map(|h| h == 0).unwrap_or(true);
-                if needs_size && !banner.format.is_empty() {
-                    let first = banner.format[0].clone();
-                    banner.w = Some(first.w);
-                    banner.h = Some(first.h);
+                if needs_size {
+                    let first_format = banner.format.as_ref()
+                        .and_then(|f| f.first())
+                        .cloned();
+                    if let Some(first) = first_format {
+                        banner.w = first.w;
+                        banner.h = first.h;
+                    }
                 }
             }
         }
@@ -108,11 +114,11 @@ impl Bidder for InmobiAdapter {
 
         for sb in bid_response.seatbid {
             for bid in sb.bid {
-                // mtype: try bid.mtype field first (via ext if needed)
+                // mtype is stored in bid.ext.mtype (no direct mtype field on Bid struct)
                 let mtype = bid.ext.as_ref()
                     .and_then(|e| e.get("mtype"))
                     .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as u32;
+                    .unwrap_or(0);
 
                 let bid_type = get_media_type_from_mtype(mtype, &bid.id)
                     .map_err(|e| vec![e])?;

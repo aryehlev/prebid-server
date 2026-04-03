@@ -37,9 +37,9 @@ impl Bidder for ConversantAdapter {
         let mut req = request.clone();
 
         // Force USD currency
-        if req.cur.first().map(|c| c.as_str()) != Some("USD") {
-            if !req.cur.is_empty() {
-                req.cur = vec!["USD".to_string()];
+        if req.cur.as_ref().and_then(|c| c.first()).map(|s| s.as_str()) != Some("USD") {
+            if req.cur.as_ref().map(|c| !c.is_empty()).unwrap_or(false) {
+                req.cur = Some(vec!["USD".to_string()]);
             }
         }
 
@@ -73,8 +73,8 @@ impl Bidder for ConversantAdapter {
             }
 
             // Apply conversant params to imp
-            imp.display_manager = Some("prebid-s2s".to_string());
-            imp.display_manager_ver = Some("2.0.0".to_string());
+            imp.displaymanager = Some("prebid-s2s".to_string());
+            imp.displaymanagerver = Some("2.0.0".to_string());
 
             let bid_floor = bidder_ext.get("bidfloor").and_then(|v| v.as_f64()).unwrap_or(0.0);
             if imp.bidfloor.unwrap_or(0.0) <= 0.0 && bid_floor > 0.0 {
@@ -89,7 +89,7 @@ impl Bidder for ConversantAdapter {
             // secure flag
             if let Some(secure_val) = bidder_ext.get("secure").and_then(|v| v.as_i64()) {
                 if imp.secure.is_none() || imp.secure == Some(0) {
-                    imp.secure = Some(secure_val as i8);
+                    imp.secure = Some(secure_val as i32);
                 }
             }
 
@@ -99,25 +99,25 @@ impl Bidder for ConversantAdapter {
             if imp.banner.is_some() {
                 if let Some(banner) = imp.banner.as_mut() {
                     if let Some(pos) = position {
-                        banner.pos = Some(pos as u32);
+                        banner.pos = Some(pos as i32);
                     }
                 }
             } else if imp.video.is_some() {
                 if let Some(video) = imp.video.as_mut() {
                     if let Some(pos) = position {
-                        video.pos = Some(pos as u32);
+                        video.pos = Some(pos as i32);
                     }
                     // api
                     if let Some(api_arr) = bidder_ext.get("api").and_then(|v| v.as_array()) {
-                        video.api = api_arr.iter()
+                        video.api = Some(api_arr.iter()
                             .filter_map(|v| v.as_i64().map(|n| n as i32))
-                            .collect();
+                            .collect());
                     }
                     // protocols
                     if let Some(proto_arr) = bidder_ext.get("protocols").and_then(|v| v.as_array()) {
-                        video.protocols = proto_arr.iter()
+                        video.protocols = Some(proto_arr.iter()
                             .filter_map(|v| v.as_i64().map(|n| n as i32))
-                            .collect();
+                            .collect());
                     }
                     // mimes
                     if let Some(mime_arr) = bidder_ext.get("mimes").and_then(|v| v.as_array()) {
@@ -125,7 +125,7 @@ impl Bidder for ConversantAdapter {
                             .filter_map(|v| v.as_str().map(|s| s.to_string()))
                             .collect();
                         if !mimes.is_empty() {
-                            video.mimes = mimes;
+                            video.mimes = Some(mimes);
                         }
                     }
                     // maxduration
@@ -138,7 +138,7 @@ impl Bidder for ConversantAdapter {
 
         let body = match serde_json::to_vec(&req) {
             Ok(b) => b,
-            Err(e) => return (vec![], vec![BidderError::BadInput("Error in packaging request to JSON".to_string())]),
+            Err(_) => return (vec![], vec![BidderError::BadInput("Error in packaging request to JSON".to_string())]),
         };
 
         let mut headers = HashMap::new();
