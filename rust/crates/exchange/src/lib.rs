@@ -48,6 +48,67 @@ pub struct BidderResult {
     pub timed_out: bool,
 }
 
+/// Apply first-party data (FPD) overrides for a specific bidder.
+///
+/// Reads `req.ext.prebid.data.bidderspecific.<bidder_name>` and merges any
+/// `site`, `user` fields it finds into the top-level BidRequest fields.
+fn apply_fpd_for_bidder(req: &mut openrtb::BidRequest, bidder_name: &str) {
+    let fpd = req
+        .ext
+        .as_ref()
+        .and_then(|e| e.get("prebid"))
+        .and_then(|p| p.get("data"))
+        .and_then(|d| d.get("bidderspecific"))
+        .and_then(|bs| bs.get(bidder_name))
+        .cloned();
+
+    let fpd = match fpd {
+        Some(v) => v,
+        None => return,
+    };
+
+    // Merge site FPD
+    if let Some(site_fpd) = fpd.get("site") {
+        if let Ok(site_override) = serde_json::from_value::<openrtb::Site>(site_fpd.clone()) {
+            if let Some(site) = &mut req.site {
+                if site_override.page.is_some() {
+                    site.page = site_override.page;
+                }
+                if site_override.domain.is_some() {
+                    site.domain = site_override.domain;
+                }
+                if site_override.publisher.is_some() {
+                    site.publisher = site_override.publisher;
+                }
+            }
+        }
+    }
+
+    // Merge user FPD
+    if let Some(user_fpd) = fpd.get("user") {
+        if let Ok(user_override) = serde_json::from_value::<openrtb::User>(user_fpd.clone()) {
+            if let Some(user) = &mut req.user {
+                if user_override.buyeruid.is_some() {
+                    user.buyeruid = user_override.buyeruid;
+                }
+                if let Some(new_ext) = user_override.ext {
+                    if let Some(existing) = &mut user.ext {
+                        if let (Some(obj), Some(new_obj)) =
+                            (existing.as_object_mut(), new_ext.as_object())
+                        {
+                            for (k, v) in new_obj {
+                                obj.insert(k.clone(), v.clone());
+                            }
+                        }
+                    } else {
+                        user.ext = Some(new_ext);
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn compress_gzip(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
     use std::io::Write;
     let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
@@ -358,7 +419,8 @@ impl Exchange {
                     endpoint: adapted.endpoint.clone(),
                     endpoint_compression: adapted.endpoint_compression.clone(),
                 };
-                let req = bid_request.clone();
+                let mut req = bid_request.clone();
+                apply_fpd_for_bidder(&mut req, &bidder_name);
                 let extra = extra_info.clone();
                 let name = bidder_name.clone();
 
