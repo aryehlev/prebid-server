@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
 use openrtb_ext::{BidType, ExtBidPrebidVideo};
 use serde::{Deserialize, Serialize};
+
 pub struct FwsspAdapter {
     pub endpoint: String,
 }
@@ -12,17 +13,15 @@ impl FwsspAdapter {
     }
 }
 
-/// FWSSP imp extension
+/// FWSSP imp extension — matches openrtb_ext.ImpExtFWSSP in the Go codebase.
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct ImpExtFwssp {
-    #[serde(rename = "publisherId", skip_serializing_if = "String::is_empty", default)]
-    publisher_id: String,
-    #[serde(rename = "adSlot", skip_serializing_if = "String::is_empty", default)]
-    ad_slot: String,
-    #[serde(rename = "adNetwork", skip_serializing_if = "String::is_empty", default)]
-    ad_network: String,
-    #[serde(rename = "adUnitId", skip_serializing_if = "String::is_empty", default)]
-    ad_unit_id: String,
+    #[serde(rename = "custom_site_section_id", skip_serializing_if = "String::is_empty", default)]
+    custom_site_section_id: String,
+    #[serde(rename = "network_id", skip_serializing_if = "String::is_empty", default)]
+    network_id: String,
+    #[serde(rename = "profile_id", skip_serializing_if = "String::is_empty", default)]
+    profile_id: String,
 }
 
 impl Bidder for FwsspAdapter {
@@ -90,7 +89,7 @@ impl Bidder for FwsspAdapter {
 
     fn make_bids(
         &self,
-        _internal: &openrtb::BidRequest,
+        internal: &openrtb::BidRequest,
         _external: &RequestData,
         response: &ResponseData,
     ) -> Result<BidderResponse, Vec<BidderError>> {
@@ -114,12 +113,9 @@ impl Bidder for FwsspAdapter {
         let bid_response: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
 
-        let mut result = BidderResponse::with_capacity(_internal.imp.len());
-        if let Some(cur) = &bid_response.cur {
-            if !cur.is_empty() {
-                result.currency = cur.clone();
-            }
-        }
+        let mut result = BidderResponse::with_capacity(internal.imp.len());
+        // Set currency directly from response, matching Go: bidResponse.Currency = bidResp.Cur
+        result.currency = bid_response.cur.unwrap_or_default();
 
         for seat_bid in bid_response.seatbid {
             for bid in seat_bid.bid {
@@ -129,7 +125,7 @@ impl Bidder for FwsspAdapter {
                         bid_video.primary_category = first.clone();
                     }
                 }
-                // Note: bid.dur doesn't exist in our Bid struct; skip it
+                // bid.dur is not present in the openrtb Bid struct; duration stays 0
 
                 let mut typed_bid = TypedBid::new(bid, BidType::Video);
                 typed_bid.bid_video = Some(bid_video);
