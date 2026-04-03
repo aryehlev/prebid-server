@@ -22,3 +22,5 @@ pbs-endpoints = { path = "../endpoints" }
 pbs-config = { path = "../config" }
 pbs-metrics = { path = "../metrics" }
 reqwest = { workspace = true }
+tower-http = { workspace = true }
+uuid = { workspace = true }

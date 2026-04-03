@@ -32,8 +32,8 @@ pub struct Configuration {
     pub auction_timeouts: AuctionTimeouts,
     #[serde(default)]
     pub currency: CurrencyConfig,
-    #[serde(default)]
-    pub max_request_size: i64,
+    #[serde(default = "default_max_request_size")]
+    pub max_request_size: usize,
     #[serde(default = "default_true")]
     pub auto_gen_source_tid: bool,
     #[serde(default)]
@@ -42,6 +42,14 @@ pub struct Configuration {
     pub account_required: bool,
     #[serde(default = "default_static_dir")]
     pub static_dir: String,
+    #[serde(default)]
+    pub stored_requests_dir: String,
+    /// Convenience top-level alias for gdpr.enabled
+    #[serde(default)]
+    pub gdpr_enabled: bool,
+    /// Convenience top-level alias for ccpa.enforce
+    #[serde(default = "default_true")]
+    pub ccpa_enforce: bool,
 }
 
 fn default_host() -> String {
@@ -58,6 +66,10 @@ fn default_admin_port() -> u16 {
 
 fn default_static_dir() -> String {
     "./static".to_string()
+}
+
+fn default_max_request_size() -> usize {
+    1_572_864 // 1.5 MB
 }
 
 /// Per-adapter configuration
@@ -277,11 +289,14 @@ impl Configuration {
             .set_default("auction_timeouts.max", 5000)?
             .set_default("gdpr.enabled", false)?
             .set_default("gdpr.default_value", "1")?
-            .set_default("max_request_size", 0)?
+            .set_default("max_request_size", 1_572_864i64)?
             .set_default("auto_gen_source_tid", true)?
             .set_default("generate_bid_id", false)?
             .set_default("account_required", false)?
             .set_default("static_dir", "./static")?
+            .set_default("stored_requests_dir", "./stored_requests")?
+            .set_default("gdpr_enabled", false)?
+            .set_default("ccpa_enforce", true)?
             .set_default(
                 "currency.fetch_url",
                 "https://cdn.jsdelivr.net/gh/prebid/currency-file@1/latest.json",
@@ -299,7 +314,39 @@ impl Configuration {
         );
 
         let config = builder.build()?;
-        let cfg: Configuration = config.try_deserialize()?;
+        let mut cfg: Configuration = config.try_deserialize()?;
+        cfg.apply_env_overrides();
         Ok(cfg)
+    }
+
+    /// Apply well-known PBS_* environment variable overrides with explicit mappings.
+    /// These override whatever was loaded from the config file or the generic
+    /// `PBS_<KEY>` environment prefix parsing.
+    pub fn apply_env_overrides(&mut self) {
+        if let Ok(val) = std::env::var("PBS_PORT") {
+            if let Ok(port) = val.parse::<u16>() {
+                self.port = port;
+            }
+        }
+        if let Ok(val) = std::env::var("PBS_HOST") {
+            self.host = val;
+        }
+        if let Ok(val) = std::env::var("PBS_STATIC_DIR") {
+            self.static_dir = val;
+        }
+        if let Ok(val) = std::env::var("PBS_STORED_REQUESTS_DIR") {
+            self.stored_requests_dir = val;
+        }
+        if let Ok(val) = std::env::var("PBS_MAX_REQUEST_SIZE") {
+            if let Ok(size) = val.parse::<usize>() {
+                self.max_request_size = size;
+            }
+        }
+        if let Ok(val) = std::env::var("PBS_GDPR_ENABLED") {
+            self.gdpr_enabled = matches!(val.to_lowercase().as_str(), "true" | "1" | "yes");
+        }
+        if let Ok(val) = std::env::var("PBS_CCPA_ENFORCE") {
+            self.ccpa_enforce = matches!(val.to_lowercase().as_str(), "true" | "1" | "yes");
+        }
     }
 }

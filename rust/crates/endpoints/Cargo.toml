@@ -19,3 +19,8 @@ pbs-config = { path = "../config" }
 pbs-metrics = { path = "../metrics" }
 base64 = { workspace = true }
 chrono = { workspace = true }
+bytes = { workspace = true }
+
+[dev-dependencies]
+tower = { version = "0.4", features = ["util"] }
+tokio = { workspace = true }

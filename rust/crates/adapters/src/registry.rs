@@ -449,6 +449,9 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     gen!("yahooAdvertising");
     gen!("yahoossp");
     gen!("yobee");
+    gen!("adform");
+    gen!("adinify");
+    gen!("adipolo");
 
     m
 }

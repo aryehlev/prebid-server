@@ -1,5 +1,15 @@
 use std::sync::Arc;
 
+use axum::{
+    body::Body,
+    http::{Request, Response},
+    middleware::{self, Next},
+};
+use tower_http::{
+    compression::CompressionLayer,
+    cors::{Any, CorsLayer},
+    timeout::TimeoutLayer,
+};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 fn load_bidder_info(static_dir: &str) -> std::collections::HashMap<String, serde_json::Value> {
@@ -89,6 +99,35 @@ fn read_endpoint_compression(static_dir: &str, bidder_name: &str) -> Option<Stri
     None
 }
 
+/// Generate a unique request ID.
+/// Uses `uuid::Uuid::new_v4()` which is available in the workspace.
+fn generate_request_id() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
+/// Axum middleware that echoes or injects an `X-Request-ID` header on every response.
+async fn request_id_middleware(
+    req: Request<Body>,
+    next: Next,
+) -> Response<Body> {
+    // Extract existing request ID from the incoming request headers.
+    let request_id = req
+        .headers()
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+        .unwrap_or_else(generate_request_id);
+
+    let mut response = next.run(req).await;
+
+    // Attach the ID to the response.
+    if let Ok(val) = axum::http::HeaderValue::from_str(&request_id) {
+        response.headers_mut().insert("x-request-id", val);
+    }
+
+    response
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Initialize structured tracing from RUST_LOG env var, defaulting to "info".
@@ -102,8 +141,27 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("Starting prebid-server (Rust port)");
 
-    let static_dir = std::env::var("PBS_STATIC_DIR")
-        .unwrap_or_else(|_| "/home/user/prebid-server/static".to_string());
+    // Load configuration (YAML file optional; env vars always applied on top).
+    let config_file = std::env::var("PBS_CONFIG_FILE").ok();
+    let cfg = pbs_config::Configuration::load(config_file.as_deref())
+        .unwrap_or_else(|e| {
+            tracing::warn!("Failed to load config, using defaults: {}", e);
+            pbs_config::Configuration::default()
+        });
+    tracing::info!(
+        "Config: port={} max_request_size={} gdpr_enabled={}",
+        cfg.port, cfg.max_request_size, cfg.gdpr_enabled
+    );
+
+    // PBS_STATIC_DIR env var takes precedence over config file value (already handled
+    // by apply_env_overrides), but the server historically defaulted to the static
+    // dir under the repo root.  Keep backward compatibility.
+    let static_dir = if cfg.static_dir == "./static" {
+        std::env::var("PBS_STATIC_DIR")
+            .unwrap_or_else(|_| "/home/user/prebid-server/static".to_string())
+    } else {
+        cfg.static_dir.clone()
+    };
 
     let raw_adapters = pbs_adapters::registry::build_adapter_map();
     tracing::info!("Registered {} bidder adapters", raw_adapters.len());
@@ -131,8 +189,12 @@ async fn main() -> anyhow::Result<()> {
     let mut exchange = pbs_exchange::Exchange::new(adapters);
     exchange.metrics = Some(metrics.clone() as Arc<dyn pbs_metrics::MetricsEngine>);
 
-    let stored_requests_dir = std::env::var("PBS_STORED_REQUESTS_DIR")
-        .unwrap_or_else(|_| "./stored_requests".to_string());
+    let stored_requests_dir = if cfg.stored_requests_dir.is_empty() || cfg.stored_requests_dir == "./stored_requests" {
+        std::env::var("PBS_STORED_REQUESTS_DIR")
+            .unwrap_or_else(|_| "./stored_requests".to_string())
+    } else {
+        cfg.stored_requests_dir.clone()
+    };
     let stored_requests = Arc::new(
         pbs_endpoints::StoredRequestFetcher::from_directory(&stored_requests_dir)
     );
@@ -147,14 +209,38 @@ async fn main() -> anyhow::Result<()> {
         status_response: None,
         stored_requests,
         metrics,
+        max_request_size: cfg.max_request_size,
+        gdpr_enabled: cfg.gdpr_enabled,
     });
 
-    let app = pbs_endpoints::create_router(state);
+    // Build CORS layer: permissive for all origins.
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods([
+            axum::http::Method::GET,
+            axum::http::Method::POST,
+            axum::http::Method::OPTIONS,
+        ])
+        .allow_headers([
+            axum::http::header::CONTENT_TYPE,
+            axum::http::header::AUTHORIZATION,
+        ]);
 
+    let app = pbs_endpoints::create_router(state)
+        // Request ID must run first so later layers see the header on responses.
+        .layer(middleware::from_fn(request_id_middleware))
+        // Gzip-compress responses when the client sends Accept-Encoding: gzip.
+        .layer(CompressionLayer::new())
+        // Global 30-second request timeout.
+        .layer(TimeoutLayer::new(std::time::Duration::from_secs(30)))
+        // Permissive CORS headers.
+        .layer(cors);
+
+    // PORT env var (legacy) takes precedence, then PBS_PORT (via config), then config.port.
     let port = std::env::var("PORT")
         .ok()
         .and_then(|p| p.parse::<u16>().ok())
-        .unwrap_or(8000);
+        .unwrap_or(cfg.port);
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
     tracing::info!("Listening on {}", addr);
