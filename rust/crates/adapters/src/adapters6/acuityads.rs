@@ -37,7 +37,7 @@ impl Bidder for AcuityadsAdapter {
             .replace("{{.Host}}", &ext.host)
             .replace("{{.AccountID}}", &ext.account_id);
 
-        let body = match serde_json::to_vec(request) {
+        let body = match serde_json::to_vec(&request) {
             Ok(b) => b,
             Err(e) => return (vec![], vec![BidderError::BadInput(e.to_string())]),
         };

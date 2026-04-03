@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_bid_type_from_imp, get_imp_ids, check_response_status};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_bid_type_from_imp, get_imp_ids};
 use openrtb::BidResponse;
 use openrtb_ext::BidType;
 
@@ -13,7 +13,6 @@ impl Bidder for ImdsAdapter {
         let mut errs = Vec::new();
         let mut valid_imps = Vec::new();
         let mut first_seat_id: Option<String> = None;
-        let mut first_tag_id: Option<String> = None;
 
         for imp in &request.imp {
             let bidder = imp.ext.as_ref()
@@ -35,7 +34,6 @@ impl Bidder for ImdsAdapter {
 
             if first_seat_id.is_none() {
                 first_seat_id = Some(seat_id);
-                first_tag_id = Some(tag_id);
             }
         }
 

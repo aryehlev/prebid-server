@@ -1,13 +1,11 @@
 use axum::{
     extract::{Json, Path, Query, State},
-    http::{HeaderMap, StatusCode},
+    http::{header::{COOKIE, SET_COOKIE}, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
 };
+use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
-
-pub mod stored_requests;
-pub use stored_requests::StoredRequestFetcher;
 
 /// Shared application state threaded through axum handlers.
 pub type AppState = Arc<AppStateInner>;
@@ -24,8 +22,6 @@ pub struct AppStateInner {
     pub host_cookie: HostCookieConfig,
     /// Status response override
     pub status_response: Option<String>,
-    /// Stored requests fetcher
-    pub stored_requests: Arc<StoredRequestFetcher>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -36,6 +32,124 @@ pub struct HostCookieConfig {
     pub opt_out_url: String,
     pub opt_in_url: String,
     pub ttl_days: i64,
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// UserSyncCookie abstraction
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Represents the prebid UID cookie ("uids")
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UserSyncCookie {
+    #[serde(default)]
+    pub uids: HashMap<String, UidEntry>,
+    #[serde(default)]
+    pub optout: Option<bool>,
+}
+
+/// A single bidder UID with expiry timestamp (Unix seconds)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UidEntry {
+    pub uid: String,
+    /// Unix timestamp (seconds) after which this UID is considered stale
+    pub expires: i64,
+}
+
+/// Default TTL for a UID: 14 days in seconds
+const UID_TTL_SECS: i64 = 14 * 24 * 60 * 60;
+
+/// Default cookie name used by prebid-server
+const DEFAULT_COOKIE_NAME: &str = "uids";
+
+impl UserSyncCookie {
+    /// Parse a `UserSyncCookie` from the `Cookie` request header.
+    /// The cookie value is expected to be a base64-encoded JSON string.
+    pub fn from_request(headers: &HeaderMap, cookie_name: &str) -> Self {
+        let name = if cookie_name.is_empty() { DEFAULT_COOKIE_NAME } else { cookie_name };
+        if let Some(cookie_hdr) = headers.get(COOKIE) {
+            if let Ok(cookie_str) = cookie_hdr.to_str() {
+                for pair in cookie_str.split(';') {
+                    let pair = pair.trim();
+                    if let Some((k, v)) = pair.split_once('=') {
+                        if k.trim() == name {
+                            return Self::decode(v.trim());
+                        }
+                    }
+                }
+            }
+        }
+        Self::default()
+    }
+
+    /// Decode a base64-encoded cookie value into a `UserSyncCookie`.
+    fn decode(value: &str) -> Self {
+        let bytes = match STANDARD.decode(value) {
+            Ok(b) => b,
+            Err(_) => return Self::default(),
+        };
+        serde_json::from_slice::<Self>(&bytes).unwrap_or_default()
+    }
+
+    /// Encode this cookie to a base64 string suitable for a `Set-Cookie` value.
+    pub fn encode(&self) -> String {
+        let json = serde_json::to_vec(self).unwrap_or_default();
+        STANDARD.encode(&json)
+    }
+
+    /// Return true if the bidder has a non-expired UID
+    pub fn has_valid_uid(&self, bidder: &str) -> bool {
+        let now = chrono::Utc::now().timestamp();
+        self.uids.get(bidder).map(|e| e.expires > now).unwrap_or(false)
+    }
+
+    /// Set a UID for a bidder with a default TTL
+    pub fn set_uid(&mut self, bidder: &str, uid: String) {
+        let expires = chrono::Utc::now().timestamp() + UID_TTL_SECS;
+        self.uids.insert(bidder.to_string(), UidEntry { uid, expires });
+    }
+
+    /// Build the `Set-Cookie` header value string
+    pub fn build_set_cookie_header(&self, cookie_name: &str, ttl_days: i64, domain: &str) -> String {
+        let name = if cookie_name.is_empty() { DEFAULT_COOKIE_NAME } else { cookie_name };
+        let value = self.encode();
+        let max_age_days = if ttl_days > 0 { ttl_days } else { 90 };
+        let max_age_secs = max_age_days * 24 * 60 * 60;
+        let mut hdr = format!(
+            "{}={}; Max-Age={}; Path=/; HttpOnly; SameSite=None; Secure",
+            name, value, max_age_secs
+        );
+        if !domain.is_empty() {
+            hdr.push_str(&format!("; Domain={}", domain));
+        }
+        hdr
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Static bidder sync URL map (redirect URLs; macros left as-is for now)
+// Keys are the canonical bidder names used in the prebid cookie.
+// ──────────────────────────────────────────────────────────────────────────────
+
+fn bidder_sync_url(bidder: &str) -> Option<(&'static str, &'static str)> {
+    // Returns (sync_type, url_template)
+    match bidder {
+        "appnexus" | "adnxs" => Some(("redirect", "https://ib.adnxs.com/getuid?{{.RedirectURL}}")),
+        "openx" => Some(("redirect", "https://rtb.openx.net/sync/prebid?r={{.RedirectURL}}")),
+        "pubmatic" => Some(("redirect", "https://image8.pubmatic.com/AdServer/ImgSync?p=159706&pu={{.RedirectURL}}")),
+        "ix" => Some(("redirect", "https://ssum.casalemedia.com/usermatchredir?s=194962&cb={{.RedirectURL}}")),
+        "sovrn" => Some(("redirect", "https://ap.lijit.com/pixel?redir={{.RedirectURL}}")),
+        "adform" => Some(("redirect", "https://c1.adform.net/cookie?redirect_url={{.RedirectURL}}")),
+        "33across" => Some(("iframe", "https://ssc-cms.33across.com/ps/?m=xch&rt=html&ru={{.RedirectURL}}&id=zzz000000000002zzz")),
+        "criteo" => Some(("redirect", "https://ssp-sync.criteo.com/user-sync/redirect?profile=230&redir={{.RedirectURL}}")),
+        "yieldmo" => Some(("redirect", "https://ads.yieldmo.com/pbsync?redirectUri={{.RedirectURL}}")),
+        "sharethrough" => Some(("redirect", "https://match.sharethrough.com/FGMrCMMc/v1?redirectUri={{.RedirectURL}}")),
+        "smaato" => Some(("redirect", "https://s.ad.smaato.net/c/?adExInit=p&redir={{.RedirectURL}}")),
+        "conversant" => Some(("redirect", "https://prebid-match.dotomi.com/match/bounce/current?version=1&networkId=72582&rurl={{.RedirectURL}}")),
+        "smartadserver" => Some(("redirect", "https://ssbsync-global.smartadserver.com/api/sync?callerId=5&redirectUri={{.RedirectURL}}")),
+        "yieldlab" => Some(("redirect", "https://ad.yieldlab.net/mr?t=2&pid=9140838&r={{.RedirectURL}}")),
+        "triplelift" => Some(("iframe", "https://eb2.3lift.com/sync?redir={{.RedirectURL}}")),
+        _ => None,
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -71,7 +185,7 @@ pub async fn version_handler(State(state): State<AppState>) -> Json<serde_json::
 
 pub async fn auction_handler(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     Json(bid_request): Json<openrtb::BidRequest>,
 ) -> Response {
     if bid_request.id.is_empty() {
@@ -147,80 +261,25 @@ pub struct AmpParams {
 }
 
 pub async fn amp_handler(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     Query(params): Query<AmpParams>,
 ) -> Response {
     let tag_id = match &params.tag_id {
         Some(t) if !t.is_empty() => t.clone(),
-        _ => return (StatusCode::BAD_REQUEST, "AMP request missing required tag_id").into_response(),
-    };
-
-    // Look up the stored request
-    let stored = match state.stored_requests.get(&tag_id) {
-        Some(v) => v.clone(),
-        None => return (StatusCode::BAD_REQUEST,
-            format!("No stored request found for tag_id: {}", tag_id)).into_response(),
-    };
-
-    // Merge AMP params into the stored request
-    // (width, height, slot targeting, gdpr, etc.)
-    // For now just run the stored request through the auction
-    let mut bid_request: openrtb::BidRequest = match serde_json::from_value(stored) {
-        Ok(r) => r,
-        Err(e) => return (StatusCode::BAD_REQUEST,
-            format!("Invalid stored request: {}", e)).into_response(),
-    };
-
-    // Apply AMP targeting parameters
-    if let (Some(w), Some(h)) = (params.w, params.h) {
-        for imp in &mut bid_request.imp {
-            if let Some(banner) = &mut imp.banner {
-                banner.w = Some(w);
-                banner.h = Some(h);
-            }
+        _ => {
+            return (StatusCode::BAD_REQUEST, "AMP request missing required tag_id query parameter").into_response();
         }
-    }
-
-    // Run the auction
-    let auction_req = pbs_exchange::AuctionRequest {
-        bid_request,
-        account: None,
-        user_syncs: None,
-        start_time: std::time::Instant::now(),
     };
 
-    match state.exchange.hold_auction(auction_req).await {
-        Ok(r) => {
-            // AMP returns targeting from the bid response
-            let targeting = extract_amp_targeting(&r.bid_response);
-            let response = serde_json::json!({
-                "tag_id": tag_id,
-                "targeting": targeting,
-            });
-            (StatusCode::OK, Json(response)).into_response()
-        }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    }
-}
-
-fn extract_amp_targeting(resp: &openrtb::BidResponse) -> serde_json::Value {
-    let mut targeting = serde_json::Map::new();
-    for seatbid in &resp.seatbid {
-        for bid in &seatbid.bid {
-            // Extract hb_pb, hb_bidder, hb_adid targeting keys
-            if bid.price > 0.0 {
-                targeting.insert("hb_pb".to_string(),
-                    serde_json::Value::String(format!("{:.2}", bid.price)));
-                if let Some(seat) = &seatbid.seat {
-                    targeting.insert("hb_bidder".to_string(),
-                        serde_json::Value::String(seat.clone()));
-                }
-                targeting.insert("hb_adid".to_string(),
-                    serde_json::Value::String(bid.id.clone()));
-            }
-        }
-    }
-    serde_json::Value::Object(targeting)
+    // In a full implementation this would load the stored request by tag_id,
+    // merge AMP targeting parameters, run the auction, and return AMP targeting.
+    // For now return a stub response indicating the endpoint is wired up.
+    let response = serde_json::json!({
+        "tag_id": tag_id,
+        "targeting": {},
+        "errors": { "prebid": [{"code": 999, "message": "stored request loading not yet implemented"}] }
+    });
+    (StatusCode::OK, Json(response)).into_response()
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -302,11 +361,12 @@ pub struct SetUidParams {
     pub gdpr_consent: Option<String>,
     pub us_privacy: Option<String>,
     pub account: Option<String>,
-    pub f: Option<String>, // "b" for iframe, "i" for pixel
+    pub f: Option<String>, // "b" for blank/iframe, "i" for pixel
 }
 
 pub async fn set_uid_handler(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
     Query(params): Query<SetUidParams>,
 ) -> Response {
     let bidder = match &params.bidder {
@@ -316,23 +376,54 @@ pub async fn set_uid_handler(
         }
     };
 
-    // In a full implementation this sets a cookie for the bidder UID and
-    // performs GDPR consent checking. For now return 200 with the pixel/iframe.
     tracing::debug!("setuid: bidder={} uid={:?}", bidder, params.uid);
+
+    // Parse existing cookie
+    let mut cookie = UserSyncCookie::from_request(&headers, &state.host_cookie.cookie_name);
+
+    // Set (or clear) the UID for this bidder
+    if let Some(uid) = &params.uid {
+        if uid.is_empty() {
+            // Empty uid means opt-out / remove
+            cookie.uids.remove(&bidder);
+        } else {
+            cookie.set_uid(&bidder, uid.clone());
+        }
+    }
+
+    // Build Set-Cookie header
+    let set_cookie_val = cookie.build_set_cookie_header(
+        &state.host_cookie.cookie_name,
+        state.host_cookie.ttl_days,
+        &state.host_cookie.domain,
+    );
 
     let format = params.f.as_deref().unwrap_or("b");
     if format == "i" {
         // Return a 1x1 tracking pixel
         let pixel = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82";
-        return (
+        let cookie_header_val = match HeaderValue::from_str(&set_cookie_val) {
+            Ok(v) => v,
+            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        };
+        let mut resp = (
             StatusCode::OK,
             [(axum::http::header::CONTENT_TYPE, "image/png")],
             pixel.to_vec(),
         )
             .into_response();
+        resp.headers_mut().insert(SET_COOKIE, cookie_header_val);
+        return resp;
     }
 
-    StatusCode::OK.into_response()
+    // Blank response with cookie set
+    let cookie_header_val = match HeaderValue::from_str(&set_cookie_val) {
+        Ok(v) => v,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let mut resp = StatusCode::OK.into_response();
+    resp.headers_mut().insert(SET_COOKIE, cookie_header_val);
+    resp
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -340,13 +431,21 @@ pub async fn set_uid_handler(
 // ──────────────────────────────────────────────────────────────────────────────
 
 pub async fn get_uids_handler(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Json<serde_json::Value> {
-    // In a full implementation this reads the host cookie and returns all
-    // synced bidder UIDs. Return empty map for now.
-    let _ = headers.get("Cookie");
-    Json(serde_json::json!({ "buyeruids": {} }))
+    let cookie = UserSyncCookie::from_request(&headers, &state.host_cookie.cookie_name);
+    let now = chrono::Utc::now().timestamp();
+
+    // Return only non-expired UIDs, keyed by bidder name
+    let buyeruids: HashMap<String, String> = cookie
+        .uids
+        .into_iter()
+        .filter(|(_, entry)| entry.expires > now)
+        .map(|(bidder, entry)| (bidder, entry.uid))
+        .collect();
+
+    Json(serde_json::json!({ "buyeruids": buyeruids }))
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -360,8 +459,10 @@ pub struct CookieSyncRequest {
     pub gdpr_consent: Option<String>,
     pub us_privacy: Option<String>,
     pub limit: Option<i32>,
-    pub coopSync: Option<bool>,
-    pub filterSettings: Option<serde_json::Value>,
+    #[serde(rename = "coopSync")]
+    pub coop_sync: Option<bool>,
+    #[serde(rename = "filterSettings")]
+    pub filter_settings: Option<serde_json::Value>,
     pub account: Option<String>,
 }
 
@@ -372,15 +473,63 @@ pub struct CookieSyncResponse {
 }
 
 pub async fn cookie_sync_handler(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
     Json(body): Json<CookieSyncRequest>,
 ) -> Json<CookieSyncResponse> {
-    // Full implementation would check which bidders need syncing and
-    // return iframe/redirect URLs. Return empty sync list for now.
-    let _ = body;
+    let cookie = UserSyncCookie::from_request(&headers, &state.host_cookie.cookie_name);
+    let has_cookie = !cookie.uids.is_empty();
+
+    // Determine which bidders to check — use requested list or fall back to all known
+    let requested: Vec<String> = body.bidders.unwrap_or_default();
+
+    let limit = body.limit.unwrap_or(10).max(1) as usize;
+
+    let mut bidder_status: Vec<serde_json::Value> = Vec::new();
+
+    let candidates: Vec<&str> = if requested.is_empty() {
+        // All bidders we have sync URLs for
+        vec![
+            "appnexus", "openx", "pubmatic", "ix", "sovrn", "adform",
+            "33across", "criteo", "yieldmo", "sharethrough", "smaato",
+            "conversant", "smartadserver", "yieldlab", "triplelift",
+        ]
+    } else {
+        requested.iter().map(|s| s.as_str()).collect()
+    };
+
+    for bidder in candidates {
+        if bidder_status.len() >= limit {
+            break;
+        }
+        // Skip if already synced and not expired
+        if cookie.has_valid_uid(bidder) {
+            bidder_status.push(serde_json::json!({
+                "bidder": bidder,
+                "no_cookie": false,
+                "usersync": {}
+            }));
+            continue;
+        }
+
+        // Look up sync URL
+        if let Some((sync_type, url)) = bidder_sync_url(bidder) {
+            bidder_status.push(serde_json::json!({
+                "bidder": bidder,
+                "no_cookie": true,
+                "usersync": {
+                    "url": url,
+                    "type": sync_type
+                }
+            }));
+        }
+    }
+
+    let status = if has_cookie { "ok" } else { "no_cookie" };
+
     Json(CookieSyncResponse {
-        status: "no_cookie".to_string(),
-        bidder_status: Vec::new(),
+        status: status.to_string(),
+        bidder_status,
     })
 }
 

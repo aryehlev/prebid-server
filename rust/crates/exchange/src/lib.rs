@@ -194,7 +194,53 @@ impl Exchange {
         request: AuctionRequest,
     ) -> Result<AuctionResponse, anyhow::Error> {
         let bid_request = &request.bid_request;
-        let tmax = bid_request.tmax.unwrap_or(5000) as u64;
+
+        // Validate impression count
+        if bid_request.imp.is_empty() {
+            return Err(anyhow::anyhow!("request.imp must contain at least one impression"));
+        }
+
+        // Validate tmax (auction timeout)
+        if let Some(tmax) = bid_request.tmax {
+            if tmax < 0 {
+                return Err(anyhow::anyhow!("request.tmax must be nonneg"));
+            }
+        }
+
+        // Validate each impression has an ID and at least one media type
+        for imp in &bid_request.imp {
+            if imp.id.is_empty() {
+                return Err(anyhow::anyhow!("request.imp[].id required"));
+            }
+            if imp.banner.is_none() && imp.video.is_none() && imp.audio.is_none() && imp.native.is_none() {
+                return Err(anyhow::anyhow!(
+                    "request.imp[id={}] must specify at least one of banner/video/audio/native",
+                    imp.id
+                ));
+            }
+        }
+
+        // Determine dynamic timeout from tmax
+        let timeout_ms = bid_request.tmax
+            .filter(|&t| t > 0)
+            .unwrap_or(1000) as u64;
+        let _duration = std::time::Duration::from_millis(timeout_ms);
+
+        // Check GDPR: if regs.ext.gdpr == 1 and no user.ext.consent, warn (checked per bidder below)
+        let gdpr_applies = bid_request.regs
+            .as_ref()
+            .and_then(|r| r.ext.as_ref())
+            .and_then(|e| e.get("gdpr"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0) == 1;
+
+        let has_consent = bid_request.user
+            .as_ref()
+            .and_then(|u| u.ext.as_ref())
+            .and_then(|e| e.get("consent"))
+            .and_then(|v| v.as_str())
+            .map(|s| !s.is_empty())
+            .unwrap_or(false);
 
         // Determine which bidders are active for this request by inspecting imp.ext.
         let active_bidders: Vec<String> = self
@@ -227,6 +273,15 @@ impl Exchange {
         let mut join_set = tokio::task::JoinSet::new();
 
         for bidder_name in active_bidders {
+            // GDPR enforcement: skip bidder if GDPR applies but no consent string present
+            if gdpr_applies && !has_consent {
+                tracing::warn!(
+                    bidder = %bidder_name,
+                    "skipping bidder due to GDPR: gdpr=1 but no user.ext.consent string present"
+                );
+                continue;
+            }
+
             if let Some(adapted) = self.adapters.get(&bidder_name) {
                 // Clone everything needed for the async task.
                 let adapted = AdaptedBidder {
@@ -239,7 +294,7 @@ impl Exchange {
                 let name = bidder_name.clone();
 
                 join_set.spawn(async move {
-                    adapted.request_bid(&req, &name, &extra, tmax).await
+                    adapted.request_bid(&req, &name, &extra, timeout_ms).await
                 });
             }
         }

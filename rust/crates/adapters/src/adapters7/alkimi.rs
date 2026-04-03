@@ -67,10 +67,10 @@ fn update_imps(imps: &[openrtb::Imp]) -> (Vec<openrtb::Imp>, Vec<BidderError>) {
         let mut new_imp = imp.clone();
 
         // Apply bid floor logic: use imp.bidfloor if set, otherwise use ext bid_floor
-        if imp.bidfloor > 0.0 {
+        if imp.bidfloor.unwrap_or(0.0) > 0.0 {
             new_imp.bidfloor = imp.bidfloor;
         } else {
-            new_imp.bidfloor = imp_ext.bid_floor;
+            new_imp.bidfloor = Some(imp_ext.bid_floor);
         }
         new_imp.instl = Some(imp_ext.instl);
         // exp field - set adUnitCode to imp.id
