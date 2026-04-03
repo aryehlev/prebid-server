@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid};
 use openrtb_ext::BidType;
 use serde::Deserialize;
 
@@ -147,7 +147,7 @@ impl Bidder for XeworksAdapter {
         let mut result = BidderResponse::with_capacity(bid_resp.seatbid.len());
         let mut errors = Vec::new();
 
-        for (seat_idx, sb) in bid_resp.seatbid.into_iter().enumerate() {
+        for (_seat_idx, sb) in bid_resp.seatbid.into_iter().enumerate() {
             for (bid_idx, bid) in sb.bid.into_iter().enumerate() {
                 let bid_ext_val = bid.ext.as_ref().cloned().unwrap_or(serde_json::Value::Null);
                 let bid_ext: BidExt = match serde_json::from_value(bid_ext_val) {

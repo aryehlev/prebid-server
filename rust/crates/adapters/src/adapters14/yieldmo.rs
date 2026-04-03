@@ -68,7 +68,7 @@ fn get_media_type_for_imp(bid: &openrtb::Bid) -> Result<BidType, BidderError> {
 /// Preprocess the request: extract placement_id and gpid, rewrite imp.ext
 fn preprocess(
     request: &mut openrtb::BidRequest,
-    req_info: &ExtraRequestInfo,
+    _req_info: &ExtraRequestInfo,
 ) -> Vec<BidderError> {
     let mut errors = Vec::new();
 
