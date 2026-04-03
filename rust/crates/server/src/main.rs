@@ -72,6 +72,23 @@ fn load_bidder_params(static_dir: &str) -> std::collections::HashMap<String, ser
     map
 }
 
+fn read_endpoint_compression(static_dir: &str, bidder_name: &str) -> Option<String> {
+    let path = format!("{}/bidder-info/{}.yaml", static_dir, bidder_name);
+    let content = std::fs::read_to_string(&path).ok()?;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("endpointCompression:") {
+            if let Some(val) = trimmed.splitn(2, ':').nth(1) {
+                let val = val.trim().trim_matches('"').to_string();
+                if !val.is_empty() {
+                    return Some(val);
+                }
+            }
+        }
+    }
+    None
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Initialize structured tracing from RUST_LOG env var, defaulting to "info".
@@ -85,6 +102,9 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("Starting prebid-server (Rust port)");
 
+    let static_dir = std::env::var("PBS_STATIC_DIR")
+        .unwrap_or_else(|_| "/home/user/prebid-server/static".to_string());
+
     let raw_adapters = pbs_adapters::registry::build_adapter_map();
     tracing::info!("Registered {} bidder adapters", raw_adapters.len());
     let http_client = reqwest::Client::builder()
@@ -94,18 +114,23 @@ async fn main() -> anyhow::Result<()> {
     let adapters: std::collections::HashMap<String, pbs_exchange::AdaptedBidder> = raw_adapters
         .into_iter()
         .map(|(name, bidder)| {
+            let endpoint_compression = read_endpoint_compression(&static_dir, &name);
             let adapted = pbs_exchange::AdaptedBidder {
                 bidder: std::sync::Arc::from(bidder),
                 http_client: http_client.clone(),
                 endpoint: String::new(),
+                endpoint_compression,
             };
             (name, adapted)
         })
         .collect();
     let exchange = pbs_exchange::Exchange::new(adapters);
 
-    let static_dir = std::env::var("PBS_STATIC_DIR")
-        .unwrap_or_else(|_| "/home/user/prebid-server/static".to_string());
+    let stored_requests_dir = std::env::var("PBS_STORED_REQUESTS_DIR")
+        .unwrap_or_else(|_| "./stored_requests".to_string());
+    let stored_requests = Arc::new(
+        pbs_endpoints::StoredRequestFetcher::from_directory(&stored_requests_dir)
+    );
 
     let state = Arc::new(pbs_endpoints::AppStateInner {
         exchange,
@@ -115,6 +140,7 @@ async fn main() -> anyhow::Result<()> {
         bidder_params: load_bidder_params(&static_dir),
         host_cookie: pbs_endpoints::HostCookieConfig::default(),
         status_response: None,
+        stored_requests,
     });
 
     let app = pbs_endpoints::create_router(state);

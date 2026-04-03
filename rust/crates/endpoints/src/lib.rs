@@ -7,6 +7,9 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
 
+pub mod stored_requests;
+pub use stored_requests::StoredRequestFetcher;
+
 /// Shared application state threaded through axum handlers.
 pub type AppState = Arc<AppStateInner>;
 
@@ -22,6 +25,8 @@ pub struct AppStateInner {
     pub host_cookie: HostCookieConfig,
     /// Status response override
     pub status_response: Option<String>,
+    /// Stored request fetcher for AMP and other stored-request endpoints
+    pub stored_requests: Arc<StoredRequestFetcher>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -263,7 +268,7 @@ pub struct AmpParams {
 }
 
 pub async fn amp_handler(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Query(params): Query<AmpParams>,
 ) -> Response {
     let tag_id = match &params.tag_id {
@@ -273,15 +278,25 @@ pub async fn amp_handler(
         }
     };
 
-    // In a full implementation this would load the stored request by tag_id,
-    // merge AMP targeting parameters, run the auction, and return AMP targeting.
-    // For now return a stub response indicating the endpoint is wired up.
-    let response = serde_json::json!({
-        "tag_id": tag_id,
-        "targeting": {},
-        "errors": { "prebid": [{"code": 999, "message": "stored request loading not yet implemented"}] }
-    });
-    (StatusCode::OK, Json(response)).into_response()
+    // Look up the stored request by tag_id
+    match state.stored_requests.get(&tag_id) {
+        Some(stored) => {
+            let response = serde_json::json!({
+                "tag_id": tag_id,
+                "targeting": {},
+                "stored_request": stored,
+            });
+            (StatusCode::OK, Json(response)).into_response()
+        }
+        None => {
+            let response = serde_json::json!({
+                "tag_id": tag_id,
+                "targeting": {},
+                "errors": { "prebid": [{"code": 2, "message": format!("stored request not found for tag_id: {}", tag_id)}] }
+            });
+            (StatusCode::BAD_REQUEST, Json(response)).into_response()
+        }
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

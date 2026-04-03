@@ -43,11 +43,19 @@ pub struct BidderResult {
     pub timed_out: bool,
 }
 
+fn compress_gzip(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
+    use std::io::Write;
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(data)?;
+    encoder.finish()
+}
+
 /// AdaptedBidder wraps a Bidder implementation with HTTP execution logic.
 pub struct AdaptedBidder {
     pub bidder: Arc<dyn pbs_adapters::Bidder>,
     pub http_client: reqwest::Client,
     pub endpoint: String,
+    pub endpoint_compression: Option<String>,
 }
 
 impl AdaptedBidder {
@@ -135,12 +143,30 @@ impl AdaptedBidder {
             }
         };
 
-        builder = builder.body(req.body.clone());
+        let use_gzip = self
+            .endpoint_compression
+            .as_deref()
+            .map(|s| s.to_uppercase() == "GZIP")
+            .unwrap_or(false);
+
+        let (body_bytes, content_encoding) = if use_gzip {
+            match compress_gzip(&req.body) {
+                Ok(compressed) => (compressed, Some("gzip")),
+                Err(_) => (req.body.clone(), None),
+            }
+        } else {
+            (req.body.clone(), None)
+        };
+
+        let req_body_str = String::from_utf8_lossy(&req.body).to_string();
+
+        builder = builder.body(body_bytes);
         for (k, v) in &req.headers {
             builder = builder.header(k, v);
         }
-
-        let req_body_str = String::from_utf8_lossy(&req.body).to_string();
+        if let Some(enc) = content_encoding {
+            builder = builder.header("Content-Encoding", enc);
+        }
 
         match tokio::time::timeout(timeout, builder.send()).await {
             Ok(Ok(resp)) => {
@@ -291,6 +317,7 @@ impl Exchange {
                     bidder: adapted.bidder.clone(),
                     http_client: self.http_client.clone(),
                     endpoint: adapted.endpoint.clone(),
+                    endpoint_compression: adapted.endpoint_compression.clone(),
                 };
                 let req = bid_request.clone();
                 let extra = extra_info.clone();
