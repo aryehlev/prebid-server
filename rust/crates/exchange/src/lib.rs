@@ -555,13 +555,13 @@ impl Exchange {
             .map(|s| s.chars().nth(2) == Some('Y'))
             .unwrap_or(false);
 
-        let has_consent = bid_request.user
+        let user_consent: Option<String> = bid_request.user
             .as_ref()
             .and_then(|u| u.ext.as_ref())
             .and_then(|e| e.get("consent"))
             .and_then(|v| v.as_str())
-            .map(|s| !s.is_empty())
-            .unwrap_or(false);
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
 
         // Determine which bidders are active for this request by inspecting imp.ext.
         let active_bidders: Vec<String> = self
@@ -595,8 +595,8 @@ impl Exchange {
         let mut collected_non_bids: Vec<SeatNonBid> = Vec::new();
 
         for bidder_name in active_bidders {
-            // GDPR enforcement: skip bidder if GDPR applies but no consent string present
-            if gdpr_applies && !has_consent {
+            // GDPR enforcement: skip bidder if GDPR applies and consent is missing/invalid
+            if gdpr::should_block_bidder_gdpr(gdpr_applies, user_consent.as_deref(), &bidder_name) {
                 tracing::warn!(
                     bidder = %bidder_name,
                     "skipping bidder due to GDPR: gdpr=1 but no user.ext.consent string present"
@@ -816,6 +816,20 @@ impl Exchange {
             }
         }
 
+        // Execute AllProcessedBidResponses hooks after collecting all bidder responses.
+        if let Some(plan) = &self.hook_plan {
+            let payload = serde_json::json!({
+                "bidder_count": bidder_results.len(),
+                "timed_out_bidders": timed_out_bidders,
+            });
+            // Rejection at this stage is logged as a warning; auction continues.
+            if let hooks::HookOutcome::Reject { reason } =
+                plan.execute_stage(&hooks::HookStage::AllProcessedBidResponses, &payload)
+            {
+                tracing::warn!("AllProcessedBidResponses hook rejected: {}", reason);
+            }
+        }
+
         // --- Targeting / price granularity ---
         // Emit per-bidder keys (hb_pb_<bidder>, hb_bidder_<bidder>, hb_adid_<bidder>) and
         // winner keys (hb_pb, hb_bidder, hb_adid) for the highest bid per impression.
@@ -870,6 +884,32 @@ impl Exchange {
             keys.insert("hb_adid".to_string(), adid.clone());
         }
 
+        // --- Ad server targeting rules ---
+        // Parse req.ext.prebid.adservertargeting and apply rules per bid.
+        let ast_rules: Vec<adserver_targeting::AdServerTargetingRule> = bid_request
+            .ext
+            .as_ref()
+            .and_then(|e| e.get("prebid"))
+            .and_then(|p| p.get("adservertargeting"))
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+
+        if !ast_rules.is_empty() {
+            for (_bidder_name, typed_bids) in &bidder_results {
+                for typed_bid in typed_bids {
+                    let extra = adserver_targeting::apply_adserver_targeting(
+                        &ast_rules,
+                        bid_request,
+                        Some(&typed_bid.bid),
+                    );
+                    let keys = targeting.entry(typed_bid.bid.impid.clone()).or_default();
+                    for (k, v) in extra {
+                        keys.insert(k, v);
+                    }
+                }
+            }
+        }
+
         // Assemble seat bids from collected results, resolving ${AUCTION_PRICE} macros.
         let mut seat_bids: Vec<openrtb::SeatBid> = Vec::new();
         for (bidder_name, typed_bids) in bidder_results {
@@ -894,10 +934,19 @@ impl Exchange {
             });
         }
 
+        // Build response ext, including DSA passthrough from request if present.
+        let response_ext: Option<serde_json::Value> = bid_request
+            .regs
+            .as_ref()
+            .and_then(|r| r.dsa.as_ref())
+            .and_then(|dsa| serde_json::to_value(dsa).ok())
+            .map(|dsa_val| serde_json::json!({ "dsa": dsa_val }));
+
         let bid_response = openrtb::BidResponse {
             id: bid_request.id.clone(),
             seatbid: seat_bids,
             cur: Some("USD".to_string()),
+            ext: response_ext,
             ..Default::default()
         };
 

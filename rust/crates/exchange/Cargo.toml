@@ -22,6 +22,7 @@ pbs-config = { path = "../config" }
 pbs-currency = { path = "../currency" }
 flate2 = { workspace = true }
 chrono = { workspace = true }
+base64 = { workspace = true }
 
 [dev-dependencies]
 wiremock = "0.6.5"

@@ -214,12 +214,21 @@ pub struct GDPRConfig {
     pub enabled: bool,
     #[serde(default)]
     pub host_vendor_id: u32,
+    /// Default value for gdpr_applies when not specified in request ("0" = no, "1" = yes/enforce)
     #[serde(default = "default_gdpr_default_value")]
     pub default_value: String,
+    #[serde(default = "default_gdpr_host_vendor_list_url")]
+    pub host_vendor_list_url: String,
     #[serde(default)]
     pub enforce_vendor_list: bool,
     #[serde(default)]
     pub eea_countries: Vec<String>,
+    /// If true, send all cookies regardless of GDPR consent
+    #[serde(default)]
+    pub send_all_cookies: bool,
+    /// Bidders exempt from Purpose 1 (storage and access) consent requirement
+    #[serde(default)]
+    pub purpose1_vendor_exceptions: Vec<String>,
 }
 
 impl Default for GDPRConfig {
@@ -228,10 +237,17 @@ impl Default for GDPRConfig {
             enabled: false,
             host_vendor_id: 0,
             default_value: default_gdpr_default_value(),
+            host_vendor_list_url: default_gdpr_host_vendor_list_url(),
             enforce_vendor_list: false,
             eea_countries: Vec::new(),
+            send_all_cookies: false,
+            purpose1_vendor_exceptions: Vec::new(),
         }
     }
+}
+
+fn default_gdpr_host_vendor_list_url() -> String {
+    "https://vendor-list.consensu.org/v2/vendor-list.json".to_string()
 }
 
 fn default_gdpr_default_value() -> String {
