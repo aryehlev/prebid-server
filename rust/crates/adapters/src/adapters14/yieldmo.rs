@@ -70,6 +70,8 @@ fn preprocess(
     request: &mut openrtb::BidRequest,
     _req_info: &ExtraRequestInfo,
 ) -> Vec<BidderError> {
+    // Note: Go version converts bid floor currency to USD via req_info.ConvertCurrency
+    // That functionality is not available in this Rust port, so floor currency conversion is skipped.
     let mut errors = Vec::new();
 
     for imp in &mut request.imp {
