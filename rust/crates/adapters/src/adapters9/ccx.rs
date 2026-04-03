@@ -21,7 +21,7 @@ impl Bidder for CcxAdapter {
         }], vec![])
     }
 
-    fn make_bids(&self, _: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
+    fn make_bids(&self, request: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
         if response.status_code == 204 { return Ok(BidderResponse::new()); }
         if response.status_code == 400 {
             return Err(vec![BidderError::BadInput(
@@ -33,9 +33,9 @@ impl Bidder for CcxAdapter {
         let bid_resp: BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
 
-        let mut result = BidderResponse::with_capacity(5);
+        let mut result = BidderResponse::with_capacity(request.imp.len());
         if let Some(cur) = &bid_resp.cur {
-            if !cur.is_empty() { result.currency = cur.clone(); }
+            result.currency = cur.clone();
         }
         for sb in bid_resp.seatbid {
             for bid in sb.bid {

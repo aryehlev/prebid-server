@@ -32,7 +32,8 @@ impl Bidder for CointrafficAdapter {
         let bid_resp: BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
 
-        let mut result = BidderResponse::with_capacity(5);
+        let capacity = bid_resp.seatbid.first().map_or(0, |sb| sb.bid.len());
+        let mut result = BidderResponse::with_capacity(capacity);
         if let Some(cur) = &bid_resp.cur {
             if !cur.is_empty() { result.currency = cur.clone(); }
         }
