@@ -62,6 +62,32 @@ fn get_bid_meta(ext: &Option<Value>) -> Option<openrtb_ext::ExtBidPrebidMeta> {
     }
 }
 
+/// fixNative: for each impression with a native block, move native.request (a string)
+/// to native.request_native (a parsed object or passthrough string).
+/// This is required by Grid's API format.
+fn fix_native(mut req: Value) -> Value {
+    if let Some(imps) = req.get_mut("imp").and_then(|v| v.as_array_mut()) {
+        for imp in imps.iter_mut() {
+            if let Some(imp_obj) = imp.as_object_mut() {
+                if let Some(native) = imp_obj.get_mut("native").and_then(|v| v.as_object_mut()) {
+                    if let Some(request_str) = native.remove("request") {
+                        // Try to parse the request string as JSON
+                        if let Some(s) = request_str.as_str() {
+                            let parsed: Value = serde_json::from_str(s)
+                                .unwrap_or(Value::String(s.to_string()));
+                            native.insert("request_native".to_string(), parsed);
+                        } else {
+                            // Put it back as-is under request_native
+                            native.insert("request_native".to_string(), request_str);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    req
+}
+
 impl Bidder for GridAdapter {
     fn make_requests(
         &self,
@@ -113,7 +139,17 @@ impl Bidder for GridAdapter {
         let mut grid_request = request.clone();
         grid_request.imp = valid_imps;
 
-        let body = match serde_json::to_vec(&grid_request) {
+        // fixNative: for any imp with native.request, move the parsed content to native.request_native
+        // This adapts from OpenRTB native request string to Grid's expected format.
+        let body_val: Value = match serde_json::to_value(&grid_request) {
+            Ok(v) => v,
+            Err(e) => {
+                errs.push(BidderError::BadInput(e.to_string()));
+                return (vec![], errs);
+            }
+        };
+        let body_val = fix_native(body_val);
+        let body = match serde_json::to_vec(&body_val) {
             Ok(b) => b,
             Err(e) => {
                 errs.push(BidderError::BadInput(e.to_string()));

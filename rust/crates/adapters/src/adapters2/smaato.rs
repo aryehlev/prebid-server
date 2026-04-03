@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
 use openrtb_ext::{BidType, ExtBidPrebidVideo};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
 
 const CLIENT_VERSION: &str = "prebid_server_1.2";
@@ -17,11 +17,6 @@ struct BidExt {
     duration: i32,
     #[serde(default)]
     curls: Vec<String>,
-}
-
-#[derive(Debug, Default, Serialize)]
-struct BidRequestExt {
-    client: String,
 }
 
 /// Split a single impression into one per media type (banner, video, native).

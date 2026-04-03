@@ -103,7 +103,7 @@ impl Bidder for AdtelligentAdapter {
         request: &openrtb::BidRequest,
         _info: &ExtraRequestInfo,
     ) -> (Vec<RequestData>, Vec<BidderError>) {
-        let total_imps = request.imp.len();
+        let _total_imps = request.imp.len();
         let mut errs = Vec::new();
         let mut imp2source: HashMap<i64, Vec<usize>> = HashMap::new();
 

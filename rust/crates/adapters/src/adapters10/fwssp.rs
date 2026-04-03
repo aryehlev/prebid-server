@@ -2,8 +2,6 @@ use std::collections::HashMap;
 use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
 use openrtb_ext::{BidType, ExtBidPrebidVideo};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-
 pub struct FwsspAdapter {
     pub endpoint: String,
 }
