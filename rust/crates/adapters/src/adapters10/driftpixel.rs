@@ -90,7 +90,9 @@ impl Bidder for DriftpixelAdapter {
             }
         }
 
-        if !errs.is_empty() { return Err(errs); }
+        // Match Go prepareBidResponse: return partial bids alongside errors;
+        // only return Err when no bids succeeded
+        if !errs.is_empty() && result.bids.is_empty() { return Err(errs); }
         Ok(result)
     }
 }

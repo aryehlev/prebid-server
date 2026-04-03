@@ -23,7 +23,7 @@ fn get_bid_type_from_bid_ext(bid: &openrtb::Bid) -> Result<BidType, BidderError>
 }
 
 impl Bidder for FrvradnAdapter {
-    fn make_requests(&self, request: &openrtb::BidRequest, _: &ExtraRequestInfo) -> (Vec<RequestData>, Vec<BidderError>) {
+    fn make_requests(&self, request: &openrtb::BidRequest, _info: &ExtraRequestInfo) -> (Vec<RequestData>, Vec<BidderError>) {
         let mut requests = Vec::new();
         let mut errs = Vec::new();
 
@@ -41,7 +41,7 @@ impl Bidder for FrvradnAdapter {
                 continue;
             }
 
-            // Replace imp.ext with just the bidder fields
+            // Replace imp.ext with just the bidder fields (publisher_id, ad_unit_id)
             let new_ext = serde_json::json!({
                 "publisher_id": publisher_id,
                 "ad_unit_id": ad_unit_id,
@@ -49,6 +49,10 @@ impl Bidder for FrvradnAdapter {
 
             let mut imp_copy = imp.clone();
             imp_copy.ext = Some(new_ext);
+
+            // NOTE: Go version converts imp.bid_floor currency to USD here via
+            // requestInfo.ConvertCurrency(). That functionality is not available in
+            // ExtraRequestInfo in this Rust port, so floor currency conversion is skipped.
 
             let mut req_copy = request.clone();
             req_copy.imp = vec![imp_copy];
@@ -73,8 +77,8 @@ impl Bidder for FrvradnAdapter {
 
     fn make_bids(&self, _: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
         if response.status_code == 204 { return Ok(BidderResponse::new()); }
-        if response.body.is_empty() { return Ok(BidderResponse::new()); }
         if let Err(e) = check_response_status(response.status_code) { return Err(vec![e]); }
+        if response.body.is_empty() { return Ok(BidderResponse::new()); }
 
         let bid_resp: BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
@@ -92,7 +96,8 @@ impl Bidder for FrvradnAdapter {
                 }
             }
         }
-        if !errs.is_empty() { return Err(errs); }
+        // Match Go: return partial bids alongside errors; only return Err when no bids succeeded
+        if !errs.is_empty() && result.bids.is_empty() { return Err(errs); }
         Ok(result)
     }
 }
