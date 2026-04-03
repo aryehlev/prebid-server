@@ -362,8 +362,19 @@ impl Exchange {
         while let Some(result) = join_set.join_next().await {
             match result {
                 Ok(bidder_result) => {
-                    if let Ok(response) = bidder_result.response {
+                    if let Ok(mut response) = bidder_result.response {
                         if !response.bids.is_empty() {
+                            // Currency conversion: normalize bid prices to USD.
+                            if response.currency != "USD" {
+                                if let Some(converter) = &request.currency_rates {
+                                    for typed_bid in &mut response.bids {
+                                        if let Some(converted) = converter.convert(typed_bid.bid.price, &response.currency, "USD") {
+                                            typed_bid.bid.price = converted;
+                                        }
+                                    }
+                                }
+                            }
+
                             // Filter bids below floor price.
                             let accepted: Vec<pbs_adapters::TypedBid> = response
                                 .bids
