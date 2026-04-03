@@ -1,9 +1,18 @@
 use std::collections::HashMap;
-use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_bid_type_from_imp, get_imp_ids};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
 use openrtb_ext::BidType;
 
 pub struct AduptechAdapter { pub endpoint: String }
 impl AduptechAdapter { pub fn new(endpoint: String) -> Self { Self { endpoint } } }
+
+fn get_bid_type(mtype: Option<i32>) -> Result<BidType, BidderError> {
+    match mtype {
+        Some(4) => Ok(BidType::Native),
+        Some(1) => Ok(BidType::Banner),
+        Some(2) => Ok(BidType::Video),
+        _ => Err(BidderError::BadServerResponse(format!("unknown mtype: {:?}", mtype))),
+    }
+}
 
 impl Bidder for AduptechAdapter {
     fn make_requests(&self, request: &openrtb::BidRequest, _: &ExtraRequestInfo) -> (Vec<RequestData>, Vec<BidderError>) {
@@ -13,19 +22,23 @@ impl Bidder for AduptechAdapter {
         };
         let mut headers = HashMap::new();
         headers.insert("Content-Type".to_string(), "application/json;charset=utf-8".to_string());
-        headers.insert("Accept".to_string(), "application/json".to_string());
         (vec![RequestData { method: "POST".to_string(), uri: self.endpoint.clone(), body, headers, imp_ids: get_imp_ids(&request.imp) }], vec![])
     }
-    fn make_bids(&self, internal: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
+
+    fn make_bids(&self, _: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
         if response.status_code == 204 { return Ok(BidderResponse::new()); }
         if let Err(e) = crate::check_response_status(response.status_code) { return Err(vec![e]); }
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
         let mut result = BidderResponse::with_capacity(5);
+        if let Some(cur) = &bid_resp.cur { result.currency = cur.clone(); }
+        let mut errs = Vec::new();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
-                let bid_type = internal.imp.iter().find(|i| i.id == bid.impid).map(get_bid_type_from_imp).unwrap_or(BidType::Banner);
-                result.bids.push(TypedBid::new(bid, bid_type));
+                match get_bid_type(bid.mtype) {
+                    Ok(bt) => result.bids.push(TypedBid::new(bid, bt)),
+                    Err(e) => errs.push(e),
+                }
             }
         }
         Ok(result)
