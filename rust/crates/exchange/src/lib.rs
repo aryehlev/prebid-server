@@ -38,6 +38,7 @@ pub struct AuctionResponse {
     pub bid_response: openrtb::BidResponse,
     pub seat_non_bids: Vec<SeatNonBid>,
     pub targeting: HashMap<String, HashMap<String, String>>, // imp_id -> targeting_keys
+    pub timed_out_bidders: Vec<String>,
 }
 
 /// BidderResult collects everything returned from a single bidder task.
@@ -441,9 +442,26 @@ impl Exchange {
         }
     }
 
+    /// Returns the number of registered adapters.
+    pub fn adapter_count(&self) -> usize {
+        self.adapters.len()
+    }
+
+    /// Run an auction using the global timeout for all bidders.
     pub async fn hold_auction(
         &self,
         request: AuctionRequest,
+    ) -> Result<AuctionResponse, anyhow::Error> {
+        self.hold_auction_with_timeouts(request, &HashMap::new()).await
+    }
+
+    /// Run an auction, optionally overriding the timeout per bidder.
+    /// If a bidder name appears in `per_bidder_timeouts`, that value (ms) is
+    /// used instead of the global tmax-derived timeout.
+    pub async fn hold_auction_with_timeouts(
+        &self,
+        request: AuctionRequest,
+        per_bidder_timeouts: &HashMap<String, u64>,
     ) -> Result<AuctionResponse, anyhow::Error> {
         let bid_request = &request.bid_request;
 
@@ -493,6 +511,8 @@ impl Exchange {
             .unwrap_or(1000);
 
         let timeout_ms = bidder_timeout_ms;
+        // Per-bidder timeouts (empty by default; can be populated from account config)
+        let per_bidder_timeouts: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
         let _duration = std::time::Duration::from_millis(timeout_ms);
 
         // Parse custom price granularity from req.ext.prebid.targeting.pricegranularity.
@@ -575,6 +595,12 @@ impl Exchange {
             }
 
             if let Some(adapted) = self.adapters.get(&bidder_name) {
+                // Use per-bidder timeout if configured, otherwise fall back to global.
+                let effective_timeout_ms = per_bidder_timeouts
+                    .get(&bidder_name)
+                    .copied()
+                    .unwrap_or(timeout_ms);
+
                 // Clone everything needed for the async task.
                 let adapted = AdaptedBidder {
                     bidder: adapted.bidder.clone(),
@@ -588,7 +614,7 @@ impl Exchange {
                 let name = bidder_name.clone();
 
                 join_set.spawn(async move {
-                    adapted.request_bid(&req, &name, &extra, timeout_ms).await
+                    adapted.request_bid(&req, &name, &extra, effective_timeout_ms).await
                 });
             }
         }
@@ -610,10 +636,15 @@ impl Exchange {
 
         // Collect results: keep TypedBids per bidder so we can compute targeting before flattening.
         let mut bidder_results: Vec<(String, Vec<pbs_adapters::TypedBid>)> = Vec::new();
+        let mut timed_out_bidders: Vec<String> = Vec::new();
 
         while let Some(result) = join_set.join_next().await {
             match result {
                 Ok(bidder_result) => {
+                    if bidder_result.timed_out {
+                        timed_out_bidders.push(bidder_result.bidder_name.clone());
+                    }
+
                     // Record per-bidder metrics.
                     if let Some(m) = &self.metrics {
                         let status = if bidder_result.timed_out {
@@ -643,6 +674,21 @@ impl Exchange {
                                                 typed_bid.bid.price = converted;
                                             }
                                         }
+                                    }
+                                }
+
+                                // Parse bid adjustment factors: {"appnexus": 0.9, "rubicon": 1.1, ...}
+                                let adjustment_factors: HashMap<String, f64> = bid_request.ext
+                                    .as_ref()
+                                    .and_then(|e| e.get("prebid"))
+                                    .and_then(|p| p.get("bidadjustmentfactors"))
+                                    .and_then(|f| serde_json::from_value(f.clone()).ok())
+                                    .unwrap_or_default();
+
+                                // Apply bid adjustment factor for this bidder (before floor comparison).
+                                if let Some(&factor) = adjustment_factors.get(&bidder_result.bidder_name) {
+                                    for typed_bid in &mut response.bids {
+                                        typed_bid.bid.price *= factor;
                                     }
                                 }
 
@@ -682,8 +728,23 @@ impl Exchange {
                                 // Bid validation: drop invalid bids, warn on suspicious ones.
                                 let validated = validate_bids(accepted, &bid_request.imp);
 
-                                if !validated.is_empty() {
-                                    bidder_results.push((bidder_result.bidder_name, validated));
+                                // Deduplication: within this bidder's response, keep only the
+                                // highest-priced bid for each bid.id.
+                                let mut deduped: Vec<pbs_adapters::TypedBid> = Vec::new();
+                                let mut seen_ids: HashMap<String, usize> = HashMap::new();
+                                for tb in validated {
+                                    if let Some(&idx) = seen_ids.get(&tb.bid.id) {
+                                        if tb.bid.price > deduped[idx].bid.price {
+                                            deduped[idx] = tb;
+                                        }
+                                    } else {
+                                        seen_ids.insert(tb.bid.id.clone(), deduped.len());
+                                        deduped.push(tb);
+                                    }
+                                }
+
+                                if !deduped.is_empty() {
+                                    bidder_results.push((bidder_result.bidder_name, deduped));
                                 }
                             }
                         }
@@ -817,6 +878,7 @@ impl Exchange {
             bid_response,
             seat_non_bids: collected_non_bids,
             targeting,
+            timed_out_bidders,
         })
     }
 }

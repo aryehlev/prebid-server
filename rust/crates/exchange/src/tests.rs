@@ -257,6 +257,195 @@ async fn test_hold_auction_video_imp() {
     assert!(result.bid_response.seatbid.is_empty());
 }
 
+/// A bidder that hits the given URI and parses a standard OpenRTB BidResponse.
+struct HttpMockBidder {
+    uri: String,
+}
+
+impl pbs_adapters::Bidder for HttpMockBidder {
+    fn make_requests(
+        &self,
+        request: &BidRequest,
+        _: &pbs_adapters::ExtraRequestInfo,
+    ) -> (Vec<pbs_adapters::RequestData>, Vec<pbs_adapters::BidderError>) {
+        let body = serde_json::to_vec(request).unwrap();
+        (
+            vec![pbs_adapters::RequestData::new_post(&self.uri, body)],
+            vec![],
+        )
+    }
+
+    fn make_bids(
+        &self,
+        request: &BidRequest,
+        _: &pbs_adapters::RequestData,
+        response: &pbs_adapters::ResponseData,
+    ) -> Result<pbs_adapters::BidderResponse, Vec<pbs_adapters::BidderError>> {
+        let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
+            .map_err(|e| vec![pbs_adapters::BidderError::BadServerResponse(e.to_string())])?;
+
+        let mut result = pbs_adapters::BidderResponse::new();
+        for sb in bid_resp.seatbid {
+            for bid in sb.bid {
+                let bid_type = request
+                    .imp
+                    .iter()
+                    .find(|i| i.id == bid.impid)
+                    .map(|imp| {
+                        if imp.video.is_some() {
+                            openrtb_ext::BidType::Video
+                        } else {
+                            openrtb_ext::BidType::Banner
+                        }
+                    })
+                    .unwrap_or(openrtb_ext::BidType::Banner);
+                result.bids.push(pbs_adapters::TypedBid::new(bid, bid_type));
+            }
+        }
+        Ok(result)
+    }
+}
+
+#[tokio::test]
+async fn test_bid_adjustment_factor_applied() {
+    use wiremock::{MockServer, Mock, ResponseTemplate};
+    use wiremock::matchers::method;
+
+    // Spin up a mock HTTP server that returns a bid with price 1.0.
+    let mock_server = MockServer::start().await;
+    let bid_response_json = serde_json::json!({
+        "id": "resp1",
+        "seatbid": [{
+            "bid": [{
+                "id": "bid1",
+                "impid": "imp1",
+                "price": 1.0,
+                "adm": "<ad/>"
+            }]
+        }]
+    });
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&bid_response_json))
+        .mount(&mock_server)
+        .await;
+
+    let uri = mock_server.uri();
+    let mut adapters = HashMap::new();
+    adapters.insert(
+        "appnexus".to_string(),
+        AdaptedBidder {
+            bidder: Arc::new(HttpMockBidder { uri }),
+            http_client: reqwest::Client::new(),
+            endpoint: mock_server.uri(),
+            endpoint_compression: None,
+        },
+    );
+
+    let exchange = Exchange::new(adapters);
+
+    let mut req = make_simple_request();
+    // Apply a 0.9 factor for appnexus — bid price 1.0 should become 0.9.
+    req.ext = Some(serde_json::json!({
+        "prebid": {
+            "bidadjustmentfactors": {
+                "appnexus": 0.9,
+                "rubicon": 1.1
+            }
+        }
+    }));
+
+    let result = exchange
+        .hold_auction(AuctionRequest {
+            bid_request: req,
+            account: None,
+            user_syncs: None,
+            start_time: std::time::Instant::now(),
+            currency_rates: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.bid_response.seatbid.len(), 1);
+    let seat = &result.bid_response.seatbid[0];
+    assert_eq!(seat.seat.as_deref(), Some("appnexus"));
+    assert_eq!(seat.bid.len(), 1);
+
+    let adjusted_price = seat.bid[0].price;
+    assert!(
+        (adjusted_price - 0.9).abs() < 1e-9,
+        "expected adjusted price 0.9, got {adjusted_price}"
+    );
+}
+
+#[tokio::test]
+async fn test_bid_no_adjustment_factor_unchanged() {
+    use wiremock::{MockServer, Mock, ResponseTemplate};
+    use wiremock::matchers::method;
+
+    // Spin up a mock HTTP server that returns a bid with price 2.0.
+    let mock_server = MockServer::start().await;
+    let bid_response_json = serde_json::json!({
+        "id": "resp1",
+        "seatbid": [{
+            "bid": [{
+                "id": "bid1",
+                "impid": "imp1",
+                "price": 2.0,
+                "adm": "<ad/>"
+            }]
+        }]
+    });
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&bid_response_json))
+        .mount(&mock_server)
+        .await;
+
+    let uri = mock_server.uri();
+    let mut adapters = HashMap::new();
+    adapters.insert(
+        "appnexus".to_string(),
+        AdaptedBidder {
+            bidder: Arc::new(HttpMockBidder { uri }),
+            http_client: reqwest::Client::new(),
+            endpoint: mock_server.uri(),
+            endpoint_compression: None,
+        },
+    );
+
+    let exchange = Exchange::new(adapters);
+
+    let mut req = make_simple_request();
+    // Provide a factor only for an unrelated bidder — appnexus bid should be unchanged at 2.0.
+    req.ext = Some(serde_json::json!({
+        "prebid": {
+            "bidadjustmentfactors": {
+                "rubicon": 1.5
+            }
+        }
+    }));
+
+    let result = exchange
+        .hold_auction(AuctionRequest {
+            bid_request: req,
+            account: None,
+            user_syncs: None,
+            start_time: std::time::Instant::now(),
+            currency_rates: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.bid_response.seatbid.len(), 1);
+    let seat = &result.bid_response.seatbid[0];
+    assert_eq!(seat.bid.len(), 1);
+
+    let price = seat.bid[0].price;
+    assert!(
+        (price - 2.0).abs() < 1e-9,
+        "expected unchanged price 2.0, got {price}"
+    );
+}
+
 #[test]
 fn test_auction_request_fields() {
     let req = AuctionRequest {
