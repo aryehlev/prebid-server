@@ -5,6 +5,7 @@ use openrtb_ext::{NonBid, SeatNonBid};
 use pbs_adapters::{BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData};
 
 pub mod currency;
+pub mod floors;
 
 #[cfg(test)]
 mod tests;
