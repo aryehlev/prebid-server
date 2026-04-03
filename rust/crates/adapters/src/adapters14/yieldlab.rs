@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_bid_type_from_imp, get_imp_ids};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
 use openrtb_ext::BidType;
 
 pub struct YieldlabAdapter { pub endpoint: String }
@@ -9,14 +9,20 @@ impl YieldlabAdapter {
 
 impl Bidder for YieldlabAdapter {
     fn make_requests(&self, request: &openrtb::BidRequest, _: &ExtraRequestInfo) -> (Vec<RequestData>, Vec<BidderError>) {
-        let body = match serde_json::to_vec(request) {
-            Ok(b) => b,
-            Err(e) => return (vec![], vec![BidderError::BadInput(e.to_string())]),
-        };
+        if request.imp.is_empty() {
+            return (vec![], vec![BidderError::BadInput("no impressions given".to_string())]);
+        }
         let mut headers = HashMap::new();
-        headers.insert("Content-Type".to_string(), "application/json;charset=utf-8".to_string());
         headers.insert("Accept".to_string(), "application/json".to_string());
-        (vec![RequestData { method: "POST".to_string(), uri: self.endpoint.clone(), body, headers, imp_ids: get_imp_ids(&request.imp) }], vec![])
+        if let Some(site) = &request.site {
+            if let Some(page) = &site.page { headers.insert("Referer".to_string(), page.clone()); }
+        }
+        if let Some(device) = &request.device {
+            if let Some(ua) = &device.ua { headers.insert("User-Agent".to_string(), ua.clone()); }
+            if let Some(ip) = &device.ip { headers.insert("X-Forwarded-For".to_string(), ip.clone()); }
+        }
+        // Build GET request - use endpoint as-is
+        (vec![RequestData { method: "GET".to_string(), uri: self.endpoint.clone(), body: vec![], headers, imp_ids: get_imp_ids(&request.imp) }], vec![])
     }
 
     fn make_bids(&self, internal: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
@@ -25,9 +31,12 @@ impl Bidder for YieldlabAdapter {
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
         let mut result = BidderResponse::with_capacity(5);
+        result.currency = "EUR".to_string();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
-                let bid_type = internal.imp.iter().find(|i| i.id == bid.impid).map(get_bid_type_from_imp).unwrap_or(BidType::Banner);
+                let bid_type = internal.imp.iter().find(|i| i.id == bid.impid).map(|imp| {
+                    if imp.video.is_some() { BidType::Video } else { BidType::Banner }
+                }).unwrap_or(BidType::Banner);
                 result.bids.push(TypedBid::new(bid, bid_type));
             }
         }

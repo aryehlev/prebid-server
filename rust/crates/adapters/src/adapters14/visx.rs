@@ -3,19 +3,40 @@ use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, 
 use openrtb_ext::BidType;
 
 pub struct VisxAdapter { pub endpoint: String }
-impl VisxAdapter {
-    pub fn new(endpoint: String) -> Self { Self { endpoint } }
+impl VisxAdapter { pub fn new(endpoint: String) -> Self { Self { endpoint } } }
+
+fn get_bid_type(bid: &openrtb::Bid, imp: Option<&openrtb::Imp>) -> Result<BidType, BidderError> {
+    // Try ext.prebid.meta.mediaType first
+    let meta_type = bid.ext.as_ref()
+        .and_then(|e| e.get("prebid"))
+        .and_then(|p| p.get("meta"))
+        .and_then(|m| m.get("mediaType"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if meta_type == "banner" { return Ok(BidType::Banner); }
+    if meta_type == "video" { return Ok(BidType::Video); }
+    // Fall back to imp-based
+    if let Some(imp) = imp {
+        return Ok(get_bid_type_from_imp(imp));
+    }
+    Err(BidderError::BadServerResponse(format!("failed to determine bid type for imp: {}", bid.impid)))
 }
 
 impl Bidder for VisxAdapter {
     fn make_requests(&self, request: &openrtb::BidRequest, _: &ExtraRequestInfo) -> (Vec<RequestData>, Vec<BidderError>) {
-        let body = match serde_json::to_vec(request) {
+        let mut req_copy = request.clone();
+        if req_copy.cur.is_none() || req_copy.cur.as_ref().map(|c| c.is_empty()).unwrap_or(true) {
+            req_copy.cur = Some(vec!["USD".to_string()]);
+        }
+        let body = match serde_json::to_vec(&req_copy) {
             Ok(b) => b,
             Err(e) => return (vec![], vec![BidderError::BadInput(e.to_string())]),
         };
         let mut headers = HashMap::new();
         headers.insert("Content-Type".to_string(), "application/json;charset=utf-8".to_string());
-        headers.insert("Accept".to_string(), "application/json".to_string());
+        if let Some(device) = &request.device {
+            if let Some(ip) = &device.ip { if !ip.is_empty() { headers.insert("X-Forwarded-For".to_string(), ip.clone()); } }
+        }
         (vec![RequestData { method: "POST".to_string(), uri: self.endpoint.clone(), body, headers, imp_ids: get_imp_ids(&request.imp) }], vec![])
     }
 
@@ -25,12 +46,18 @@ impl Bidder for VisxAdapter {
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
         let mut result = BidderResponse::with_capacity(5);
+        if let Some(cur) = &bid_resp.cur { if !cur.is_empty() { result.currency = cur.clone(); } }
+        let mut errs = Vec::new();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
-                let bid_type = internal.imp.iter().find(|i| i.id == bid.impid).map(get_bid_type_from_imp).unwrap_or(BidType::Banner);
-                result.bids.push(TypedBid::new(bid, bid_type));
+                let imp = internal.imp.iter().find(|i| i.id == bid.impid);
+                match get_bid_type(&bid, imp) {
+                    Ok(t) => result.bids.push(TypedBid::new(bid, t)),
+                    Err(e) => errs.push(e),
+                }
             }
         }
+        if !errs.is_empty() && result.bids.is_empty() { return Err(errs); }
         Ok(result)
     }
 }

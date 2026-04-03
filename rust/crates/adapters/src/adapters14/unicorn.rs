@@ -1,11 +1,9 @@
 use std::collections::HashMap;
-use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_bid_type_from_imp, get_imp_ids};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
 use openrtb_ext::BidType;
 
 pub struct UnicornAdapter { pub endpoint: String }
-impl UnicornAdapter {
-    pub fn new(endpoint: String) -> Self { Self { endpoint } }
-}
+impl UnicornAdapter { pub fn new(endpoint: String) -> Self { Self { endpoint } } }
 
 impl Bidder for UnicornAdapter {
     fn make_requests(&self, request: &openrtb::BidRequest, _: &ExtraRequestInfo) -> (Vec<RequestData>, Vec<BidderError>) {
@@ -25,9 +23,13 @@ impl Bidder for UnicornAdapter {
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
         let mut result = BidderResponse::with_capacity(5);
+        if let Some(cur) = &bid_resp.cur { if !cur.is_empty() { result.currency = cur.clone(); } }
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
-                let bid_type = internal.imp.iter().find(|i| i.id == bid.impid).map(get_bid_type_from_imp).unwrap_or(BidType::Banner);
+                // Go source sets Banner if imp.banner is set for matching imp, else empty
+                let bid_type = internal.imp.iter().find(|i| i.id == bid.impid)
+                    .and_then(|imp| if imp.banner.is_some() { Some(BidType::Banner) } else { None })
+                    .unwrap_or(BidType::Banner);
                 result.bids.push(TypedBid::new(bid, bid_type));
             }
         }

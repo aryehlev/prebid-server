@@ -1,10 +1,19 @@
 use std::collections::HashMap;
-use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_bid_type_from_imp, get_imp_ids};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
 use openrtb_ext::BidType;
 
 pub struct YieldoneAdapter { pub endpoint: String }
-impl YieldoneAdapter {
-    pub fn new(endpoint: String) -> Self { Self { endpoint } }
+impl YieldoneAdapter { pub fn new(endpoint: String) -> Self { Self { endpoint } } }
+
+fn get_media_type_for_imp(imp_id: &str, imps: &[openrtb::Imp]) -> Result<BidType, BidderError> {
+    for imp in imps {
+        if imp.id == imp_id {
+            if imp.banner.is_some() { return Ok(BidType::Banner); }
+            if imp.video.is_some() { return Ok(BidType::Video); }
+            return Err(BidderError::BadServerResponse(format!("Unknown impression type for ID: \"{}\"", imp_id)));
+        }
+    }
+    Err(BidderError::BadServerResponse(format!("Unknown impression type for ID: \"{}\"", imp_id)))
 }
 
 impl Bidder for YieldoneAdapter {
@@ -15,7 +24,6 @@ impl Bidder for YieldoneAdapter {
         };
         let mut headers = HashMap::new();
         headers.insert("Content-Type".to_string(), "application/json;charset=utf-8".to_string());
-        headers.insert("Accept".to_string(), "application/json".to_string());
         (vec![RequestData { method: "POST".to_string(), uri: self.endpoint.clone(), body, headers, imp_ids: get_imp_ids(&request.imp) }], vec![])
     }
 
@@ -25,12 +33,16 @@ impl Bidder for YieldoneAdapter {
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
         let mut result = BidderResponse::with_capacity(5);
+        let mut errs = Vec::new();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
-                let bid_type = internal.imp.iter().find(|i| i.id == bid.impid).map(get_bid_type_from_imp).unwrap_or(BidType::Banner);
-                result.bids.push(TypedBid::new(bid, bid_type));
+                match get_media_type_for_imp(&bid.impid, &internal.imp) {
+                    Ok(t) => result.bids.push(TypedBid::new(bid, t)),
+                    Err(e) => errs.push(e),
+                }
             }
         }
+        if !errs.is_empty() && result.bids.is_empty() { return Err(errs); }
         Ok(result)
     }
 }
