@@ -4,6 +4,8 @@ use std::sync::Arc;
 use openrtb_ext::SeatNonBid;
 use pbs_adapters::{BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData};
 
+pub mod currency;
+
 /// Account holds basic account configuration.
 #[derive(Debug, Clone, Default)]
 pub struct Account {
@@ -23,6 +25,7 @@ pub struct AuctionRequest {
     pub account: Option<Account>,
     pub user_syncs: Option<UserSyncData>,
     pub start_time: std::time::Instant,
+    pub currency_rates: Option<Arc<currency::CurrencyConverter>>,
 }
 
 /// AuctionResponse is the output of Exchange::hold_auction.
@@ -307,13 +310,26 @@ impl Exchange {
                 Ok(bidder_result) => {
                     if let Ok(response) = bidder_result.response {
                         if !response.bids.is_empty() {
-                            let bids: Vec<openrtb::Bid> =
-                                response.bids.into_iter().map(|tb| tb.bid).collect();
-                            seat_bids.push(openrtb::SeatBid {
-                                bid: bids,
-                                seat: Some(bidder_result.bidder_name),
-                                ..Default::default()
-                            });
+                            // Filter bids below floor price
+                            let bids: Vec<openrtb::Bid> = response.bids.into_iter().filter(|typed_bid| {
+                                // Find the matching impression
+                                let floor = bid_request.imp.iter()
+                                    .find(|imp| imp.id == typed_bid.bid.impid)
+                                    .and_then(|imp| imp.bidfloor.filter(|&f| f > 0.0));
+
+                                match floor {
+                                    Some(floor) => typed_bid.bid.price >= floor,
+                                    None => true, // No floor = accept all
+                                }
+                            }).map(|tb| tb.bid).collect();
+
+                            if !bids.is_empty() {
+                                seat_bids.push(openrtb::SeatBid {
+                                    bid: bids,
+                                    seat: Some(bidder_result.bidder_name),
+                                    ..Default::default()
+                                });
+                            }
                         }
                     }
                 }

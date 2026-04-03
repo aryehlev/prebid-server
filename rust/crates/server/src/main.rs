@@ -85,9 +85,24 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("Starting prebid-server (Rust port)");
 
-    // Build the exchange with no adapters initially.
-    // Adapter registration will be wired in here once adapter crates are complete.
-    let exchange = pbs_exchange::Exchange::new(std::collections::HashMap::new());
+    let raw_adapters = pbs_adapters::registry::build_adapter_map();
+    tracing::info!("Registered {} bidder adapters", raw_adapters.len());
+    let http_client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
+    let adapters: std::collections::HashMap<String, pbs_exchange::AdaptedBidder> = raw_adapters
+        .into_iter()
+        .map(|(name, bidder)| {
+            let adapted = pbs_exchange::AdaptedBidder {
+                bidder: std::sync::Arc::from(bidder),
+                http_client: http_client.clone(),
+                endpoint: String::new(),
+            };
+            (name, adapted)
+        })
+        .collect();
+    let exchange = pbs_exchange::Exchange::new(adapters);
 
     let static_dir = std::env::var("PBS_STATIC_DIR")
         .unwrap_or_else(|_| "/home/user/prebid-server/static".to_string());

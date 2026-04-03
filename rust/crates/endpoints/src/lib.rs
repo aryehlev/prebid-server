@@ -200,6 +200,7 @@ pub async fn auction_handler(
         account: None,
         user_syncs: None,
         start_time: std::time::Instant::now(),
+        currency_rates: None,
     };
 
     match state.exchange.hold_auction(auction_req).await {
@@ -228,6 +229,7 @@ pub async fn video_auction_handler(
         account: None,
         user_syncs: None,
         start_time: std::time::Instant::now(),
+        currency_rates: None,
     };
 
     match state.exchange.hold_auction(auction_req).await {

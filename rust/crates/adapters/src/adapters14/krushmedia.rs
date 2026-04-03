@@ -73,7 +73,7 @@ impl Bidder for KrushmediaAdapter {
         if response.status_code == 503 {
             return Ok(BidderResponse::new());
         }
-        if let Err(e) = crate::check_response_status(response.status_code) {
+        if let Err(_e) = crate::check_response_status(response.status_code) {
             return Err(vec![BidderError::BadServerResponse(
                 format!("Something went wrong, please contact your Account Manager. Status Code: [ {} ] ", response.status_code)
             )]);

@@ -16,6 +16,7 @@ pub mod adapters11;
 pub mod adapters12;
 pub mod adapters13;
 pub mod adapters14;
+pub mod registry;
 
 /// RequestData packages together the fields needed to make an HTTP request to a bidder.
 #[derive(Debug, Clone, Default)]
@@ -235,5 +236,15 @@ pub fn check_response_status(status_code: u16) -> Result<(), BidderError> {
         _ => Err(BidderError::BadServerResponse(format!(
             "Unexpected status code: {status_code}"
         ))),
+    }
+}
+
+/// Map OpenRTB 2.6 mtype to BidType. 0/unknown → Banner.
+pub fn get_bid_type_from_mtype(mtype: i32) -> openrtb_ext::BidType {
+    match mtype {
+        2 => openrtb_ext::BidType::Video,
+        3 => openrtb_ext::BidType::Audio,
+        4 => openrtb_ext::BidType::Native,
+        _ => openrtb_ext::BidType::Banner,
     }
 }

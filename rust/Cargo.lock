@@ -1462,6 +1462,7 @@ dependencies = [
  "pbs-endpoints",
  "pbs-exchange",
  "pbs-metrics",
+ "reqwest",
  "serde_json",
  "tokio",
  "tracing",

@@ -1,10 +1,19 @@
 use std::collections::HashMap;
-use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_bid_type_from_imp, get_imp_ids};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids, check_response_status};
 use openrtb_ext::BidType;
 
 pub struct TrustedstackAdapter { pub endpoint: String }
 impl TrustedstackAdapter {
     pub fn new(endpoint: String) -> Self { Self { endpoint } }
+}
+
+fn get_bid_media_type_from_mtype(mtype: i32, imp_id: &str) -> Result<BidType, BidderError> {
+    match mtype {
+        1 => Ok(BidType::Banner),
+        2 => Ok(BidType::Video),
+        4 => Ok(BidType::Native),
+        _ => Err(BidderError::BadServerResponse(format!("unable to fetch mediaType for imp: {}", imp_id))),
+    }
 }
 
 impl Bidder for TrustedstackAdapter {
@@ -15,22 +24,32 @@ impl Bidder for TrustedstackAdapter {
         };
         let mut headers = HashMap::new();
         headers.insert("Content-Type".to_string(), "application/json;charset=utf-8".to_string());
-        headers.insert("Accept".to_string(), "application/json".to_string());
-        (vec![RequestData { method: "POST".to_string(), uri: self.endpoint.clone(), body, headers, imp_ids: get_imp_ids(&request.imp) }], vec![])
+        (vec![RequestData {
+            method: "POST".to_string(),
+            uri: self.endpoint.clone(),
+            body,
+            headers,
+            imp_ids: get_imp_ids(&request.imp),
+        }], vec![])
     }
 
-    fn make_bids(&self, internal: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
+    fn make_bids(&self, _: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
         if response.status_code == 204 { return Ok(BidderResponse::new()); }
-        if let Err(e) = crate::check_response_status(response.status_code) { return Err(vec![e]); }
+        if let Err(e) = check_response_status(response.status_code) { return Err(vec![e]); }
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
-        let mut result = BidderResponse::with_capacity(5);
+        let mut result = BidderResponse::new();
+        let mut errs = Vec::new();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
-                let bid_type = internal.imp.iter().find(|i| i.id == bid.impid).map(get_bid_type_from_imp).unwrap_or(BidType::Banner);
-                result.bids.push(TypedBid::new(bid, bid_type));
+                let mtype = bid.mtype.unwrap_or(0);
+                match get_bid_media_type_from_mtype(mtype, &bid.impid) {
+                    Ok(t) => result.bids.push(TypedBid::new(bid, t)),
+                    Err(e) => errs.push(e),
+                }
             }
         }
+        if !errs.is_empty() { return Err(errs); }
         Ok(result)
     }
 }
