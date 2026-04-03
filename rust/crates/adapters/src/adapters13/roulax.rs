@@ -69,17 +69,15 @@ impl Bidder for RoulaxAdapter {
         if let Some(cur) = &bid_resp.cur {
             if !cur.is_empty() { result.currency = cur.clone(); }
         }
-        let mut errs = Vec::new();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
                 let mtype = bid.mtype.unwrap_or(0) as u64;
                 match get_bid_type_from_mtype(mtype, &bid.impid) {
                     Ok(t) => result.bids.push(TypedBid::new(bid, t)),
-                    Err(e) => errs.push(e),
+                    Err(_) => {},
                 }
             }
         }
-        if !errs.is_empty() { return Err(errs); }
         Ok(result)
     }
 }

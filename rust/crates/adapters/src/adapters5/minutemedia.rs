@@ -39,13 +39,7 @@ fn extract_org(request: &openrtb::BidRequest) -> Result<String, BidderError> {
 }
 
 fn get_media_type_for_bid(bid: &openrtb::Bid) -> Result<BidType, BidderError> {
-    // mtype is in bid.ext since openrtb struct doesn't have it
-    let mtype = bid.ext
-        .as_ref()
-        .and_then(|e| e.get("mtype"))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0) as u32;
-
+    let mtype = bid.mtype.unwrap_or(0);
     match mtype {
         1 => Ok(BidType::Banner),
         2 => Ok(BidType::Video),

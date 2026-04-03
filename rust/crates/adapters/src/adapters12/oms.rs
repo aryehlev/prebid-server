@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids, check_response_status};
 use openrtb::BidResponse;
-use openrtb_ext::BidType;
+use openrtb_ext::{BidType, ExtBidPrebidVideo};
 
 pub struct OmsAdapter { pub endpoint: String }
 impl OmsAdapter { pub fn new(endpoint: String) -> Self { Self { endpoint } } }
@@ -11,6 +11,17 @@ fn get_bid_type_from_mtype(mtype: u64) -> BidType {
         2 => BidType::Video,
         _ => BidType::Banner,
     }
+}
+
+fn get_bid_video(bid_type: &BidType, bid: &openrtb::Bid) -> Option<ExtBidPrebidVideo> {
+    if *bid_type != BidType::Video {
+        return None;
+    }
+    let primary_category = bid.cat.as_deref().unwrap_or(&[]).first().cloned().unwrap_or_default();
+    Some(ExtBidPrebidVideo {
+        duration: 0,
+        primary_category,
+    })
 }
 
 impl Bidder for OmsAdapter {
@@ -66,7 +77,10 @@ impl Bidder for OmsAdapter {
             for bid in sb.bid {
                 let mtype = bid.mtype.unwrap_or(0) as u64;
                 let bid_type = get_bid_type_from_mtype(mtype);
-                result.bids.push(TypedBid::new(bid, bid_type));
+                let bid_video = get_bid_video(&bid_type, &bid);
+                let mut typed_bid = TypedBid::new(bid, bid_type);
+                typed_bid.bid_video = bid_video;
+                result.bids.push(typed_bid);
             }
         }
         Ok(result)

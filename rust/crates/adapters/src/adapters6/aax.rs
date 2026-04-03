@@ -1,9 +1,45 @@
 use std::collections::HashMap;
 use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_bid_type_from_imp, get_imp_ids};
 use openrtb_ext::BidType;
+use serde::Deserialize;
 
 pub struct AaxAdapter { pub endpoint: String }
 impl AaxAdapter { pub fn new(endpoint: String) -> Self { Self { endpoint } } }
+
+#[derive(Deserialize, Default)]
+struct AaxResponseBidExt {
+    #[serde(rename = "adCodeType", default)]
+    ad_code_type: String,
+}
+
+fn get_aax_bid_type(bid: &openrtb::Bid, imps: &[openrtb::Imp]) -> Result<BidType, BidderError> {
+    // First try ext.adCodeType
+    if let Some(ext) = &bid.ext {
+        if let Ok(bid_ext) = serde_json::from_value::<AaxResponseBidExt>(ext.clone()) {
+            match bid_ext.ad_code_type.as_str() {
+                "banner" => return Ok(BidType::Banner),
+                "native" => return Ok(BidType::Native),
+                "video" => return Ok(BidType::Video),
+                _ => {}
+            }
+        }
+    }
+    // Fallback: find the matching imp and use its type
+    let mut media_type = BidType::Banner;
+    let mut type_cnt = 0;
+    for imp in imps {
+        if imp.id == bid.impid {
+            if imp.banner.is_some() { type_cnt += 1; media_type = BidType::Banner; }
+            if imp.native.is_some() { type_cnt += 1; media_type = BidType::Native; }
+            if imp.video.is_some() { type_cnt += 1; media_type = BidType::Video; }
+        }
+    }
+    if type_cnt == 1 {
+        Ok(media_type)
+    } else {
+        Err(BidderError::BadServerResponse(format!("unable to fetch mediaType in multi-format: {}", bid.impid)))
+    }
+}
 
 impl Bidder for AaxAdapter {
     fn make_requests(&self, request: &openrtb::BidRequest, _: &ExtraRequestInfo) -> (Vec<RequestData>, Vec<BidderError>) {
@@ -13,9 +49,9 @@ impl Bidder for AaxAdapter {
         };
         let mut headers = HashMap::new();
         headers.insert("Content-Type".to_string(), "application/json;charset=utf-8".to_string());
-        headers.insert("Accept".to_string(), "application/json".to_string());
         (vec![RequestData { method: "POST".to_string(), uri: self.endpoint.clone(), body, headers, imp_ids: get_imp_ids(&request.imp) }], vec![])
     }
+
     fn make_bids(&self, internal: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
         if response.status_code == 204 { return Ok(BidderResponse::new()); }
         if let Err(e) = crate::check_response_status(response.status_code) { return Err(vec![e]); }
@@ -24,8 +60,10 @@ impl Bidder for AaxAdapter {
         let mut result = BidderResponse::with_capacity(5);
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
-                let bid_type = internal.imp.iter().find(|i| i.id == bid.impid).map(get_bid_type_from_imp).unwrap_or(BidType::Banner);
-                result.bids.push(TypedBid::new(bid, bid_type));
+                match get_aax_bid_type(&bid, &internal.imp) {
+                    Ok(bt) => result.bids.push(TypedBid::new(bid, bt)),
+                    Err(_) => {} // skip bids with unresolvable type
+                }
             }
         }
         Ok(result)

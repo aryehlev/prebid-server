@@ -248,3 +248,160 @@ pub fn get_bid_type_from_mtype(mtype: i32) -> openrtb_ext::BidType {
         _ => openrtb_ext::BidType::Banner,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openrtb::{Banner, Format, Imp, Video};
+
+    fn make_format(w: i32, h: i32) -> Format {
+        Format {
+            w: Some(w),
+            h: Some(h),
+            wratio: None,
+            hratio: None,
+            wmin: None,
+            ext: None,
+        }
+    }
+
+    fn imp_with_banner() -> Imp {
+        Imp {
+            id: "imp1".to_string(),
+            banner: Some(Banner {
+                format: Some(vec![make_format(300, 250)]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_get_bid_type_from_imp_banner() {
+        let imp = imp_with_banner();
+        assert_eq!(get_bid_type_from_imp(&imp), openrtb_ext::BidType::Banner);
+    }
+
+    #[test]
+    fn test_get_bid_type_from_imp_video() {
+        let mut imp = imp_with_banner();
+        imp.banner = None;
+        imp.video = Some(Video::default());
+        assert_eq!(get_bid_type_from_imp(&imp), openrtb_ext::BidType::Video);
+    }
+
+    #[test]
+    fn test_get_bid_type_from_imp_native() {
+        let mut imp = imp_with_banner();
+        imp.banner = None;
+        imp.native = Some(openrtb::Native::default());
+        assert_eq!(get_bid_type_from_imp(&imp), openrtb_ext::BidType::Native);
+    }
+
+    #[test]
+    fn test_get_bid_type_from_imp_audio() {
+        let mut imp = imp_with_banner();
+        imp.banner = None;
+        imp.audio = Some(openrtb::Audio::default());
+        assert_eq!(get_bid_type_from_imp(&imp), openrtb_ext::BidType::Audio);
+    }
+
+    #[test]
+    fn test_get_bid_type_from_mtype() {
+        assert_eq!(get_bid_type_from_mtype(1), openrtb_ext::BidType::Banner);
+        assert_eq!(get_bid_type_from_mtype(2), openrtb_ext::BidType::Video);
+        assert_eq!(get_bid_type_from_mtype(3), openrtb_ext::BidType::Audio);
+        assert_eq!(get_bid_type_from_mtype(4), openrtb_ext::BidType::Native);
+        assert_eq!(get_bid_type_from_mtype(0), openrtb_ext::BidType::Banner);
+        assert_eq!(get_bid_type_from_mtype(99), openrtb_ext::BidType::Banner);
+    }
+
+    #[test]
+    fn test_check_response_status() {
+        assert!(check_response_status(200).is_ok());
+        assert!(check_response_status(204).is_err());
+        assert!(check_response_status(400).is_err());
+        assert!(check_response_status(500).is_err());
+        assert!(check_response_status(503).is_err());
+    }
+
+    #[test]
+    fn test_get_imp_ids() {
+        let imps = vec![
+            Imp {
+                id: "a".to_string(),
+                ..Default::default()
+            },
+            Imp {
+                id: "b".to_string(),
+                ..Default::default()
+            },
+        ];
+        let ids = get_imp_ids(&imps);
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&"a".to_string()));
+        assert!(ids.contains(&"b".to_string()));
+    }
+
+    #[test]
+    fn test_get_imp_ids_empty() {
+        let ids = get_imp_ids(&[]);
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn test_request_data_new_post_has_content_type() {
+        let rd = RequestData::new_post("http://example.com", b"{}".to_vec());
+        assert_eq!(rd.method, "POST");
+        assert_eq!(rd.uri, "http://example.com");
+        assert!(rd.headers.contains_key("Content-Type"));
+    }
+
+    #[test]
+    fn test_request_data_with_header() {
+        let rd = RequestData::new_post("http://example.com", vec![])
+            .with_header("X-Custom", "value");
+        assert_eq!(rd.headers.get("X-Custom").map(String::as_str), Some("value"));
+    }
+
+    #[test]
+    fn test_response_data_new() {
+        let rd = ResponseData::new(200, b"hello".to_vec());
+        assert_eq!(rd.status_code, 200);
+        assert_eq!(rd.body, b"hello");
+    }
+
+    #[test]
+    fn test_typed_bid_new() {
+        let bid = openrtb::Bid {
+            id: "b1".to_string(),
+            impid: "imp1".to_string(),
+            price: 2.5,
+            ..Default::default()
+        };
+        let tb = TypedBid::new(bid.clone(), openrtb_ext::BidType::Banner);
+        assert_eq!(tb.bid.id, "b1");
+        assert_eq!(tb.bid_type, openrtb_ext::BidType::Banner);
+        assert_eq!(tb.orig_bid_cur, "USD");
+    }
+
+    #[test]
+    fn test_bidder_response_new() {
+        let resp = BidderResponse::new();
+        assert_eq!(resp.currency, "USD");
+        assert!(resp.bids.is_empty());
+        assert!(resp.fledge_auction_configs.is_empty());
+    }
+
+    #[test]
+    fn test_bidder_error_is_fatal() {
+        let bad_input = BidderError::bad_input("nope");
+        assert!(bad_input.is_fatal());
+
+        let bad_server = BidderError::bad_server_response("nope");
+        assert!(!bad_server.is_fatal());
+
+        let timeout = BidderError::Timeout;
+        assert!(!timeout.is_fatal());
+    }
+}

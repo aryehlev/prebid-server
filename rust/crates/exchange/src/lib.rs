@@ -6,6 +6,9 @@ use pbs_adapters::{BidderError, BidderResponse, ExtraRequestInfo, RequestData, R
 
 pub mod currency;
 
+#[cfg(test)]
+mod tests;
+
 /// Account holds basic account configuration.
 #[derive(Debug, Clone, Default)]
 pub struct Account {
@@ -32,6 +35,7 @@ pub struct AuctionRequest {
 pub struct AuctionResponse {
     pub bid_response: openrtb::BidResponse,
     pub seat_non_bids: Vec<SeatNonBid>,
+    pub targeting: HashMap<String, HashMap<String, String>>, // imp_id -> targeting_keys
 }
 
 /// BidderResult collects everything returned from a single bidder task.
@@ -200,6 +204,14 @@ impl AdaptedBidder {
     }
 }
 
+/// price_granularity_bucket returns the "medium" granularity price bucket for a bid price.
+/// Medium granularity: $0.01 increments capped at $20.00.
+fn price_granularity_bucket(price: f64) -> String {
+    let capped = price.min(20.0);
+    let bucket = (capped * 100.0).floor() / 100.0;
+    format!("{:.2}", bucket)
+}
+
 /// Exchange orchestrates the full auction: fan-out to bidders, collect results, build response.
 pub struct Exchange {
     pub adapters: HashMap<String, AdaptedBidder>,
@@ -329,33 +341,48 @@ impl Exchange {
             }
         }
 
-        // Collect results and assemble seat bids.
-        let mut seat_bids: Vec<openrtb::SeatBid> = Vec::new();
+        // --- Schain passthrough ---
+        // If bid_request.source.schain is already set, it is included in the cloned BidRequest
+        // sent to each bidder — no additional work is needed for the pass-through case.
+        // (Host-configured schain node prepending would be added here when config supports it.)
+        if let Some(source) = &bid_request.source {
+            if source.schain.is_some() {
+                tracing::debug!("schain present on request source; passing through to bidders as-is");
+            }
+        }
+
+        // --- First-party data passthrough ---
+        // FPD fields (site.ext.data, app.ext.data, user.ext.data, imp[].ext.data) are stored in
+        // `ext: Option<serde_json::Value>` on the respective openrtb structs.  Each bidder receives
+        // a full clone of BidRequest, so FPD passes through automatically.
+
+        // Collect results: keep TypedBids per bidder so we can compute targeting before flattening.
+        let mut bidder_results: Vec<(String, Vec<pbs_adapters::TypedBid>)> = Vec::new();
 
         while let Some(result) = join_set.join_next().await {
             match result {
                 Ok(bidder_result) => {
                     if let Ok(response) = bidder_result.response {
                         if !response.bids.is_empty() {
-                            // Filter bids below floor price
-                            let bids: Vec<openrtb::Bid> = response.bids.into_iter().filter(|typed_bid| {
-                                // Find the matching impression
-                                let floor = bid_request.imp.iter()
-                                    .find(|imp| imp.id == typed_bid.bid.impid)
-                                    .and_then(|imp| imp.bidfloor.filter(|&f| f > 0.0));
+                            // Filter bids below floor price.
+                            let accepted: Vec<pbs_adapters::TypedBid> = response
+                                .bids
+                                .into_iter()
+                                .filter(|typed_bid| {
+                                    let floor = bid_request
+                                        .imp
+                                        .iter()
+                                        .find(|imp| imp.id == typed_bid.bid.impid)
+                                        .and_then(|imp| imp.bidfloor.filter(|&f| f > 0.0));
+                                    match floor {
+                                        Some(floor) => typed_bid.bid.price >= floor,
+                                        None => true,
+                                    }
+                                })
+                                .collect();
 
-                                match floor {
-                                    Some(floor) => typed_bid.bid.price >= floor,
-                                    None => true, // No floor = accept all
-                                }
-                            }).map(|tb| tb.bid).collect();
-
-                            if !bids.is_empty() {
-                                seat_bids.push(openrtb::SeatBid {
-                                    bid: bids,
-                                    seat: Some(bidder_result.bidder_name),
-                                    ..Default::default()
-                                });
+                            if !accepted.is_empty() {
+                                bidder_results.push((bidder_result.bidder_name, accepted));
                             }
                         }
                     }
@@ -364,6 +391,64 @@ impl Exchange {
                     tracing::error!("Bidder task panicked: {}", e);
                 }
             }
+        }
+
+        // --- Targeting / price granularity ---
+        // Emit per-bidder keys (hb_pb_<bidder>, hb_bidder_<bidder>, hb_adid_<bidder>) and
+        // winner keys (hb_pb, hb_bidder, hb_adid) for the highest bid per impression.
+        let mut targeting: HashMap<String, HashMap<String, String>> = HashMap::new();
+
+        // Per-bidder keys.
+        for (bidder_name, typed_bids) in &bidder_results {
+            for typed_bid in typed_bids {
+                let keys = targeting.entry(typed_bid.bid.impid.clone()).or_default();
+                keys.insert(
+                    format!("hb_pb_{}", bidder_name),
+                    price_granularity_bucket(typed_bid.bid.price),
+                );
+                keys.insert(
+                    format!("hb_bidder_{}", bidder_name),
+                    bidder_name.clone(),
+                );
+                keys.insert(
+                    format!("hb_adid_{}", bidder_name),
+                    typed_bid.bid.id.clone(),
+                );
+            }
+        }
+
+        // Winner keys: highest bid per impression.
+        let mut winners: HashMap<String, (f64, String, String)> = HashMap::new();
+        for (bidder_name, typed_bids) in &bidder_results {
+            for typed_bid in typed_bids {
+                let entry = winners
+                    .entry(typed_bid.bid.impid.clone())
+                    .or_insert((f64::NEG_INFINITY, String::new(), String::new()));
+                if typed_bid.bid.price > entry.0 {
+                    *entry = (
+                        typed_bid.bid.price,
+                        bidder_name.clone(),
+                        typed_bid.bid.id.clone(),
+                    );
+                }
+            }
+        }
+        for (imp_id, (price, bidder_name, bid_id)) in &winners {
+            let keys = targeting.entry(imp_id.clone()).or_default();
+            keys.insert("hb_pb".to_string(), price_granularity_bucket(*price));
+            keys.insert("hb_bidder".to_string(), bidder_name.clone());
+            keys.insert("hb_adid".to_string(), bid_id.clone());
+        }
+
+        // Assemble seat bids from collected results.
+        let mut seat_bids: Vec<openrtb::SeatBid> = Vec::new();
+        for (bidder_name, typed_bids) in bidder_results {
+            let bids: Vec<openrtb::Bid> = typed_bids.into_iter().map(|tb| tb.bid).collect();
+            seat_bids.push(openrtb::SeatBid {
+                bid: bids,
+                seat: Some(bidder_name),
+                ..Default::default()
+            });
         }
 
         let bid_response = openrtb::BidResponse {
@@ -376,6 +461,7 @@ impl Exchange {
         Ok(AuctionResponse {
             bid_response,
             seat_non_bids: Vec::new(),
+            targeting,
         })
     }
 }
