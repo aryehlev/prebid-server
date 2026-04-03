@@ -107,7 +107,9 @@ struct MsqResponseBid {
 
 fn get_gdpr_consent_required(request: &openrtb::BidRequest) -> bool {
     request.regs.as_ref()
-        .and_then(|r| r.gdpr)
+        .and_then(|r| r.ext.as_ref())
+        .and_then(|e| e.get("gdpr"))
+        .and_then(|v| v.as_i64())
         .map(|v| v == 1)
         .unwrap_or(false)
 }
@@ -115,15 +117,12 @@ fn get_gdpr_consent_required(request: &openrtb::BidRequest) -> bool {
 fn get_gdpr_consent_string(request: &openrtb::BidRequest) -> String {
     // First check user.consent
     if let Some(user) = &request.user {
-        if let Some(consent) = &user.consent {
-            if !consent.is_empty() {
-                return consent.clone();
-            }
-        }
-        // Fallback to user.ext.consent
+        // Check user.ext.consent
         if let Some(ext) = &user.ext {
             if let Some(c) = ext.get("consent").and_then(|v| v.as_str()) {
-                return c.to_string();
+                if !c.is_empty() {
+                    return c.to_string();
+                }
             }
         }
     }

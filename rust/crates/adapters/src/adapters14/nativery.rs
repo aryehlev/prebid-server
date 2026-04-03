@@ -143,7 +143,7 @@ impl Bidder for NativeryAdapter {
                     .unwrap_or_default();
                 match get_media_type_for_bid(&bid_ext) {
                     Ok(bid_type) => {
-                        let type_str = match bid_type { openrtb_ext::BidType::Banner => "banner", openrtb_ext::BidType::Video => "video", openrtb_ext::BidType::Native => "native", _ => "banner" };
+                        let type_str = match bid_type { openrtb_ext::BidType::Video => "video", openrtb_ext::BidType::Native => "native", _ => "banner" };
                         let bid_meta = build_bid_meta(type_str, bid_ext.nativery.bid_adv_domains);
                         let mut typed_bid = TypedBid::new(bid, bid_type);
                         typed_bid.bid_meta = Some(bid_meta);
