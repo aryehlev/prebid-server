@@ -4,6 +4,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
+use pbs_metrics::MetricsEngine as _;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
 
@@ -27,6 +28,8 @@ pub struct AppStateInner {
     pub status_response: Option<String>,
     /// Stored request fetcher for AMP and other stored-request endpoints
     pub stored_requests: Arc<StoredRequestFetcher>,
+    /// Prometheus metrics engine
+    pub metrics: Arc<pbs_metrics::PrometheusMetrics>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -210,10 +213,12 @@ pub async fn auction_handler(
 
     match state.exchange.hold_auction(auction_req).await {
         Ok(auction_response) => {
+            state.metrics.record_request("openrtb2", pbs_metrics::RequestStatus::Ok);
             (StatusCode::OK, Json(auction_response.bid_response)).into_response()
         }
         Err(e) => {
             tracing::error!("Auction error: {}", e);
+            state.metrics.record_request("openrtb2", pbs_metrics::RequestStatus::BadServerResponse);
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
     }
@@ -622,6 +627,20 @@ pub async fn index_handler() -> &'static str {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// GET /metrics — Prometheus metrics
+// ──────────────────────────────────────────────────────────────────────────────
+
+pub async fn metrics_handler(State(state): State<AppState>) -> Response {
+    let body = state.metrics.gather_text();
+    (
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")],
+        body,
+    )
+        .into_response()
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Router
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -631,6 +650,7 @@ pub fn create_router(state: AppState) -> axum::Router {
         .route("/", axum::routing::get(index_handler))
         .route("/status", axum::routing::get(status_handler))
         .route("/version", axum::routing::get(version_handler))
+        .route("/metrics", axum::routing::get(metrics_handler))
         // Auction
         .route("/openrtb2/auction", axum::routing::post(auction_handler))
         .route("/openrtb2/video", axum::routing::post(video_auction_handler))

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use openrtb_ext::SeatNonBid;
+use openrtb_ext::{NonBid, SeatNonBid};
 use pbs_adapters::{BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData};
 
 pub mod currency;
@@ -54,6 +54,11 @@ fn compress_gzip(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
     encoder.finish()
 }
 
+/// Resolve `${AUCTION_PRICE}` macro in a string with the given price.
+fn resolve_price_macro(s: &str, price: f64) -> String {
+    s.replace("${AUCTION_PRICE}", &format!("{:.4}", price))
+}
+
 /// AdaptedBidder wraps a Bidder implementation with HTTP execution logic.
 pub struct AdaptedBidder {
     pub bidder: Arc<dyn pbs_adapters::Bidder>,
@@ -89,6 +94,7 @@ impl AdaptedBidder {
 
         let mut all_bids = BidderResponse::new();
         let mut http_calls: Vec<openrtb_ext::ExtHttpCall> = Vec::new();
+        let mut timed_out = false;
 
         for req_data in &reqs {
             match self.execute_request(req_data, timeout_ms).await {
@@ -110,6 +116,10 @@ impl AdaptedBidder {
                         Err(mut e) => errs.append(&mut e),
                     }
                 }
+                Err(BidderError::Timeout) => {
+                    timed_out = true;
+                    errs.push(BidderError::Timeout);
+                }
                 Err(e) => errs.push(e),
             }
         }
@@ -126,7 +136,7 @@ impl AdaptedBidder {
             response,
             duration_ms: start.elapsed().as_millis() as u64,
             http_calls,
-            timed_out: false,
+            timed_out,
         }
     }
 
@@ -216,6 +226,7 @@ fn price_granularity_bucket(price: f64) -> String {
 pub struct Exchange {
     pub adapters: HashMap<String, AdaptedBidder>,
     pub http_client: reqwest::Client,
+    pub metrics: Option<Arc<dyn pbs_metrics::MetricsEngine>>,
 }
 
 impl Exchange {
@@ -227,6 +238,7 @@ impl Exchange {
         Self {
             adapters,
             http_client,
+            metrics: None,
         }
     }
 
@@ -312,6 +324,7 @@ impl Exchange {
         };
 
         let mut join_set = tokio::task::JoinSet::new();
+        let mut collected_non_bids: Vec<SeatNonBid> = Vec::new();
 
         for bidder_name in active_bidders {
             // GDPR enforcement: skip bidder if GDPR applies but no consent string present
@@ -320,6 +333,19 @@ impl Exchange {
                     bidder = %bidder_name,
                     "skipping bidder due to GDPR: gdpr=1 but no user.ext.consent string present"
                 );
+                // Record a SeatNonBid with reason code 50 (privacy) for each impression.
+                let non_bids: Vec<NonBid> = bid_request.imp.iter().map(|imp| NonBid {
+                    impid: imp.id.clone(),
+                    statuscode: 50,
+                    ext: None,
+                }).collect();
+                if !non_bids.is_empty() {
+                    collected_non_bids.push(SeatNonBid {
+                        seat: bidder_name.clone(),
+                        nonbid: non_bids,
+                        ext: None,
+                    });
+                }
                 continue;
             }
 
@@ -362,38 +388,89 @@ impl Exchange {
         while let Some(result) = join_set.join_next().await {
             match result {
                 Ok(bidder_result) => {
-                    if let Ok(mut response) = bidder_result.response {
-                        if !response.bids.is_empty() {
-                            // Currency conversion: normalize bid prices to USD.
-                            if response.currency != "USD" {
-                                if let Some(converter) = &request.currency_rates {
-                                    for typed_bid in &mut response.bids {
-                                        if let Some(converted) = converter.convert(typed_bid.bid.price, &response.currency, "USD") {
-                                            typed_bid.bid.price = converted;
+                    // Record per-bidder metrics.
+                    if let Some(m) = &self.metrics {
+                        let status = if bidder_result.timed_out {
+                            pbs_metrics::BidderStatus::TimedOut
+                        } else {
+                            match &bidder_result.response {
+                                Ok(r) if r.bids.is_empty() => pbs_metrics::BidderStatus::NoBid,
+                                Ok(_) => pbs_metrics::BidderStatus::Got,
+                                Err(_) => pbs_metrics::BidderStatus::Error,
+                            }
+                        };
+                        m.record_bidder_response(
+                            &bidder_result.bidder_name,
+                            status,
+                            bidder_result.duration_ms,
+                        );
+                    }
+
+                    match bidder_result.response {
+                        Ok(mut response) => {
+                            if !response.bids.is_empty() {
+                                // Currency conversion: normalize bid prices to USD.
+                                if response.currency != "USD" {
+                                    if let Some(converter) = &request.currency_rates {
+                                        for typed_bid in &mut response.bids {
+                                            if let Some(converted) = converter.convert(typed_bid.bid.price, &response.currency, "USD") {
+                                                typed_bid.bid.price = converted;
+                                            }
                                         }
                                     }
                                 }
+
+                                // Filter bids below floor price; collect rejected ones as non-bids.
+                                let mut floor_non_bids: Vec<NonBid> = Vec::new();
+                                let accepted: Vec<pbs_adapters::TypedBid> = response
+                                    .bids
+                                    .into_iter()
+                                    .filter(|typed_bid| {
+                                        let floor = bid_request
+                                            .imp
+                                            .iter()
+                                            .find(|imp| imp.id == typed_bid.bid.impid)
+                                            .and_then(|imp| imp.bidfloor.filter(|&f| f > 0.0));
+                                        match floor {
+                                            Some(floor) if typed_bid.bid.price < floor => {
+                                                floor_non_bids.push(NonBid {
+                                                    impid: typed_bid.bid.impid.clone(),
+                                                    statuscode: 300,
+                                                    ext: None,
+                                                });
+                                                false
+                                            }
+                                            _ => true,
+                                        }
+                                    })
+                                    .collect();
+
+                                if !floor_non_bids.is_empty() {
+                                    collected_non_bids.push(SeatNonBid {
+                                        seat: bidder_result.bidder_name.clone(),
+                                        nonbid: floor_non_bids,
+                                        ext: None,
+                                    });
+                                }
+
+                                if !accepted.is_empty() {
+                                    bidder_results.push((bidder_result.bidder_name, accepted));
+                                }
                             }
-
-                            // Filter bids below floor price.
-                            let accepted: Vec<pbs_adapters::TypedBid> = response
-                                .bids
-                                .into_iter()
-                                .filter(|typed_bid| {
-                                    let floor = bid_request
-                                        .imp
-                                        .iter()
-                                        .find(|imp| imp.id == typed_bid.bid.impid)
-                                        .and_then(|imp| imp.bidfloor.filter(|&f| f > 0.0));
-                                    match floor {
-                                        Some(floor) => typed_bid.bid.price >= floor,
-                                        None => true,
-                                    }
-                                })
-                                .collect();
-
-                            if !accepted.is_empty() {
-                                bidder_results.push((bidder_result.bidder_name, accepted));
+                        }
+                        Err(_errs) => {
+                            // Bidder returned errors — record a non-bid with reason code 200 per imp.
+                            let non_bids: Vec<NonBid> = bid_request.imp.iter().map(|imp| NonBid {
+                                impid: imp.id.clone(),
+                                statuscode: 200,
+                                ext: None,
+                            }).collect();
+                            if !non_bids.is_empty() {
+                                collected_non_bids.push(SeatNonBid {
+                                    seat: bidder_result.bidder_name,
+                                    nonbid: non_bids,
+                                    ext: None,
+                                });
                             }
                         }
                     }
@@ -451,10 +528,23 @@ impl Exchange {
             keys.insert("hb_adid".to_string(), bid_id.clone());
         }
 
-        // Assemble seat bids from collected results.
+        // Assemble seat bids from collected results, resolving ${AUCTION_PRICE} macros.
         let mut seat_bids: Vec<openrtb::SeatBid> = Vec::new();
         for (bidder_name, typed_bids) in bidder_results {
-            let bids: Vec<openrtb::Bid> = typed_bids.into_iter().map(|tb| tb.bid).collect();
+            let bids: Vec<openrtb::Bid> = typed_bids.into_iter().map(|tb| {
+                let price = tb.bid.price;
+                let mut bid = tb.bid;
+                if let Some(nurl) = bid.nurl.as_deref() {
+                    bid.nurl = Some(resolve_price_macro(nurl, price));
+                }
+                if let Some(adm) = bid.adm.as_deref() {
+                    bid.adm = Some(resolve_price_macro(adm, price));
+                }
+                if let Some(burl) = bid.burl.as_deref() {
+                    bid.burl = Some(resolve_price_macro(burl, price));
+                }
+                bid
+            }).collect();
             seat_bids.push(openrtb::SeatBid {
                 bid: bids,
                 seat: Some(bidder_name),
@@ -471,7 +561,7 @@ impl Exchange {
 
         Ok(AuctionResponse {
             bid_response,
-            seat_non_bids: Vec::new(),
+            seat_non_bids: collected_non_bids,
             targeting,
         })
     }

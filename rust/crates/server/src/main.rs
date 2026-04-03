@@ -124,7 +124,12 @@ async fn main() -> anyhow::Result<()> {
             (name, adapted)
         })
         .collect();
-    let exchange = pbs_exchange::Exchange::new(adapters);
+    let metrics = Arc::new(
+        pbs_metrics::PrometheusMetrics::new("prebid").expect("metrics init"),
+    );
+
+    let mut exchange = pbs_exchange::Exchange::new(adapters);
+    exchange.metrics = Some(metrics.clone() as Arc<dyn pbs_metrics::MetricsEngine>);
 
     let stored_requests_dir = std::env::var("PBS_STORED_REQUESTS_DIR")
         .unwrap_or_else(|_| "./stored_requests".to_string());
@@ -141,6 +146,7 @@ async fn main() -> anyhow::Result<()> {
         host_cookie: pbs_endpoints::HostCookieConfig::default(),
         status_response: None,
         stored_requests,
+        metrics,
     });
 
     let app = pbs_endpoints::create_router(state);
