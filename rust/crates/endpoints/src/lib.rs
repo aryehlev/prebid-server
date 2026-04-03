@@ -30,6 +30,10 @@ pub struct AppStateInner {
     pub stored_requests: Arc<StoredRequestFetcher>,
     /// Prometheus metrics engine
     pub metrics: Arc<pbs_metrics::PrometheusMetrics>,
+    /// Maximum allowed request body size in bytes (0 = unlimited)
+    pub max_request_size: usize,
+    /// Whether GDPR enforcement is enabled
+    pub gdpr_enabled: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -193,9 +197,29 @@ pub async fn version_handler(State(state): State<AppState>) -> Json<serde_json::
 
 pub async fn auction_handler(
     State(state): State<AppState>,
-    _headers: HeaderMap,
+    headers: HeaderMap,
     Json(bid_request): Json<openrtb::BidRequest>,
 ) -> Response {
+    // Check Content-Length against configured max_request_size
+    if state.max_request_size > 0 {
+        if let Some(cl_val) = headers.get(axum::http::header::CONTENT_LENGTH) {
+            if let Ok(cl_str) = cl_val.to_str() {
+                if let Ok(content_length) = cl_str.parse::<usize>() {
+                    if content_length > state.max_request_size {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            format!(
+                                "request size {} exceeded max size of {} bytes",
+                                content_length, state.max_request_size
+                            ),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+        }
+    }
+
     if bid_request.id.is_empty() {
         return (StatusCode::BAD_REQUEST, "request.id is required").into_response();
     }
@@ -230,10 +254,44 @@ pub async fn auction_handler(
 
 pub async fn video_auction_handler(
     State(state): State<AppState>,
-    Json(bid_request): Json<openrtb::BidRequest>,
+    Json(mut bid_request): Json<openrtb::BidRequest>,
 ) -> Response {
-    // Video endpoint reuses the same auction engine; video-specific
-    // request building (pod splitting etc.) is a future enhancement.
+    // Load stored request if req.ext.prebid.storedrequest.id is set, then merge.
+    let stored_id = bid_request
+        .ext
+        .as_ref()
+        .and_then(|e| e.get("prebid"))
+        .and_then(|p| p.get("storedrequest"))
+        .and_then(|sr| sr.get("id"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    if let Some(id) = stored_id {
+        if let Some(stored) = state.stored_requests.get(&id) {
+            // Merge stored request: append stored imps, use stored site/app if not set
+            if let Ok(stored_req) =
+                serde_json::from_value::<openrtb::BidRequest>(stored.clone())
+            {
+                // Merge imp arrays: append stored imps that don't already exist
+                let existing_imp_ids: std::collections::HashSet<String> =
+                    bid_request.imp.iter().map(|i| i.id.clone()).collect();
+                for imp in stored_req.imp {
+                    if !existing_imp_ids.contains(&imp.id) {
+                        bid_request.imp.push(imp);
+                    }
+                }
+                // Use stored site if incoming request doesn't have one
+                if bid_request.site.is_none() {
+                    bid_request.site = stored_req.site;
+                }
+                // Use stored app if incoming request doesn't have one
+                if bid_request.app.is_none() {
+                    bid_request.app = stored_req.app;
+                }
+            }
+        }
+    }
+
     let auction_req = pbs_exchange::AuctionRequest {
         bid_request,
         account: None,
@@ -494,6 +552,35 @@ pub struct CookieSyncResponse {
     pub bidder_status: Vec<serde_json::Value>,
 }
 
+/// All known bidder names that have sync URLs configured.
+const KNOWN_SYNC_BIDDERS: &[&str] = &[
+    "appnexus", "openx", "pubmatic", "ix", "sovrn", "adform",
+    "33across", "criteo", "yieldmo", "sharethrough", "smaato",
+    "conversant", "smartadserver", "yieldlab", "triplelift",
+];
+
+/// Build a sync URL from a template, appending GDPR params when present.
+/// The `{{.RedirectURL}}` macro in templates is left as-is (server-side macro).
+fn build_sync_url(template: &str, gdpr: Option<i32>, gdpr_consent: Option<&str>) -> String {
+    let mut params: Vec<String> = Vec::new();
+    if let Some(g) = gdpr {
+        params.push(format!("gdpr={}", g));
+    }
+    if let Some(gc) = gdpr_consent {
+        if !gc.is_empty() {
+            params.push(format!("gdpr_consent={}", gc));
+        }
+    }
+    if params.is_empty() {
+        return template.to_string();
+    }
+    if template.contains('?') {
+        format!("{}&{}", template, params.join("&"))
+    } else {
+        format!("{}?{}", template, params.join("&"))
+    }
+}
+
 pub async fn cookie_sync_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -502,29 +589,38 @@ pub async fn cookie_sync_handler(
     let cookie = UserSyncCookie::from_request(&headers, &state.host_cookie.cookie_name);
     let has_cookie = !cookie.uids.is_empty();
 
+    let gdpr = body.gdpr;
+    let gdpr_consent = body.gdpr_consent.clone();
+
     // Determine which bidders to check — use requested list or fall back to all known
     let requested: Vec<String> = body.bidders.unwrap_or_default();
 
+    // Cap returned *new* syncs at `limit`; already-synced bidders do NOT count against it.
     let limit = body.limit.unwrap_or(10).max(1) as usize;
 
     let mut bidder_status: Vec<serde_json::Value> = Vec::new();
+    let mut new_sync_count: usize = 0;
 
-    let candidates: Vec<&str> = if requested.is_empty() {
-        // All bidders we have sync URLs for
-        vec![
-            "appnexus", "openx", "pubmatic", "ix", "sovrn", "adform",
-            "33across", "criteo", "yieldmo", "sharethrough", "smaato",
-            "conversant", "smartadserver", "yieldlab", "triplelift",
-        ]
+    // Build the candidate list, validating names against known bidders when explicitly requested.
+    let all_known: std::collections::HashSet<&str> = KNOWN_SYNC_BIDDERS.iter().copied().collect();
+
+    let candidates: Vec<String> = if requested.is_empty() {
+        KNOWN_SYNC_BIDDERS.iter().map(|s| s.to_string()).collect()
     } else {
-        requested.iter().map(|s| s.as_str()).collect()
+        let mut valid = Vec::new();
+        for name in &requested {
+            let key = name.as_str();
+            if all_known.contains(key) || state.bidder_info.contains_key(key) {
+                valid.push(name.clone());
+            } else {
+                tracing::warn!("cookie_sync: unknown bidder '{}' requested; skipping", name);
+            }
+        }
+        valid
     };
 
-    for bidder in candidates {
-        if bidder_status.len() >= limit {
-            break;
-        }
-        // Skip if already synced and not expired
+    for bidder in &candidates {
+        // Already synced — include in status but don't count against limit.
         if cookie.has_valid_uid(bidder) {
             bidder_status.push(serde_json::json!({
                 "bidder": bidder,
@@ -534,8 +630,14 @@ pub async fn cookie_sync_handler(
             continue;
         }
 
-        // Look up sync URL
-        if let Some((sync_type, url)) = bidder_sync_url(bidder) {
+        // Enforce limit on *new* syncs.
+        if new_sync_count >= limit {
+            break;
+        }
+
+        // Look up sync URL and apply GDPR params.
+        if let Some((sync_type, url_template)) = bidder_sync_url(bidder) {
+            let url = build_sync_url(url_template, gdpr, gdpr_consent.as_deref());
             bidder_status.push(serde_json::json!({
                 "bidder": bidder,
                 "no_cookie": true,
@@ -544,6 +646,7 @@ pub async fn cookie_sync_handler(
                     "type": sync_type
                 }
             }));
+            new_sync_count += 1;
         }
     }
 
@@ -577,16 +680,73 @@ pub struct EventParams {
     pub analytics: Option<String>,
 }
 
+impl EventParams {
+    /// Validate required parameters. Returns an error message if any required field is missing or invalid.
+    pub fn validate(&self) -> Result<(), String> {
+        match self.event_type.as_deref() {
+            None | Some("") => {
+                return Err("parameter 't' is required".to_string());
+            }
+            Some(t) if t != "win" && t != "imp" => {
+                return Err(format!("unknown type: '{}'", t));
+            }
+            _ => {}
+        }
+        match self.bid_id.as_deref() {
+            None | Some("") => {
+                return Err("parameter 'b' is required".to_string());
+            }
+            _ => {}
+        }
+        match self.account_id.as_deref() {
+            None | Some("") => {
+                return Err("parameter 'a' is required".to_string());
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
 pub async fn event_handler(
     State(_state): State<AppState>,
     Query(params): Query<EventParams>,
 ) -> Response {
-    tracing::debug!(
-        "event: type={:?} bid={:?} account={:?}",
-        params.event_type,
-        params.bid_id,
-        params.account_id
-    );
+    // Validate required parameters
+    if let Err(msg) = params.validate() {
+        return (StatusCode::BAD_REQUEST, format!("invalid request: {}", msg)).into_response();
+    }
+
+    let event_type = params.event_type.as_deref().unwrap_or("");
+    let bid_id = params.bid_id.as_deref().unwrap_or("");
+    let account_id = params.account_id.as_deref().unwrap_or("");
+    let bidder = params.bidder.as_deref().unwrap_or("");
+    let timestamp = params.timestamp.unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
+
+    // Log the event at info level
+    match event_type {
+        "win" => {
+            tracing::info!(
+                event_type = "win",
+                bid_id = bid_id,
+                account_id = account_id,
+                bidder = bidder,
+                timestamp = timestamp,
+                "win notification received"
+            );
+        }
+        "imp" => {
+            tracing::info!(
+                event_type = "imp",
+                bid_id = bid_id,
+                account_id = account_id,
+                bidder = bidder,
+                timestamp = timestamp,
+                "impression notification received"
+            );
+        }
+        _ => {}
+    }
 
     // Return 1x1 PNG pixel for image format, blank otherwise
     if params.format.as_deref() == Some("i") {
@@ -606,6 +766,59 @@ pub async fn event_handler(
 // POST /vtrack
 // ──────────────────────────────────────────────────────────────────────────────
 
+/// Inject a tracking impression URL into a VAST XML string.
+///
+/// Mirrors the Go `ModifyVastXmlString` logic:
+/// - If there is no `</Impression>` tag, return the input unchanged.
+/// - If the nearest `<Impression>` is immediately followed by `</Impression>`
+///   (empty tag), insert the CDATA URL inside that empty element.
+/// - Otherwise append a new `<Impression>…</Impression>` element right after
+///   the first `</Impression>` closing tag.
+pub fn modify_vast_xml(vast: &str, tracking_url: &str) -> String {
+    const CLOSE_TAG: &str = "</Impression>";
+    const OPEN_TAG: &str = "<Impression>";
+
+    let ci = match vast.find(CLOSE_TAG) {
+        Some(idx) => idx,
+        None => return vast.to_string(),
+    };
+
+    let cdata = format!("<![CDATA[{}]]>", tracking_url);
+
+    // Check whether the nearest open tag is immediately followed by the close tag
+    // i.e. <Impression></Impression> — empty element.
+    if let Some(oi) = vast.find(OPEN_TAG) {
+        if ci - oi == OPEN_TAG.len() {
+            // Insert CDATA inside the empty element
+            return vast.replacen(OPEN_TAG, &format!("{}{}", OPEN_TAG, cdata), 1);
+        }
+    }
+
+    // Append a new Impression element after the first closing tag
+    let injection = format!("{}{}{}{}", CLOSE_TAG, OPEN_TAG, cdata, CLOSE_TAG);
+    vast.replacen(CLOSE_TAG, &injection, 1)
+}
+
+/// Build the event/tracking URL from query params.
+///
+/// Pattern: `/event?t=imp&b={bid_id}&a={account_id}[&bidder={bidder}][&ts={ts}]`
+/// `bid_id` is taken from the `b` query param; `account_id` from `a`.
+fn build_vast_tracking_url(params: &HashMap<String, String>) -> String {
+    let account = params.get("a").map(|s| s.as_str()).unwrap_or("");
+    let bid_id = params.get("b").map(|s| s.as_str()).unwrap_or("");
+    let bidder = params.get("bidder").map(|s| s.as_str()).unwrap_or("");
+    let ts = params.get("ts").map(|s| s.as_str()).unwrap_or("");
+
+    let mut url = format!("/event?t=imp&b={}&a={}", bid_id, account);
+    if !bidder.is_empty() {
+        url.push_str(&format!("&bidder={}", bidder));
+    }
+    if !ts.is_empty() {
+        url.push_str(&format!("&ts={}", ts));
+    }
+    url
+}
+
 pub async fn vtrack_handler(
     State(_state): State<AppState>,
     Query(params): Query<HashMap<String, String>>,
@@ -613,9 +826,29 @@ pub async fn vtrack_handler(
 ) -> Response {
     let account = params.get("a").cloned().unwrap_or_default();
     tracing::debug!("vtrack: account={} body_len={}", account, body.len());
-    // Full implementation rewrites VAST XML with tracking URLs.
-    // Return the body unchanged for now.
-    (StatusCode::OK, body).into_response()
+
+    // Convert body to string; if not valid UTF-8 pass through unchanged.
+    let vast_str = match std::str::from_utf8(&body) {
+        Ok(s) => s,
+        Err(_) => {
+            return (StatusCode::OK, body).into_response();
+        }
+    };
+
+    // Only attempt VAST XML rewriting if the body looks like VAST XML.
+    if !vast_str.contains("<VAST") {
+        return (StatusCode::OK, body).into_response();
+    }
+
+    let tracking_url = build_vast_tracking_url(&params);
+    let modified = modify_vast_xml(vast_str, &tracking_url);
+
+    (
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "application/xml")],
+        modified,
+    )
+        .into_response()
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -667,4 +900,224 @@ pub fn create_router(state: AppState) -> axum::Router {
         .route("/event", axum::routing::get(event_handler))
         .route("/vtrack", axum::routing::post(vtrack_handler))
         .with_state(state)
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Tests
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::util::ServiceExt as _;
+
+    /// Build a minimal AppState suitable for unit tests.
+    fn test_state() -> AppState {
+        use std::sync::Arc;
+        let metrics = pbs_metrics::PrometheusMetrics::new("test_endpoints")
+            .expect("failed to create metrics");
+        let exchange = pbs_exchange::Exchange::new(std::collections::HashMap::new());
+        Arc::new(AppStateInner {
+            exchange,
+            version: "test".to_string(),
+            revision: "abc123".to_string(),
+            bidder_info: HashMap::new(),
+            bidder_params: HashMap::new(),
+            host_cookie: HostCookieConfig::default(),
+            status_response: None,
+            stored_requests: Arc::new(StoredRequestFetcher::empty()),
+            metrics: Arc::new(metrics),
+            max_request_size: 0,
+            gdpr_enabled: false,
+        })
+    }
+
+    /// Send a one-shot request through the router and return `(status, body_bytes)`.
+    async fn send(router: axum::Router, req: Request<Body>) -> (StatusCode, bytes::Bytes) {
+        let resp = router
+            .oneshot(req)
+            .await
+            .expect("oneshot failed");
+        let status = resp.status();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("body read failed");
+        (status, body)
+    }
+
+    #[tokio::test]
+    async fn test_status_returns_200() {
+        let router = create_router(test_state());
+        let req = Request::builder()
+            .method("GET")
+            .uri("/status")
+            .body(Body::empty())
+            .unwrap();
+        let (status, _body) = send(router, req).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_version_returns_json_with_version_field() {
+        let router = create_router(test_state());
+        let req = Request::builder()
+            .method("GET")
+            .uri("/version")
+            .body(Body::empty())
+            .unwrap();
+        let (status, body) = send(router, req).await;
+        assert_eq!(status, StatusCode::OK);
+        let json: serde_json::Value =
+            serde_json::from_slice(&body).expect("response is not valid JSON");
+        assert!(
+            json.get("version").is_some(),
+            "response JSON missing 'version' field: {}",
+            json
+        );
+    }
+
+    #[tokio::test]
+    async fn test_auction_empty_body_returns_400() {
+        let router = create_router(test_state());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/openrtb2/auction")
+            .header("content-type", "application/json")
+            .body(Body::empty())
+            .unwrap();
+        let (status, _body) = send(router, req).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_metrics_returns_prometheus_text() {
+        let router = create_router(test_state());
+        let req = Request::builder()
+            .method("GET")
+            .uri("/metrics")
+            .body(Body::empty())
+            .unwrap();
+        let (status, body) = send(router, req).await;
+        assert_eq!(status, StatusCode::OK);
+        // Verify the body is valid UTF-8 text (Prometheus format)
+        let _body_str = std::str::from_utf8(&body).expect("non-UTF-8 metrics body");
+    }
+
+    // ── Unit tests for VAST XML injection ────────────────────────────────────
+
+    #[test]
+    fn test_modify_vast_xml_no_impression_tag_unchanged() {
+        let vast = r#"<VAST version="2.0"><Ad></Ad></VAST>"#;
+        let result = modify_vast_xml(vast, "https://example.com/track");
+        assert_eq!(result, vast);
+    }
+
+    #[test]
+    fn test_modify_vast_xml_empty_impression_injects_cdata() {
+        let vast = r#"<VAST><Ad><Impression></Impression></Ad></VAST>"#;
+        let result = modify_vast_xml(vast, "https://example.com/track");
+        assert!(result.contains("<![CDATA[https://example.com/track]]>"));
+        assert!(result.contains("<Impression><![CDATA[https://example.com/track]]></Impression>"));
+    }
+
+    #[test]
+    fn test_modify_vast_xml_non_empty_impression_appends_new_element() {
+        let vast = r#"<VAST><Ad><Impression><![CDATA[https://existing.com]]></Impression></Ad></VAST>"#;
+        let result = modify_vast_xml(vast, "https://new.com/track");
+        assert!(result.contains("<![CDATA[https://existing.com]]>"));
+        assert!(result.contains("<![CDATA[https://new.com/track]]>"));
+        assert!(result.contains(
+            "</Impression><Impression><![CDATA[https://new.com/track]]></Impression>"
+        ));
+    }
+
+    // ── Unit tests for EventParams validation ────────────────────────────────
+
+    #[test]
+    fn test_event_params_missing_type_returns_error() {
+        let p = EventParams {
+            event_type: None,
+            bid_id: Some("bid1".to_string()),
+            account_id: Some("acct1".to_string()),
+            bidder: None,
+            format: None,
+            timestamp: None,
+            analytics: None,
+        };
+        assert!(p.validate().is_err());
+    }
+
+    #[test]
+    fn test_event_params_unknown_type_returns_error() {
+        let p = EventParams {
+            event_type: Some("unknown".to_string()),
+            bid_id: Some("bid1".to_string()),
+            account_id: Some("acct1".to_string()),
+            bidder: None,
+            format: None,
+            timestamp: None,
+            analytics: None,
+        };
+        assert!(p.validate().is_err());
+    }
+
+    #[test]
+    fn test_event_params_missing_bid_id_returns_error() {
+        let p = EventParams {
+            event_type: Some("win".to_string()),
+            bid_id: None,
+            account_id: Some("acct1".to_string()),
+            bidder: None,
+            format: None,
+            timestamp: None,
+            analytics: None,
+        };
+        assert!(p.validate().is_err());
+    }
+
+    #[test]
+    fn test_event_params_missing_account_returns_error() {
+        let p = EventParams {
+            event_type: Some("imp".to_string()),
+            bid_id: Some("bid1".to_string()),
+            account_id: None,
+            bidder: None,
+            format: None,
+            timestamp: None,
+            analytics: None,
+        };
+        assert!(p.validate().is_err());
+    }
+
+    #[test]
+    fn test_event_params_valid_win() {
+        let p = EventParams {
+            event_type: Some("win".to_string()),
+            bid_id: Some("bid1".to_string()),
+            account_id: Some("acct1".to_string()),
+            bidder: None,
+            format: None,
+            timestamp: None,
+            analytics: None,
+        };
+        assert!(p.validate().is_ok());
+    }
+
+    #[test]
+    fn test_event_params_valid_imp() {
+        let p = EventParams {
+            event_type: Some("imp".to_string()),
+            bid_id: Some("bid1".to_string()),
+            account_id: Some("acct1".to_string()),
+            bidder: None,
+            format: None,
+            timestamp: None,
+            analytics: None,
+        };
+        assert!(p.validate().is_ok());
+    }
 }

@@ -4,6 +4,7 @@ use std::sync::Arc;
 use openrtb_ext::{NonBid, SeatNonBid};
 use pbs_adapters::{BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData};
 
+pub mod analytics;
 pub mod currency;
 pub mod floors;
 
@@ -180,10 +181,15 @@ impl AdaptedBidder {
                 }
                 Err(BidderError::Timeout) => {
                     timed_out = true;
+                    tracing::warn!("bidder {} timed out after {}ms", bidder_name, timeout_ms);
                     errs.push(BidderError::Timeout);
                 }
                 Err(e) => errs.push(e),
             }
+        }
+
+        if !errs.is_empty() {
+            tracing::debug!("bidder {} returned {} errors", bidder_name, errs.len());
         }
 
         // If all errors are non-fatal, still return the bids we collected.
@@ -276,12 +282,141 @@ impl AdaptedBidder {
     }
 }
 
-/// price_granularity_bucket returns the "medium" granularity price bucket for a bid price.
-/// Medium granularity: $0.01 increments capped at $20.00.
-fn price_granularity_bucket(price: f64) -> String {
-    let capped = price.min(20.0);
-    let bucket = (capped * 100.0).floor() / 100.0;
-    format!("{:.2}", bucket)
+/// PriceRange describes a single range band for custom price granularity.
+#[derive(Debug, Clone)]
+pub struct PriceRange {
+    pub max: f64,
+    pub increment: f64,
+}
+
+/// PriceGranularity holds custom granularity configuration parsed from
+/// `req.ext.prebid.targeting.pricegranularity`.
+#[derive(Debug, Clone)]
+pub struct PriceGranularity {
+    pub precision: Option<u32>,
+    pub ranges: Vec<PriceRange>,
+}
+
+impl PriceGranularity {
+    /// Try to parse a PriceGranularity from a serde_json::Value representing
+    /// the `pricegranularity` object in `req.ext.prebid.targeting`.
+    fn from_json(v: &serde_json::Value) -> Option<Self> {
+        let obj = v.as_object()?;
+        let precision = obj
+            .get("precision")
+            .and_then(|p| p.as_u64())
+            .map(|p| p as u32);
+        let ranges = obj
+            .get("ranges")
+            .and_then(|r| r.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|entry| {
+                        let max = entry.get("max")?.as_f64()?;
+                        let increment = entry.get("increment")?.as_f64()?;
+                        if increment <= 0.0 {
+                            return None;
+                        }
+                        Some(PriceRange { max, increment })
+                    })
+                    .collect()
+            })
+            .unwrap_or_else(|| Vec::<PriceRange>::new());
+        if ranges.is_empty() && precision.is_none() {
+            return None;
+        }
+        Some(PriceGranularity { precision, ranges })
+    }
+}
+
+/// price_granularity_bucket returns the price bucket string for a bid price.
+///
+/// If a custom `PriceGranularity` is provided, it is used; otherwise the
+/// default "medium" granularity applies ($0.01 increments, capped at $20.00).
+fn price_granularity_bucket(price: f64, granularity: Option<&PriceGranularity>) -> String {
+    match granularity {
+        Some(gran) if !gran.ranges.is_empty() => {
+            let precision = gran.precision.unwrap_or(2) as usize;
+            // Find the overall max across all ranges.
+            let bucket_max = gran
+                .ranges
+                .iter()
+                .map(|r| r.max)
+                .fold(f64::NEG_INFINITY, f64::max);
+
+            if price > bucket_max {
+                return format!("{:.prec$}", bucket_max, prec = precision);
+            }
+
+            // Find the matching range (the range whose max >= price, smallest max first).
+            let mut sorted_ranges = gran.ranges.clone();
+            sorted_ranges.sort_by(|a, b| a.max.partial_cmp(&b.max).unwrap_or(std::cmp::Ordering::Equal));
+
+            let mut bucket_min = 0.0_f64;
+            for range in &sorted_ranges {
+                if price <= range.max {
+                    let increment = range.increment;
+                    let steps = ((price - bucket_min) / increment).floor();
+                    let rounded = steps * increment + bucket_min;
+                    return format!("{:.prec$}", rounded, prec = precision);
+                }
+                bucket_min = range.max;
+            }
+
+            // Fallback: return bucket_max
+            format!("{:.prec$}", bucket_max, prec = precision)
+        }
+        _ => {
+            // Default medium granularity: $0.01 increments, capped at $20.00.
+            let capped = price.min(20.0);
+            let bucket = (capped * 100.0).floor() / 100.0;
+            format!("{:.2}", bucket)
+        }
+    }
+}
+
+/// validate_bids removes bids that fail basic sanity checks and logs warnings
+/// for bids that are kept but have suspicious fields.
+///
+/// Rules (mirrors Go exchange/bidder_validate_bids.go):
+///   - `bid.id` empty → drop + warn
+///   - `bid.impid` does not match any request imp → drop
+///   - `bid.price` < 0 → drop
+///   - banner/video bid with no `adm` AND no `nurl` → warn but keep
+fn validate_bids(bids: Vec<pbs_adapters::TypedBid>, imps: &[openrtb::Imp]) -> Vec<pbs_adapters::TypedBid> {
+    let imp_ids: std::collections::HashSet<&str> = imps.iter().map(|i| i.id.as_str()).collect();
+
+    bids.into_iter()
+        .filter(|tb| {
+            let bid = &tb.bid;
+
+            if bid.id.is_empty() {
+                tracing::warn!(impid = %bid.impid, "dropping bid: missing required field 'id'");
+                return false;
+            }
+
+            if !imp_ids.contains(bid.impid.as_str()) {
+                tracing::warn!(bid_id = %bid.id, impid = %bid.impid,
+                    "dropping bid: impid does not match any imp in the request");
+                return false;
+            }
+
+            if bid.price < 0.0 {
+                tracing::warn!(bid_id = %bid.id, price = bid.price,
+                    "dropping bid: price must be >= 0");
+                return false;
+            }
+
+            // Warn (but keep) banner/video bids without creative.
+            let is_banner_or_video = matches!(tb.bid_type, openrtb_ext::BidType::Banner | openrtb_ext::BidType::Video);
+            if is_banner_or_video && bid.adm.is_none() && bid.nurl.is_none() {
+                tracing::warn!(bid_id = %bid.id, bid_type = ?tb.bid_type,
+                    "bid has no adm or nurl; creative may be missing");
+            }
+
+            true
+        })
+        .collect()
 }
 
 /// Exchange orchestrates the full auction: fan-out to bidders, collect results, build response.
@@ -289,6 +424,7 @@ pub struct Exchange {
     pub adapters: HashMap<String, AdaptedBidder>,
     pub http_client: reqwest::Client,
     pub metrics: Option<Arc<dyn pbs_metrics::MetricsEngine>>,
+    pub analytics: Option<Arc<dyn analytics::AnalyticsBackend>>,
 }
 
 impl Exchange {
@@ -301,6 +437,7 @@ impl Exchange {
             adapters,
             http_client,
             metrics: None,
+            analytics: None,
         }
     }
 
@@ -335,11 +472,37 @@ impl Exchange {
             }
         }
 
-        // Determine dynamic timeout from tmax
-        let timeout_ms = bid_request.tmax
+        // Tmax adjustments: subtract network overhead from bidder timeout.
+        // Read `req.ext.prebid.server.response_time_ms` if present.
+        let response_time_ms_overhead: i64 = bid_request
+            .ext
+            .as_ref()
+            .and_then(|e| e.get("prebid"))
+            .and_then(|p| p.get("server"))
+            .and_then(|s| s.get("response_time_ms"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+
+        let bidder_timeout_ms: u64 = bid_request
+            .tmax
             .filter(|&t| t > 0)
-            .unwrap_or(1000) as u64;
+            .map(|t| {
+                let adjusted = t - response_time_ms_overhead;
+                adjusted.max(1) as u64
+            })
+            .unwrap_or(1000);
+
+        let timeout_ms = bidder_timeout_ms;
         let _duration = std::time::Duration::from_millis(timeout_ms);
+
+        // Parse custom price granularity from req.ext.prebid.targeting.pricegranularity.
+        let custom_price_granularity: Option<PriceGranularity> = bid_request
+            .ext
+            .as_ref()
+            .and_then(|e| e.get("prebid"))
+            .and_then(|p| p.get("targeting"))
+            .and_then(|t| t.get("pricegranularity"))
+            .and_then(|pg| PriceGranularity::from_json(pg));
 
         // Check GDPR: if regs.ext.gdpr == 1 and no user.ext.consent, warn (checked per bidder below)
         let gdpr_applies = bid_request.regs
@@ -516,8 +679,11 @@ impl Exchange {
                                     });
                                 }
 
-                                if !accepted.is_empty() {
-                                    bidder_results.push((bidder_result.bidder_name, accepted));
+                                // Bid validation: drop invalid bids, warn on suspicious ones.
+                                let validated = validate_bids(accepted, &bid_request.imp);
+
+                                if !validated.is_empty() {
+                                    bidder_results.push((bidder_result.bidder_name, validated));
                                 }
                             }
                         }
@@ -549,26 +715,32 @@ impl Exchange {
         // winner keys (hb_pb, hb_bidder, hb_adid) for the highest bid per impression.
         let mut targeting: HashMap<String, HashMap<String, String>> = HashMap::new();
 
+        let pg_ref = custom_price_granularity.as_ref();
+
         // Per-bidder keys.
         for (bidder_name, typed_bids) in &bidder_results {
             for typed_bid in typed_bids {
                 let keys = targeting.entry(typed_bid.bid.impid.clone()).or_default();
                 keys.insert(
                     format!("hb_pb_{}", bidder_name),
-                    price_granularity_bucket(typed_bid.bid.price),
+                    price_granularity_bucket(typed_bid.bid.price, pg_ref),
                 );
                 keys.insert(
                     format!("hb_bidder_{}", bidder_name),
                     bidder_name.clone(),
                 );
-                keys.insert(
-                    format!("hb_adid_{}", bidder_name),
-                    typed_bid.bid.id.clone(),
-                );
+                // Use bid.adid (advertiser creative ID) if available, else fall back to bid.id.
+                let adid = typed_bid
+                    .bid
+                    .adid
+                    .clone()
+                    .unwrap_or_else(|| typed_bid.bid.id.clone());
+                keys.insert(format!("hb_adid_{}", bidder_name), adid);
             }
         }
 
         // Winner keys: highest bid per impression.
+        // Tuple: (price, bidder_name, adid).
         let mut winners: HashMap<String, (f64, String, String)> = HashMap::new();
         for (bidder_name, typed_bids) in &bidder_results {
             for typed_bid in typed_bids {
@@ -576,19 +748,20 @@ impl Exchange {
                     .entry(typed_bid.bid.impid.clone())
                     .or_insert((f64::NEG_INFINITY, String::new(), String::new()));
                 if typed_bid.bid.price > entry.0 {
-                    *entry = (
-                        typed_bid.bid.price,
-                        bidder_name.clone(),
-                        typed_bid.bid.id.clone(),
-                    );
+                    let adid = typed_bid
+                        .bid
+                        .adid
+                        .clone()
+                        .unwrap_or_else(|| typed_bid.bid.id.clone());
+                    *entry = (typed_bid.bid.price, bidder_name.clone(), adid);
                 }
             }
         }
-        for (imp_id, (price, bidder_name, bid_id)) in &winners {
+        for (imp_id, (price, bidder_name, adid)) in &winners {
             let keys = targeting.entry(imp_id.clone()).or_default();
-            keys.insert("hb_pb".to_string(), price_granularity_bucket(*price));
+            keys.insert("hb_pb".to_string(), price_granularity_bucket(*price, pg_ref));
             keys.insert("hb_bidder".to_string(), bidder_name.clone());
-            keys.insert("hb_adid".to_string(), bid_id.clone());
+            keys.insert("hb_adid".to_string(), adid.clone());
         }
 
         // Assemble seat bids from collected results, resolving ${AUCTION_PRICE} macros.
@@ -621,6 +794,24 @@ impl Exchange {
             cur: Some("USD".to_string()),
             ..Default::default()
         };
+
+        // Log analytics event
+        if let Some(analytics_backend) = &self.analytics {
+            let bid_count: usize = bid_response.seatbid.iter().map(|sb| sb.bid.len()).sum();
+            let total_revenue: f64 = bid_response.seatbid.iter()
+                .flat_map(|sb| sb.bid.iter())
+                .map(|b| b.price)
+                .sum();
+            let bidder_count = bid_response.seatbid.len();
+            analytics_backend.log_auction(analytics::AuctionEvent {
+                timestamp: chrono::Utc::now().timestamp(),
+                request_id: bid_request.id.clone(),
+                status: "ok".to_string(),
+                bidder_count,
+                bid_count,
+                total_revenue,
+            });
+        }
 
         Ok(AuctionResponse {
             bid_response,
