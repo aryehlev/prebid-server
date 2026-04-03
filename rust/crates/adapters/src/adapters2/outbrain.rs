@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
 use openrtb_ext::BidType;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 pub struct OutbrainAdapter { pub endpoint: String }
 impl OutbrainAdapter {
