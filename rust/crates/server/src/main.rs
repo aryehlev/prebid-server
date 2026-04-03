@@ -22,6 +22,11 @@ async fn main() -> anyhow::Result<()> {
     let state = Arc::new(pbs_endpoints::AppStateInner {
         exchange,
         version: env!("CARGO_PKG_VERSION").to_string(),
+        revision: std::env::var("PBS_REVISION").unwrap_or_else(|_| "unknown".to_string()),
+        bidder_info: std::collections::HashMap::new(),
+        bidder_params: std::collections::HashMap::new(),
+        host_cookie: pbs_endpoints::HostCookieConfig::default(),
+        status_response: None,
     });
 
     let app = pbs_endpoints::create_router(state);
