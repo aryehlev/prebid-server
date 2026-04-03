@@ -182,7 +182,7 @@ pub use ucfunnel::UcfunnelAdapter;
 pub use undertone::UndertoneAdapter;
 pub use unicorn::UnicornAdapter;
 pub use videobyte::VideobyteAdapter;
-pub use videoheroes::VideoheroesAdapter;
+pub use videoheroes::VideoHeroesAdapter;
 pub use vidoomy::VidoomyAdapter;
 pub use visiblemeasures::VisiblemeasuresAdapter;
 pub use visx::VisxAdapter;
