@@ -121,6 +121,11 @@ fn lookup_schema_floor(
             if let Some(&floor) = values.get(&key) {
                 return Some(floor);
             }
+            // Wildcard fallback for top-level values
+            let wildcard_key = schema.fields.iter().map(|_| "*").collect::<Vec<_>>().join(delimiter);
+            if let Some(&floor) = values.get(&wildcard_key) {
+                return Some(floor);
+            }
         }
     }
 
