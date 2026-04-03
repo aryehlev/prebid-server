@@ -308,6 +308,91 @@ pub async fn auction_handler(
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// GET /openrtb2/auction
+// ──────────────────────────────────────────────────────────────────────────────
+
+pub async fn auction_get_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    let body = match params.get("request") {
+        Some(r) => r.clone(),
+        None => return (StatusCode::BAD_REQUEST, "missing request parameter").into_response(),
+    };
+
+    let bid_request: openrtb::BidRequest = match serde_json::from_str(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, format!("invalid request JSON: {}", e)).into_response();
+        }
+    };
+
+    // Reuse same validation and auction logic as auction_handler
+    if bid_request.id.is_empty() {
+        return (StatusCode::BAD_REQUEST, "request.id is required").into_response();
+    }
+    if bid_request.imp.is_empty() {
+        return (StatusCode::BAD_REQUEST, "request.imp must contain at least one impression").into_response();
+    }
+
+    let account_id = bid_request
+        .site
+        .as_ref()
+        .and_then(|s| s.publisher.as_ref())
+        .and_then(|p| p.id.as_deref());
+
+    let account_cfg = account_id.and_then(|id| state.accounts.get(id));
+
+    if let Some(acct) = account_cfg {
+        if acct.gdpr_enabled == Some(true) {
+            let has_consent = bid_request
+                .user
+                .as_ref()
+                .and_then(|u| u.ext.as_ref())
+                .and_then(|e| e.get("consent"))
+                .and_then(|v| v.as_str())
+                .map(|s| !s.is_empty())
+                .unwrap_or(false);
+            if !has_consent {
+                let empty_response = openrtb::BidResponse {
+                    id: bid_request.id.clone(),
+                    ..Default::default()
+                };
+                return (StatusCode::OK, Json(empty_response)).into_response();
+            }
+        }
+    }
+
+    let mut bid_request = bid_request;
+    if let Some(acct) = account_cfg {
+        if let Some(tmax) = acct.auction_timeout_ms {
+            bid_request.tmax = Some(tmax as i64);
+        }
+    }
+
+    let auction_req = pbs_exchange::AuctionRequest {
+        bid_request,
+        account: None,
+        user_syncs: None,
+        start_time: std::time::Instant::now(),
+        currency_rates: None,
+    };
+
+    match state.exchange.hold_auction(auction_req).await {
+        Ok(auction_response) => {
+            state.metrics.record_request("openrtb2", pbs_metrics::RequestStatus::Ok);
+            (StatusCode::OK, Json(auction_response.bid_response)).into_response()
+        }
+        Err(e) => {
+            tracing::error!("Auction error: {}", e);
+            state.metrics.record_request("openrtb2", pbs_metrics::RequestStatus::BadServerResponse);
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
+        }
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // POST /openrtb2/video
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -946,7 +1031,7 @@ pub fn create_router(state: AppState) -> axum::Router {
         .route("/ready", axum::routing::get(readiness_handler))
         .route("/metrics", axum::routing::get(metrics_handler))
         // Auction
-        .route("/openrtb2/auction", axum::routing::post(auction_handler))
+        .route("/openrtb2/auction", axum::routing::get(auction_get_handler).post(auction_handler))
         .route("/openrtb2/video", axum::routing::post(video_auction_handler))
         .route("/openrtb2/amp", axum::routing::get(amp_handler))
         // Bidder info

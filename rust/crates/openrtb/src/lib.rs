@@ -705,7 +705,50 @@ pub struct User {
     #[serde(default)]
     pub data: Vec<Data>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub eids: Option<Vec<Eid>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub ext: Option<serde_json::Value>,
+}
+
+/// OpenRTB 2.6 Extended ID (EID)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Eid {
+    pub source: Option<String>,
+    pub uids: Option<Vec<Uid>>,
+    pub ext: Option<serde_json::Value>,
+}
+
+/// OpenRTB 2.6 UID (within an EID)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Uid {
+    pub id: Option<String>,
+    pub atype: Option<i32>,
+    pub ext: Option<serde_json::Value>,
+}
+
+/// DSA Transparency entry (domain + params)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DsaTransparency {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dsaparams: Option<Vec<i32>>,
+}
+
+/// Digital Services Act (DSA) object
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Dsa {
+    /// 0=not required, 1=supported, 2=required, 3=required+online platform
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dsarequired: Option<i32>,
+    /// 0=publisher can't render, 1=publisher could render, 2=publisher will render
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pubrender: Option<i32>,
+    /// 0=don't send, 1=optional, 2=send
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub datatopub: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transparency: Option<Vec<DsaTransparency>>,
 }
 
 /// OpenRTB 2.x Regs
@@ -714,6 +757,10 @@ pub struct User {
 pub struct Regs {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub coppa: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub us_privacy: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dsa: Option<Dsa>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ext: Option<serde_json::Value>,
 }

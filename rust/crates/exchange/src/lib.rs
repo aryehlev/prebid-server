@@ -4,9 +4,12 @@ use std::sync::Arc;
 use openrtb_ext::{NonBid, SeatNonBid};
 use pbs_adapters::{BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData};
 
+pub mod adserver_targeting;
 pub mod analytics;
 pub mod currency;
 pub mod floors;
+pub mod gdpr;
+pub mod hooks;
 
 #[cfg(test)]
 mod tests;
@@ -426,6 +429,7 @@ pub struct Exchange {
     pub http_client: reqwest::Client,
     pub metrics: Option<Arc<dyn pbs_metrics::MetricsEngine>>,
     pub analytics: Option<Arc<dyn analytics::AnalyticsBackend>>,
+    pub hook_plan: Option<Arc<hooks::HookExecutionPlan>>,
 }
 
 impl Exchange {
@@ -439,6 +443,7 @@ impl Exchange {
             http_client,
             metrics: None,
             analytics: None,
+            hook_plan: None,
         }
     }
 
@@ -463,6 +468,17 @@ impl Exchange {
         request: AuctionRequest,
         per_bidder_timeouts: &HashMap<String, u64>,
     ) -> Result<AuctionResponse, anyhow::Error> {
+        // Execute EntrypointRequest hooks before any processing.
+        if let Some(plan) = &self.hook_plan {
+            let payload = serde_json::to_value(&request.bid_request)
+                .unwrap_or(serde_json::Value::Null);
+            if let hooks::HookOutcome::Reject { reason } =
+                plan.execute_stage(&hooks::HookStage::EntrypointRequest, &payload)
+            {
+                return Err(anyhow::anyhow!("request rejected by hook: {}", reason));
+            }
+        }
+
         let bid_request = &request.bid_request;
 
         // Validate impression count
@@ -532,6 +548,13 @@ impl Exchange {
             .and_then(|v| v.as_i64())
             .unwrap_or(0) == 1;
 
+        // Check CCPA: us_privacy string index 2 == 'Y' means user has opted out of sale.
+        let ccpa_opt_out = bid_request.regs
+            .as_ref()
+            .and_then(|r| r.us_privacy.as_deref())
+            .map(|s| s.chars().nth(2) == Some('Y'))
+            .unwrap_or(false);
+
         let has_consent = bid_request.user
             .as_ref()
             .and_then(|u| u.ext.as_ref())
@@ -582,6 +605,28 @@ impl Exchange {
                 let non_bids: Vec<NonBid> = bid_request.imp.iter().map(|imp| NonBid {
                     impid: imp.id.clone(),
                     statuscode: 50,
+                    ext: None,
+                }).collect();
+                if !non_bids.is_empty() {
+                    collected_non_bids.push(SeatNonBid {
+                        seat: bidder_name.clone(),
+                        nonbid: non_bids,
+                        ext: None,
+                    });
+                }
+                continue;
+            }
+
+            // CCPA enforcement: skip all bidders when user has opted out of sale.
+            if ccpa_opt_out {
+                tracing::warn!(
+                    bidder = %bidder_name,
+                    "skipping bidder due to CCPA opt-out (us_privacy index 2 == 'Y')"
+                );
+                // Record a SeatNonBid with reason code 51 (CCPA) for each impression.
+                let non_bids: Vec<NonBid> = bid_request.imp.iter().map(|imp| NonBid {
+                    impid: imp.id.clone(),
+                    statuscode: 51,
                     ext: None,
                 }).collect();
                 if !non_bids.is_empty() {
