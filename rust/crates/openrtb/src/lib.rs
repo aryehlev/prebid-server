@@ -130,6 +130,8 @@ pub struct Bid {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub purl: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub mtype: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub ext: Option<serde_json::Value>,
 }
 

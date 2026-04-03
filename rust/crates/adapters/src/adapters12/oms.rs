@@ -64,10 +64,7 @@ impl Bidder for OmsAdapter {
         // Go: if len(response.Cur) == 0, set currency — that's a bug in Go, we skip it
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
-                let mtype = bid.ext.as_ref()
-                    .and_then(|e| e.get("mtype"))
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
+                let mtype = bid.mtype.unwrap_or(0) as u64;
                 let bid_type = get_bid_type_from_mtype(mtype);
                 result.bids.push(TypedBid::new(bid, bid_type));
             }
