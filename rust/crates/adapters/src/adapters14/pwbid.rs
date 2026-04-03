@@ -1,10 +1,23 @@
 use std::collections::HashMap;
-use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_bid_type_from_imp, get_imp_ids};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
 use openrtb_ext::BidType;
 
 pub struct PwbidAdapter { pub endpoint: String }
 impl PwbidAdapter {
     pub fn new(endpoint: String) -> Self { Self { endpoint } }
+}
+
+fn get_media_type_for_bid(impressions: &[openrtb::Imp], bid: &openrtb::Bid) -> Result<BidType, BidderError> {
+    for imp in impressions {
+        if imp.id == bid.impid {
+            if imp.banner.is_some() { return Ok(BidType::Banner); }
+            if imp.native.is_some() { return Ok(BidType::Native); }
+            if imp.video.is_some() { return Ok(BidType::Video); }
+        }
+    }
+    Err(BidderError::BadServerResponse(format!(
+        "The impression with ID {} is not present into the request", bid.impid
+    )))
 }
 
 impl Bidder for PwbidAdapter {
@@ -25,10 +38,13 @@ impl Bidder for PwbidAdapter {
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
         let mut result = BidderResponse::with_capacity(5);
+        let mut errors = Vec::new();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
-                let bid_type = internal.imp.iter().find(|i| i.id == bid.impid).map(get_bid_type_from_imp).unwrap_or(BidType::Banner);
-                result.bids.push(TypedBid::new(bid, bid_type));
+                match get_media_type_for_bid(&internal.imp, &bid) {
+                    Ok(t) => result.bids.push(TypedBid::new(bid, t)),
+                    Err(e) => errors.push(e),
+                }
             }
         }
         Ok(result)

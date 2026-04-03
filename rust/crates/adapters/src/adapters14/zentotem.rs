@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_bid_type_from_mtype, get_imp_ids};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_bid_type_from_mtype};
 
 pub struct ZentotemAdapter { pub endpoint: String }
 impl ZentotemAdapter {
@@ -30,6 +30,9 @@ impl Bidder for ZentotemAdapter {
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
         let mut result = BidderResponse::with_capacity(5);
+        if let Some(cur) = &bid_resp.cur {
+            if !cur.is_empty() { result.currency = cur.clone(); }
+        }
         let mut errs = Vec::new();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
