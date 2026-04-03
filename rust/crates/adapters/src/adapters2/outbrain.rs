@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use pbs_adapters::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
 use openrtb_ext::BidType;
 
 pub struct OutbrainAdapter {
@@ -106,10 +106,10 @@ impl Bidder for OutbrainAdapter {
         }
 
         if let Some(bcat) = outbrain_bcat {
-            req_copy.bcat = bcat;
+            req_copy.bcat = Some(bcat);
         }
         if let Some(badv) = outbrain_badv {
-            req_copy.badv = badv;
+            req_copy.badv = Some(badv);
         }
 
         let body = match serde_json::to_vec(&req_copy) {
@@ -139,7 +139,7 @@ impl Bidder for OutbrainAdapter {
         if response.status_code == 204 {
             return Ok(BidderResponse::new());
         }
-        if let Err(e) = pbs_adapters::check_response_status(response.status_code) {
+        if let Err(e) = crate::check_response_status(response.status_code) {
             return Err(vec![e]);
         }
 

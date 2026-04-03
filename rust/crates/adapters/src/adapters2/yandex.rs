@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use pbs_adapters::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
 use openrtb_ext::BidType;
 
 pub struct YandexAdapter {
@@ -87,7 +87,7 @@ impl Bidder for YandexAdapter {
             })
             .unwrap_or("");
 
-        let currency = request.cur.first().map(|s| s.as_str()).unwrap_or("");
+        let currency = request.cur.as_ref().and_then(|v| v.first()).map(|s| s.as_str()).unwrap_or("");
 
         for imp in &request.imp {
             // Get placement ID from bidder ext
@@ -128,19 +128,19 @@ impl Bidder for YandexAdapter {
 
             // Modify imp
             let mut imp = imp.clone();
-            imp.display_manager = Some("prebid.go".to_string());
-            imp.display_manager_ver = Some("1.1".to_string());
+            imp.displaymanager = Some("prebid.go".to_string());
+            imp.displaymanagerver = Some("1.1".to_string());
 
             // Modify banner: ensure w/h set from first format
             if let Some(banner) = imp.banner.as_mut() {
                 let needs_size = banner.w.map(|w| w == 0).unwrap_or(true)
                     || banner.h.map(|h| h == 0).unwrap_or(true);
                 if needs_size {
-                    if banner.format.is_empty() {
+                    if banner.format.as_ref().map_or(true, |v| v.is_empty()) {
                         errs.push(BidderError::BadInput("Invalid size provided for Banner".to_string()));
                         continue;
                     }
-                    let first = &banner.format[0];
+                    let first = &banner.format.as_ref().unwrap()[0];
                     banner.w = Some(first.w);
                     banner.h = Some(first.h);
                 }
@@ -231,7 +231,7 @@ impl Bidder for YandexAdapter {
         if response.status_code == 204 {
             return Ok(BidderResponse::new());
         }
-        if let Err(e) = pbs_adapters::check_response_status(response.status_code) {
+        if let Err(e) = crate::check_response_status(response.status_code) {
             return Err(vec![e]);
         }
 

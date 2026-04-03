@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use pbs_adapters::{
+use crate::{
     Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid,
     get_imp_ids,
 };
@@ -98,7 +98,7 @@ fn get_media_type_for_bid(
 
     // Fall back to imp media type map
     if let Some(t) = imp_media_map.get(&bid.impid) {
-        return Ok(*t);
+        return Ok(t.clone());
     }
 
     Err(BidderError::BadServerResponse(format!(

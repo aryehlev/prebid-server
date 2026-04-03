@@ -1,11 +1,33 @@
 use std::collections::HashMap;
 
-use pbs_adapters::{
+use crate::{
     Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid,
 };
 use openrtb_ext::BidType;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+/// Simple percent-decode for URL-encoded strings.
+fn percent_decode(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(h), Some(l)) = (
+                (bytes[i+1] as char).to_digit(16),
+                (bytes[i+2] as char).to_digit(16),
+            ) {
+                result.push((h * 16 + l) as u8 as char);
+                i += 3;
+                continue;
+            }
+        }
+        result.push(bytes[i] as char);
+        i += 1;
+    }
+    result
+}
 
 pub struct SovrnAdapter {
     pub endpoint: String,
@@ -122,7 +144,7 @@ impl Bidder for SovrnAdapter {
             // Validate video params if present
             if let Some(video) = &imp.video {
                 if video.mimes.as_ref().map_or(true, |m| m.is_empty())
-                    || video.max_duration.unwrap_or(0) == 0
+                    || video.maxduration.unwrap_or(0) == 0
                     || video.protocols.as_ref().map_or(true, |p| p.is_empty())
                 {
                     errs.push(BidderError::BadInput(
@@ -209,12 +231,9 @@ impl Bidder for SovrnAdapter {
             for mut bid in seat_bid.bid {
                 // URL-decode adm if present
                 if let Some(adm) = &bid.adm {
-                    if let Ok(decoded) = urlencoding::decode(adm) {
-                        bid.adm = Some(decoded.into_owned());
-                    } else {
-                        // If decode fails, skip this bid per Go logic
-                        continue;
-                    }
+                    // Decode percent-encoded characters
+                    let decoded = percent_decode(adm);
+                    bid.adm = Some(decoded);
                 }
 
                 // Determine bid type: video if imp has video, else banner

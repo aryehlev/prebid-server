@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use pbs_adapters::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids, get_bid_type_from_imp};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids, get_bid_type_from_imp};
 use openrtb_ext::BidType;
 
 /// EmxDigital was removed from the prebid-server Go source (directory not found),
@@ -48,7 +48,7 @@ impl Bidder for EmxDigitalAdapter {
         if response.status_code == 204 {
             return Ok(BidderResponse::new());
         }
-        if let Err(e) = pbs_adapters::check_response_status(response.status_code) {
+        if let Err(e) = crate::check_response_status(response.status_code) {
             return Err(vec![e]);
         }
         let bid_response: openrtb::BidResponse = serde_json::from_slice(&response.body)

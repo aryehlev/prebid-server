@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use pbs_adapters::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
 use openrtb_ext::BidType;
 
 pub struct VidazooAdapter {
@@ -93,7 +93,7 @@ impl Bidder for VidazooAdapter {
         if response.status_code == 204 {
             return Ok(BidderResponse::new());
         }
-        if let Err(e) = pbs_adapters::check_response_status(response.status_code) {
+        if let Err(e) = crate::check_response_status(response.status_code) {
             return Err(vec![BidderError::BadInput(format!(
                 "Unexpected status code: {}. Run with request.debug = 1 for more info",
                 response.status_code

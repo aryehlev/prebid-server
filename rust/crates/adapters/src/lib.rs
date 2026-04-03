@@ -2,7 +2,11 @@ use std::collections::HashMap;
 
 use openrtb_ext::{BidType, ExtBidPrebidMeta, ExtBidPrebidVideo, FledgeAuctionConfig};
 
+pub mod adapters;
+pub mod adapters2;
 pub mod adapters3;
+pub mod adapters4;
+pub mod adapters5;
 
 /// RequestData packages together the fields needed to make an HTTP request to a bidder.
 #[derive(Debug, Clone, Default)]

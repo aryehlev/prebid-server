@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use pbs_adapters::{
+use crate::{
     Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid,
 };
 use openrtb_ext::{BidType, ExtBidPrebidVideo};

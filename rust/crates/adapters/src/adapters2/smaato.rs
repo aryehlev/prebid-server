@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use pbs_adapters::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
 use openrtb_ext::BidType;
 
 pub struct SmaatoAdapter {
@@ -165,7 +165,7 @@ impl Bidder for SmaatoAdapter {
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
 
         let mut result = BidderResponse::with_capacity(5);
-        let mut errs = Vec::new();
+        let mut errs: Vec<BidderError> = Vec::new();
 
         for sb in bid_response.seatbid {
             for bid in sb.bid {
