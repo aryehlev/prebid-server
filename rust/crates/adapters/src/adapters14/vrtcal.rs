@@ -19,22 +19,36 @@ impl Bidder for VrtcalAdapter {
 
     fn make_bids(&self, _: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
         if response.status_code == 204 { return Ok(BidderResponse::new()); }
-        if let Err(e) = crate::check_response_status(response.status_code) { return Err(vec![e]); }
+        if response.status_code == 400 {
+            return Err(vec![BidderError::BadInput(
+                format!("Unexpected status code: {}. Run with request.debug = 1 for more info", response.status_code)
+            )]);
+        }
+        if response.status_code != 200 {
+            return Err(vec![BidderError::BadServerResponse(
+                format!("Unexpected status code: {}. Run with request.debug = 1 for more info", response.status_code)
+            )]);
+        }
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
-        let mut result = BidderResponse::with_capacity(5);
+        let mut result = BidderResponse::with_capacity(1);
         let mut errs = Vec::new();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
                 let mtype = bid.mtype.unwrap_or(0);
-                if mtype == 0 {
+                // Supported: banner(1), video(2), native(4)
+                if mtype == 1 || mtype == 2 || mtype == 4 {
+                    result.bids.push(TypedBid::new(bid, get_bid_type_from_mtype(mtype)));
+                } else {
                     errs.push(BidderError::BadServerResponse("Unsupported return type".to_string()));
-                    continue;
                 }
-                result.bids.push(TypedBid::new(bid, get_bid_type_from_mtype(mtype)));
             }
         }
-        if !errs.is_empty() && result.bids.is_empty() { return Err(errs); }
-        Ok(result)
+        // Go returns both response and errs - we map to Ok if there are bids
+        if !result.bids.is_empty() || errs.is_empty() {
+            Ok(result)
+        } else {
+            Err(errs)
+        }
     }
 }

@@ -12,9 +12,13 @@ impl Bidder for VoxAdapter {
             Ok(b) => b,
             Err(e) => return (vec![], vec![BidderError::BadInput(e.to_string())]),
         };
-        let mut headers = HashMap::new();
-        headers.insert("Content-Type".to_string(), "application/json;charset=utf-8".to_string());
-        (vec![RequestData { method: "POST".to_string(), uri: self.endpoint.clone(), body, headers, imp_ids: get_imp_ids(&request.imp) }], vec![])
+        (vec![RequestData {
+            method: "POST".to_string(),
+            uri: self.endpoint.clone(),
+            body,
+            headers: HashMap::new(),
+            imp_ids: get_imp_ids(&request.imp),
+        }], vec![])
     }
 
     fn make_bids(&self, _: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
@@ -23,18 +27,18 @@ impl Bidder for VoxAdapter {
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
         let mut result = BidderResponse::with_capacity(5);
-        let mut errs = Vec::new();
+        result.currency = bid_resp.cur.clone().unwrap_or_default();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
                 let mtype = bid.mtype.unwrap_or(0);
                 if mtype == 0 {
-                    errs.push(BidderError::BadServerResponse(format!("Unable to fetch mediaType in multi-format: {}", bid.impid)));
-                    continue;
+                    return Err(vec![BidderError::BadServerResponse(
+                        format!("Unable to fetch mediaType in multi-format: {}", bid.impid)
+                    )]);
                 }
                 result.bids.push(TypedBid::new(bid, get_bid_type_from_mtype(mtype)));
             }
         }
-        if !errs.is_empty() && result.bids.is_empty() { return Err(errs); }
         Ok(result)
     }
 }
