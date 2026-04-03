@@ -211,6 +211,7 @@ async fn main() -> anyhow::Result<()> {
         metrics,
         max_request_size: cfg.max_request_size,
         gdpr_enabled: cfg.gdpr_enabled,
+        accounts: cfg.accounts.clone(),
     });
 
     // Build CORS layer: permissive for all origins.

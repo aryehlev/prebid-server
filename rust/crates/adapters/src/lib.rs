@@ -404,4 +404,337 @@ mod tests {
         let timeout = BidderError::Timeout;
         assert!(!timeout.is_fatal());
     }
+
+    // ── Appnexus ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_appnexus_make_requests_post_to_correct_url() {
+        let adapter = crate::adapters::AppnexusAdapter::new(
+            "https://ib.adnxs.com/openrtb2".to_string(),
+        );
+        let mut imp = openrtb::Imp::default();
+        imp.id = "imp1".to_string();
+        imp.banner = Some(Banner {
+            format: Some(vec![make_format(300, 250)]),
+            ..Default::default()
+        });
+        imp.ext = Some(serde_json::json!({"bidder": {"placement_id": 12345}}));
+        let req = openrtb::BidRequest {
+            id: "req1".to_string(),
+            imp: vec![imp],
+            ..Default::default()
+        };
+        let (requests, errors) = adapter.make_requests(&req, &ExtraRequestInfo::default());
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+        assert_eq!(requests.len(), 1);
+        let rd = &requests[0];
+        assert_eq!(rd.method, "POST");
+        assert_eq!(rd.uri, "https://ib.adnxs.com/openrtb2");
+        assert!(!rd.body.is_empty());
+    }
+
+    #[test]
+    fn test_appnexus_make_requests_body_is_valid_json() {
+        let adapter = crate::adapters::AppnexusAdapter::new(
+            "https://ib.adnxs.com/openrtb2".to_string(),
+        );
+        let mut imp = openrtb::Imp::default();
+        imp.id = "imp2".to_string();
+        imp.banner = Some(Banner::default());
+        imp.ext = Some(serde_json::json!({"bidder": {"placement_id": 99}}));
+        let req = openrtb::BidRequest {
+            id: "req2".to_string(),
+            imp: vec![imp],
+            ..Default::default()
+        };
+        let (requests, errors) = adapter.make_requests(&req, &ExtraRequestInfo::default());
+        assert!(errors.is_empty());
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&requests[0].body).expect("body should be valid JSON");
+        assert!(parsed.get("imp").is_some());
+    }
+
+    #[test]
+    fn test_appnexus_make_requests_member_id_in_url() {
+        let adapter = crate::adapters::AppnexusAdapter::new(
+            "https://ib.adnxs.com/openrtb2".to_string(),
+        );
+        let mut imp = openrtb::Imp::default();
+        imp.id = "imp3".to_string();
+        imp.banner = Some(Banner::default());
+        imp.ext =
+            Some(serde_json::json!({"bidder": {"placement_id": 12345, "member": "9999"}}));
+        let req = openrtb::BidRequest {
+            id: "req3".to_string(),
+            imp: vec![imp],
+            ..Default::default()
+        };
+        let (requests, errors) = adapter.make_requests(&req, &ExtraRequestInfo::default());
+        assert!(errors.is_empty());
+        assert_eq!(requests.len(), 1);
+        assert!(
+            requests[0].uri.contains("member_id=9999"),
+            "URI should contain member_id param, got: {}",
+            requests[0].uri
+        );
+    }
+
+    // ── Rubicon ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_rubicon_make_requests_includes_authorization_header() {
+        let adapter = crate::adapters::RubiconAdapter::new(
+            "https://rubicon.example.com/openrtb2/auction".to_string(),
+            "myuser".to_string(),
+            "mypass".to_string(),
+        );
+        let mut imp = openrtb::Imp::default();
+        imp.id = "imp1".to_string();
+        imp.banner = Some(Banner::default());
+        imp.ext = Some(
+            serde_json::json!({"bidder": {"accountId": 1234, "siteId": 5678, "zoneId": 9012}}),
+        );
+        let req = openrtb::BidRequest {
+            id: "rub-req".to_string(),
+            imp: vec![imp],
+            ..Default::default()
+        };
+        let (requests, errors) = adapter.make_requests(&req, &ExtraRequestInfo::default());
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+        assert_eq!(requests.len(), 1);
+        let rd = &requests[0];
+        assert_eq!(rd.method, "POST");
+        assert!(
+            rd.headers.contains_key("Authorization"),
+            "Authorization header must be present"
+        );
+        let auth = rd.headers.get("Authorization").unwrap();
+        assert!(auth.starts_with("Basic "), "should use Basic auth, got: {auth}");
+    }
+
+    #[test]
+    fn test_rubicon_make_requests_posts_to_endpoint() {
+        let endpoint = "https://rubicon.example.com/openrtb2/auction".to_string();
+        let adapter = crate::adapters::RubiconAdapter::new(
+            endpoint.clone(),
+            "u".to_string(),
+            "p".to_string(),
+        );
+        let mut imp = openrtb::Imp::default();
+        imp.id = "imp1".to_string();
+        imp.banner = Some(Banner::default());
+        imp.ext = Some(serde_json::json!({"bidder": {"accountId": 1}}));
+        let req = openrtb::BidRequest {
+            id: "r".to_string(),
+            imp: vec![imp],
+            ..Default::default()
+        };
+        let (requests, _) = adapter.make_requests(&req, &ExtraRequestInfo::default());
+        assert_eq!(requests[0].uri, endpoint);
+    }
+
+    // ── OpenX ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_openx_make_bids_parses_standard_response() {
+        let adapter = crate::adapters::OpenxAdapter::new(
+            "https://rtb.openx.net/openrtb/2.3/bidrequest".to_string(),
+            "openx".to_string(),
+        );
+
+        let mut imp = openrtb::Imp::default();
+        imp.id = "imp1".to_string();
+        imp.banner = Some(Banner::default());
+        imp.ext = Some(
+            serde_json::json!({"bidder": {"delDomain": "ox-d.example.com", "unit": "12345"}}),
+        );
+        let internal_req = openrtb::BidRequest {
+            id: "openx-req".to_string(),
+            imp: vec![imp],
+            ..Default::default()
+        };
+
+        let bid_response = serde_json::json!({
+            "id": "resp1",
+            "cur": "USD",
+            "seatbid": [{
+                "bid": [{
+                    "id": "bid1",
+                    "impid": "imp1",
+                    "price": 1.50,
+                    "adm": "<div>ad</div>",
+                    "crid": "creative1"
+                }]
+            }]
+        });
+        let body = serde_json::to_vec(&bid_response).unwrap();
+        let response = ResponseData::new(200, body);
+        let external_req =
+            RequestData::new_post("https://rtb.openx.net/openrtb/2.3/bidrequest", vec![]);
+
+        let result = adapter.make_bids(&internal_req, &external_req, &response);
+        assert!(result.is_ok(), "make_bids should succeed");
+        let bidder_response = result.unwrap();
+        assert_eq!(bidder_response.bids.len(), 1);
+        assert_eq!(bidder_response.bids[0].bid.id, "bid1");
+        assert_eq!(bidder_response.bids[0].bid.price, 1.50);
+        assert_eq!(bidder_response.currency, "USD");
+    }
+
+    #[test]
+    fn test_openx_make_bids_no_content_returns_empty() {
+        let adapter = crate::adapters::OpenxAdapter::new(
+            "https://rtb.openx.net/openrtb/2.3/bidrequest".to_string(),
+            "openx".to_string(),
+        );
+        let internal_req = openrtb::BidRequest::default();
+        let external_req = RequestData::new_post("https://rtb.openx.net", vec![]);
+        let response = ResponseData::new(204, vec![]);
+
+        let result = adapter.make_bids(&internal_req, &external_req, &response);
+        assert!(result.is_ok());
+        assert!(result.unwrap().bids.is_empty());
+    }
+
+    // ── Sovrn ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_sovrn_make_requests_sets_content_type_header() {
+        let adapter =
+            crate::adapters::SovrnAdapter::new("https://ap.lijit.com/rtb/bid".to_string());
+        let mut imp = openrtb::Imp::default();
+        imp.id = "imp1".to_string();
+        imp.banner = Some(Banner::default());
+        imp.ext = Some(serde_json::json!({"bidder": {"tagid": "696969"}}));
+        let req = openrtb::BidRequest {
+            id: "sovrn-req".to_string(),
+            imp: vec![imp],
+            ..Default::default()
+        };
+        let (requests, errors) = adapter.make_requests(&req, &ExtraRequestInfo::default());
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+        assert_eq!(requests.len(), 1);
+        let rd = &requests[0];
+        // Sovrn serialises the request as plain JSON (no gzip on the wire).
+        // The endpoint_compression equivalent is the Content-Type header.
+        let ct = rd
+            .headers
+            .get("Content-Type")
+            .expect("Content-Type must be set");
+        assert!(
+            ct.contains("application/json"),
+            "Content-Type should be application/json, got: {ct}"
+        );
+        assert_eq!(rd.method, "POST");
+    }
+
+    #[test]
+    fn test_sovrn_make_requests_device_headers_forwarded() {
+        let adapter =
+            crate::adapters::SovrnAdapter::new("https://ap.lijit.com/rtb/bid".to_string());
+        let mut imp = openrtb::Imp::default();
+        imp.id = "imp1".to_string();
+        imp.banner = Some(Banner::default());
+        imp.ext = Some(serde_json::json!({"bidder": {"tagid": "696969"}}));
+        let req = openrtb::BidRequest {
+            id: "sovrn-dev".to_string(),
+            imp: vec![imp],
+            device: Some(openrtb::Device {
+                ua: Some("TestAgent/1.0".to_string()),
+                ip: Some("1.2.3.4".to_string()),
+                language: Some("en".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let (requests, errors) = adapter.make_requests(&req, &ExtraRequestInfo::default());
+        assert!(errors.is_empty());
+        let rd = &requests[0];
+        assert_eq!(
+            rd.headers.get("User-Agent").map(String::as_str),
+            Some("TestAgent/1.0")
+        );
+        assert_eq!(
+            rd.headers.get("X-Forwarded-For").map(String::as_str),
+            Some("1.2.3.4")
+        );
+        assert_eq!(
+            rd.headers.get("Accept-Language").map(String::as_str),
+            Some("en")
+        );
+    }
+
+    // ── 33across ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_33across_video_missing_protocols_produces_error() {
+        let adapter = crate::adapters::Across33Adapter::new(
+            "https://ssc.33across.com/api/v1/hb".to_string(),
+        );
+
+        // Video imp without protocols or mimes — should trigger validation error
+        let mut video = Video::default();
+        video.w = Some(640);
+        video.h = Some(480);
+        // protocols and mimes are deliberately left None
+
+        let mut imp = openrtb::Imp::default();
+        imp.id = "imp1".to_string();
+        imp.video = Some(video);
+        imp.ext = Some(serde_json::json!({
+            "bidder": {
+                "productId": "instream",
+                "siteId": "site123"
+            }
+        }));
+
+        let req = openrtb::BidRequest {
+            id: "ttx-req".to_string(),
+            imp: vec![imp],
+            ..Default::default()
+        };
+
+        let (requests, errors) = adapter.make_requests(&req, &ExtraRequestInfo::default());
+        // The invalid video imp should produce an error and no valid request
+        assert!(
+            !errors.is_empty(),
+            "expected validation error for missing video fields"
+        );
+        assert!(
+            requests.is_empty(),
+            "should produce no requests for invalid video imp"
+        );
+    }
+
+    #[test]
+    fn test_33across_banner_make_requests_succeeds() {
+        let adapter = crate::adapters::Across33Adapter::new(
+            "https://ssc.33across.com/api/v1/hb".to_string(),
+        );
+
+        let mut imp = openrtb::Imp::default();
+        imp.id = "imp1".to_string();
+        imp.banner = Some(Banner {
+            format: Some(vec![make_format(300, 250)]),
+            ..Default::default()
+        });
+        imp.ext = Some(serde_json::json!({
+            "bidder": {
+                "productId": "siab",
+                "siteId": "site123"
+            }
+        }));
+
+        let req = openrtb::BidRequest {
+            id: "ttx-req".to_string(),
+            imp: vec![imp],
+            ..Default::default()
+        };
+
+        let (requests, errors) = adapter.make_requests(&req, &ExtraRequestInfo::default());
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method, "POST");
+        assert_eq!(requests[0].uri, "https://ssc.33across.com/api/v1/hb");
+    }
 }

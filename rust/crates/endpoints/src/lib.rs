@@ -34,6 +34,8 @@ pub struct AppStateInner {
     pub max_request_size: usize,
     /// Whether GDPR enforcement is enabled
     pub gdpr_enabled: bool,
+    /// Account-level configurations
+    pub accounts: std::collections::HashMap<String, pbs_config::AccountConfig>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -192,6 +194,25 @@ pub async fn version_handler(State(state): State<AppState>) -> Json<serde_json::
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// GET /health
+// ──────────────────────────────────────────────────────────────────────────────
+
+pub async fn health_handler() -> Json<serde_json::Value> {
+    Json(serde_json::json!({"status": "UP", "checks": []}))
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// GET /ready
+// ──────────────────────────────────────────────────────────────────────────────
+
+pub async fn readiness_handler(State(state): State<AppState>) -> Response {
+    if state.exchange.adapter_count() == 0 {
+        return (StatusCode::SERVICE_UNAVAILABLE, "no adapters").into_response();
+    }
+    (StatusCode::OK, Json(serde_json::json!({"status": "READY"}))).into_response()
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // POST /openrtb2/auction
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -225,6 +246,44 @@ pub async fn auction_handler(
     }
     if bid_request.imp.is_empty() {
         return (StatusCode::BAD_REQUEST, "request.imp must contain at least one impression").into_response();
+    }
+
+    // Look up account config from the publisher ID embedded in site.publisher.id
+    let account_id = bid_request
+        .site
+        .as_ref()
+        .and_then(|s| s.publisher.as_ref())
+        .and_then(|p| p.id.as_deref());
+
+    let account_cfg = account_id.and_then(|id| state.accounts.get(id));
+
+    // If account requires GDPR consent and none is present, skip the auction
+    if let Some(acct) = account_cfg {
+        if acct.gdpr_enabled == Some(true) {
+            let has_consent = bid_request
+                .user
+                .as_ref()
+                .and_then(|u| u.ext.as_ref())
+                .and_then(|e| e.get("consent"))
+                .and_then(|v| v.as_str())
+                .map(|s| !s.is_empty())
+                .unwrap_or(false);
+            if !has_consent {
+                let empty_response = openrtb::BidResponse {
+                    id: bid_request.id.clone(),
+                    ..Default::default()
+                };
+                return (StatusCode::OK, Json(empty_response)).into_response();
+            }
+        }
+    }
+
+    // Apply account-level tmax override if set
+    let mut bid_request = bid_request;
+    if let Some(acct) = account_cfg {
+        if let Some(tmax) = acct.auction_timeout_ms {
+            bid_request.tmax = Some(tmax as i64);
+        }
     }
 
     let auction_req = pbs_exchange::AuctionRequest {
@@ -883,6 +942,8 @@ pub fn create_router(state: AppState) -> axum::Router {
         .route("/", axum::routing::get(index_handler))
         .route("/status", axum::routing::get(status_handler))
         .route("/version", axum::routing::get(version_handler))
+        .route("/health", axum::routing::get(health_handler))
+        .route("/ready", axum::routing::get(readiness_handler))
         .route("/metrics", axum::routing::get(metrics_handler))
         // Auction
         .route("/openrtb2/auction", axum::routing::post(auction_handler))

@@ -19,6 +19,8 @@ pub struct Configuration {
     #[serde(default)]
     pub adapters: HashMap<String, AdapterConfig>,
     #[serde(default)]
+    pub accounts: HashMap<String, AccountConfig>,
+    #[serde(default)]
     pub metrics: MetricsConfig,
     #[serde(default)]
     pub cache: CacheConfig,
@@ -72,6 +74,16 @@ fn default_max_request_size() -> usize {
     1_572_864 // 1.5 MB
 }
 
+/// Per-account configuration
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AccountConfig {
+    pub id: String,
+    pub price_granularity: Option<String>,
+    pub gdpr_enabled: Option<bool>,
+    pub ccpa_enabled: Option<bool>,
+    pub auction_timeout_ms: Option<u64>,
+}
+
 /// Per-adapter configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AdapterConfig {
@@ -81,6 +93,9 @@ pub struct AdapterConfig {
     pub extra_info: Option<String>,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Optional per-adapter timeout override in milliseconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
 }
 
 fn default_true() -> bool {
