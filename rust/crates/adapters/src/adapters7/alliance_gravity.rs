@@ -17,8 +17,6 @@ impl AllianceGravityAdapter {
 #[derive(Deserialize)]
 struct ExtImpBidder {
     bidder: Value,
-    #[serde(default)]
-    prebid: Option<Value>,
 }
 
 #[derive(Deserialize)]
