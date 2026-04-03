@@ -7,6 +7,15 @@ pub mod adapters2;
 pub mod adapters3;
 pub mod adapters4;
 pub mod adapters5;
+pub mod adapters6;
+pub mod adapters7;
+pub mod adapters8;
+pub mod adapters9;
+pub mod adapters10;
+pub mod adapters11;
+pub mod adapters12;
+pub mod adapters13;
+pub mod adapters14;
 
 /// RequestData packages together the fields needed to make an HTTP request to a bidder.
 #[derive(Debug, Clone, Default)]
