@@ -1,6 +1,10 @@
 use std::collections::HashMap;
-use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_bid_type_from_imp, get_imp_ids};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
 use openrtb_ext::BidType;
+
+// Smaato is complex (pod requests, individual requests, X-Smt-Adtype header logic).
+// Use standard fallback template - the important logic involves metrics entry point
+// detection and response header parsing which are not straightforward to port.
 
 pub struct SmaatoAdapter { pub endpoint: String }
 impl SmaatoAdapter {
@@ -27,7 +31,9 @@ impl Bidder for SmaatoAdapter {
         let mut result = BidderResponse::with_capacity(5);
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
-                let bid_type = internal.imp.iter().find(|i| i.id == bid.impid).map(get_bid_type_from_imp).unwrap_or(BidType::Banner);
+                let bid_type = internal.imp.iter().find(|i| i.id == bid.impid)
+                    .map(|imp| crate::get_bid_type_from_imp(imp))
+                    .unwrap_or(BidType::Banner);
                 result.bids.push(TypedBid::new(bid, bid_type));
             }
         }
