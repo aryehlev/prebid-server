@@ -16,6 +16,7 @@ impl Bidder for AdnuntiusAdapter {
         headers.insert("Accept".to_string(), "application/json".to_string());
         (vec![RequestData { method: "POST".to_string(), uri: self.endpoint.clone(), body, headers, imp_ids: get_imp_ids(&request.imp) }], vec![])
     }
+
     fn make_bids(&self, internal: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
         if response.status_code == 204 { return Ok(BidderResponse::new()); }
         if let Err(e) = crate::check_response_status(response.status_code) { return Err(vec![e]); }
