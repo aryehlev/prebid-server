@@ -53,10 +53,35 @@ pub struct BidderResult {
     pub timed_out: bool,
 }
 
+/// Deep-merge `overlay` JSON into `base`, with base keys taking precedence on conflict.
+/// For object values, recursion is applied. For arrays and scalars, base wins.
+pub fn deep_merge_json(base: &mut serde_json::Value, overlay: &serde_json::Value) {
+    if let (Some(base_obj), Some(overlay_obj)) = (base.as_object_mut(), overlay.as_object()) {
+        for (k, v) in overlay_obj {
+            let entry = base_obj.entry(k.clone()).or_insert(serde_json::Value::Null);
+            if entry.is_null() {
+                *entry = v.clone();
+            } else if entry.is_object() && v.is_object() {
+                deep_merge_json(entry, v);
+            }
+            // base key wins for all other types (scalar, array, type mismatch)
+        }
+    }
+}
+
+/// Merge arrays: append items from `overlay` that are not already in `base`.
+fn merge_string_arrays(base: &mut Vec<String>, overlay: &[String]) {
+    for item in overlay {
+        if !base.contains(item) {
+            base.push(item.clone());
+        }
+    }
+}
+
 /// Apply first-party data (FPD) overrides for a specific bidder.
 ///
-/// Reads `req.ext.prebid.data.bidderspecific.<bidder_name>` and merges any
-/// `site`, `user` fields it finds into the top-level BidRequest fields.
+/// Reads `req.ext.prebid.data.bidderspecific.<bidder_name>` and deep-merges
+/// `site`, `user`, and `app` fields into the top-level BidRequest fields.
 fn apply_fpd_for_bidder(req: &mut openrtb::BidRequest, bidder_name: &str) {
     let fpd = req
         .ext
@@ -72,7 +97,7 @@ fn apply_fpd_for_bidder(req: &mut openrtb::BidRequest, bidder_name: &str) {
         None => return,
     };
 
-    // Merge site FPD
+    // ── Merge site FPD ────────────────────────────────────────────────────────
     if let Some(site_fpd) = fpd.get("site") {
         if let Ok(site_override) = serde_json::from_value::<openrtb::Site>(site_fpd.clone()) {
             if let Some(site) = &mut req.site {
@@ -85,28 +110,107 @@ fn apply_fpd_for_bidder(req: &mut openrtb::BidRequest, bidder_name: &str) {
                 if site_override.publisher.is_some() {
                     site.publisher = site_override.publisher;
                 }
+                // site.ref_
+                if site.ref_.is_none() {
+                    site.ref_ = site_override.ref_;
+                }
+                // site.search
+                if site.search.is_none() {
+                    site.search = site_override.search;
+                }
+                // site.cat — merge arrays (no duplicates)
+                match (&mut site.cat, site_override.cat) {
+                    (Some(base), Some(overlay)) => merge_string_arrays(base, &overlay),
+                    (None, Some(overlay)) => site.cat = Some(overlay),
+                    _ => {}
+                }
+                // site.sectioncat
+                match (&mut site.sectioncat, site_override.sectioncat) {
+                    (Some(base), Some(overlay)) => merge_string_arrays(base, &overlay),
+                    (None, Some(overlay)) => site.sectioncat = Some(overlay),
+                    _ => {}
+                }
+                // site.pagecat
+                match (&mut site.pagecat, site_override.pagecat) {
+                    (Some(base), Some(overlay)) => merge_string_arrays(base, &overlay),
+                    (None, Some(overlay)) => site.pagecat = Some(overlay),
+                    _ => {}
+                }
+                // site.ext — deep merge (base keys win)
+                if let Some(new_ext) = site_override.ext {
+                    if let Some(existing) = &mut site.ext {
+                        deep_merge_json(existing, &new_ext);
+                    } else {
+                        site.ext = Some(new_ext);
+                    }
+                }
             }
         }
     }
 
-    // Merge user FPD
+    // ── Merge user FPD ────────────────────────────────────────────────────────
     if let Some(user_fpd) = fpd.get("user") {
         if let Ok(user_override) = serde_json::from_value::<openrtb::User>(user_fpd.clone()) {
             if let Some(user) = &mut req.user {
                 if user_override.buyeruid.is_some() {
                     user.buyeruid = user_override.buyeruid;
                 }
-                if let Some(new_ext) = user_override.ext {
-                    if let Some(existing) = &mut user.ext {
-                        if let (Some(obj), Some(new_obj)) =
-                            (existing.as_object_mut(), new_ext.as_object())
-                        {
-                            for (k, v) in new_obj {
-                                obj.insert(k.clone(), v.clone());
+                // user.geo — full Geo struct merge (base fields win)
+                match (&mut user.geo, user_override.geo) {
+                    (Some(base_geo), Some(overlay_geo)) => {
+                        if let (Ok(mut base_val), Ok(overlay_val)) = (
+                            serde_json::to_value(&*base_geo),
+                            serde_json::to_value(&overlay_geo),
+                        ) {
+                            deep_merge_json(&mut base_val, &overlay_val);
+                            if let Ok(merged) = serde_json::from_value::<openrtb::Geo>(base_val) {
+                                *base_geo = merged;
                             }
                         }
+                    }
+                    (None, Some(overlay_geo)) => user.geo = Some(overlay_geo),
+                    _ => {}
+                }
+                // user.data — append overlay items
+                if !user_override.data.is_empty() {
+                    user.data.extend(user_override.data);
+                }
+                // user.ext — deep merge (base keys win)
+                if let Some(new_ext) = user_override.ext {
+                    if let Some(existing) = &mut user.ext {
+                        deep_merge_json(existing, &new_ext);
                     } else {
                         user.ext = Some(new_ext);
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Merge app FPD ─────────────────────────────────────────────────────────
+    if let Some(app_fpd) = fpd.get("app") {
+        if let Ok(app_override) = serde_json::from_value::<openrtb::App>(app_fpd.clone()) {
+            if let Some(app) = &mut req.app {
+                // app.bundle
+                if app.bundle.is_none() {
+                    app.bundle = app_override.bundle;
+                }
+                // app.domain
+                if app.domain.is_none() {
+                    app.domain = app_override.domain;
+                }
+                // app.cat — merge arrays
+                match (&mut app.cat, app_override.cat) {
+                    (Some(base), Some(overlay)) => merge_string_arrays(base, &overlay),
+                    (None, Some(overlay)) => app.cat = Some(overlay),
+                    _ => {}
+                }
+                // app.ext — deep merge (base keys win)
+                if let Some(new_ext) = app_override.ext {
+                    if let Some(existing) = &mut app.ext {
+                        deep_merge_json(existing, &new_ext);
+                    } else {
+                        app.ext = Some(new_ext);
                     }
                 }
             }

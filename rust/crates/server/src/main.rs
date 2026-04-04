@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use tokio::signal;
 use axum::{
     body::Body,
     http::{Request, Response},
@@ -247,7 +248,28 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Listening on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
 
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        signal::ctrl_c().await.expect("failed to install Ctrl+C handler");
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("failed to install signal handler")
+            .recv()
+            .await;
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        _ = ctrl_c => { tracing::info!("Received Ctrl+C, shutting down"); },
+        _ = terminate => { tracing::info!("Received SIGTERM, shutting down"); },
+    }
 }
