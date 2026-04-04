@@ -190,6 +190,26 @@ async fn main() -> anyhow::Result<()> {
     let mut exchange = pbs_exchange::Exchange::new(adapters);
     exchange.metrics = Some(metrics.clone() as Arc<dyn pbs_metrics::MetricsEngine>);
 
+    // Load alias bidder map from config.
+    exchange.aliases = cfg.aliases.clone();
+    if !exchange.aliases.is_empty() {
+        tracing::info!("Loaded {} bidder aliases from config", exchange.aliases.len());
+    }
+
+    // Load host SChain node from config.
+    if let Some(node) = &cfg.schain_node {
+        exchange.schain_node = Some(openrtb::SupplyChainNode {
+            asi: node.asi.clone(),
+            sid: node.sid.clone(),
+            rid: node.rid.clone(),
+            name: node.name.clone(),
+            domain: node.domain.clone(),
+            hp: node.hp,
+            ext: None,
+        });
+        tracing::info!("Loaded host SChain node: asi={}", node.asi);
+    }
+
     let stored_requests_dir = if cfg.stored_requests_dir.is_empty() || cfg.stored_requests_dir == "./stored_requests" {
         std::env::var("PBS_STORED_REQUESTS_DIR")
             .unwrap_or_else(|_| "./stored_requests".to_string())

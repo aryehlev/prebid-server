@@ -546,6 +546,12 @@ pub struct Exchange {
     /// `req.ext.prebid.storedauctionresponse.id`, bidder calls are skipped and the
     /// pre-built `BidResponse` stored under that ID is returned directly.
     pub stored_responses: Option<Arc<dyn StoredResponseFetcher>>,
+    /// Alias map: alias bidder name -> canonical bidder name.
+    /// When a request references an alias name, the canonical adapter is used
+    /// but the response SeatBid uses the alias name.
+    pub aliases: HashMap<String, String>,
+    /// Optional host-level SChain node to prepend to every outgoing request.
+    pub schain_node: Option<openrtb::SupplyChainNode>,
 }
 
 impl Exchange {
@@ -561,6 +567,8 @@ impl Exchange {
             analytics: None,
             hook_plan: None,
             stored_responses: None,
+            aliases: HashMap::new(),
+            schain_node: None,
         }
     }
 
@@ -786,27 +794,69 @@ impl Exchange {
             .map(|s| s.to_string());
 
         // Determine which bidders are active for this request by inspecting imp.ext.
-        let active_bidders: Vec<String> = self
-            .adapters
-            .keys()
+        // This includes both canonical adapter names and configured alias names.
+        let all_bidder_names: Vec<String> = {
+            let mut names: Vec<String> = self.adapters.keys().cloned().collect();
+            for alias_name in self.aliases.keys() {
+                names.push(alias_name.clone());
+            }
+            names
+        };
+
+        let active_bidders: Vec<String> = all_bidder_names
+            .into_iter()
             .filter(|name| {
                 bid_request.imp.iter().any(|imp| {
                     if let Some(ext) = &imp.ext {
                         // Support both `ext.<bidder>` and `ext.prebid.bidder.<bidder>` formats.
-                        ext.get(*name).is_some()
+                        ext.get(name.as_str()).is_some()
                             || ext
                                 .get("prebid")
                                 .and_then(|p| p.get("bidder"))
                                 .and_then(|b| b.as_object())
-                                .map(|o| o.contains_key(*name))
+                                .map(|o| o.contains_key(name.as_str()))
                                 .unwrap_or(false)
                     } else {
                         false
                     }
                 })
             })
-            .cloned()
             .collect();
+
+        // --- SChain: apply host node to each bidder request ---
+        // Build a modified base request with the host schain node prepended if configured.
+        // This clone is used as the template for each per-bidder request.
+        let schain_base_request: Option<openrtb::BidRequest> = if let Some(host_node) = &self.schain_node {
+            let mut req = bid_request.clone();
+            let host_node = host_node.clone();
+            let source = req.source.get_or_insert_with(Default::default);
+            match &mut source.schain {
+                Some(schain) => {
+                    // Prepend the host node at position 0.
+                    schain.nodes.insert(0, host_node);
+                    tracing::debug!("prepended host schain node to existing schain");
+                }
+                None => {
+                    // No existing schain — create one with complete=0.
+                    source.schain = Some(openrtb::SupplyChain {
+                        complete: 0,
+                        nodes: vec![host_node],
+                        ver: "1.0".to_string(),
+                        ext: None,
+                    });
+                    tracing::debug!("created new schain with host node (complete=0)");
+                }
+            }
+            Some(req)
+        } else {
+            // Pass-through: existing schain (if any) flows through unchanged.
+            if let Some(source) = &bid_request.source {
+                if source.schain.is_some() {
+                    tracing::debug!("schain present on request source; passing through to bidders as-is");
+                }
+            }
+            None
+        };
 
         let extra_info = ExtraRequestInfo {
             pbs_entry_point: "openrtb2-auction".to_string(),
@@ -861,7 +911,13 @@ impl Exchange {
                 continue;
             }
 
-            if let Some(adapted) = self.adapters.get(&bidder_name) {
+            // Resolve alias: if bidder_name is an alias, look up the canonical adapter name.
+            // The SeatBid in the response will use the original (alias) name.
+            let canonical_name = self.aliases.get(&bidder_name)
+                .cloned()
+                .unwrap_or_else(|| bidder_name.clone());
+
+            if let Some(adapted) = self.adapters.get(&canonical_name) {
                 // Use per-bidder timeout if configured, otherwise fall back to global.
                 let effective_timeout_ms = per_bidder_timeouts
                     .get(&bidder_name)
@@ -874,30 +930,25 @@ impl Exchange {
                 }
 
                 // Clone everything needed for the async task.
+                // Use the schain-modified base request when a host node is configured.
                 let adapted = AdaptedBidder {
                     bidder: adapted.bidder.clone(),
                     http_client: self.http_client.clone(),
                     endpoint: adapted.endpoint.clone(),
                     endpoint_compression: adapted.endpoint_compression.clone(),
                 };
-                let mut req = bid_request.clone();
+                let mut req = schain_base_request
+                    .as_ref()
+                    .unwrap_or(bid_request)
+                    .clone();
                 apply_fpd_for_bidder(&mut req, &bidder_name);
                 let extra = extra_info.clone();
-                let name = bidder_name.clone();
+                // Spawn task using the alias name so the SeatBid carries the alias.
+                let seat_name = bidder_name.clone();
 
                 join_set.spawn(async move {
-                    adapted.request_bid(&req, &name, &extra, effective_timeout_ms).await
+                    adapted.request_bid(&req, &seat_name, &extra, effective_timeout_ms).await
                 });
-            }
-        }
-
-        // --- Schain passthrough ---
-        // If bid_request.source.schain is already set, it is included in the cloned BidRequest
-        // sent to each bidder — no additional work is needed for the pass-through case.
-        // (Host-configured schain node prepending would be added here when config supports it.)
-        if let Some(source) = &bid_request.source {
-            if source.schain.is_some() {
-                tracing::debug!("schain present on request source; passing through to bidders as-is");
             }
         }
 

@@ -3,6 +3,28 @@ use std::collections::HashMap;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+/// Host-level SChain node configuration.
+/// When set, this node is prepended to the schain on every bid request.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SchainNode {
+    /// Canonical domain name of the SSP (e.g. "prebid.org")
+    pub asi: String,
+    /// Seller ID assigned by the SSP
+    pub sid: String,
+    /// Optional request ID / transaction ID
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rid: Option<String>,
+    /// Human-readable name of the entity
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Domain of the entity
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
+    /// 1 if this node is involved in the final transaction (required), else 0
+    #[serde(default)]
+    pub hp: i32,
+}
+
 /// Top-level prebid-server configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Configuration {
@@ -52,6 +74,14 @@ pub struct Configuration {
     /// Convenience top-level alias for ccpa.enforce
     #[serde(default = "default_true")]
     pub ccpa_enforce: bool,
+    /// Optional host-level SChain node. When set, this node is prepended to
+    /// the supply chain on every outgoing bid request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schain_node: Option<SchainNode>,
+    /// Bidder alias map: alias name -> canonical bidder name.
+    /// Allows synthetic bidder names that route to an existing adapter.
+    #[serde(default)]
+    pub aliases: HashMap<String, String>,
 }
 
 fn default_host() -> String {
