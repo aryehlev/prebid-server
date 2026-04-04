@@ -239,40 +239,15 @@ pub async fn readiness_handler(State(state): State<AppState>) -> Response {
 // Request validation helper
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Validate a BidRequest using the structured validation module.
-/// Returns an error response body if there are fatal validation errors.
-fn check_fatal_validation(req: &openrtb::BidRequest) -> Option<Response> {
+/// Validate a BidRequest and return a descriptive error string on fatal errors.
+///
+/// Checks that `request.id` is present, then delegates to the structured
+/// validation module for OpenRTB-level rules (NoImps, BothSiteAndApp, etc.).
+fn validate_bid_request(req: &openrtb::BidRequest) -> Result<(), String> {
     // Always require a non-empty request ID
     if req.id.is_empty() {
-        return Some(
-            (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"errors": ["request missing required field: request.id"]})),
-            )
-                .into_response(),
-        );
+        return Err("request missing required field: request.id".to_string());
     }
-    let errors = pbs_exchange::validation::validate_request(req);
-    let fatal = errors.iter().any(|e| {
-        matches!(e, ValidationError::NoImps | ValidationError::BothSiteAndApp)
-    });
-    if fatal {
-        Some(
-            (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "errors": errors.iter().map(|e| e.to_string()).collect::<Vec<_>>()
-                })),
-            )
-                .into_response(),
-        )
-    } else {
-        None
-    }
-}
-
-/// Alias used by handlers that call validate_bid_request
-fn validate_bid_request(req: &openrtb::BidRequest) -> Result<(), String> {
     let errors = pbs_exchange::validation::validate_request(req);
     let fatal = errors.iter().any(|e| {
         matches!(e, ValidationError::NoImps | ValidationError::BothSiteAndApp)
@@ -408,7 +383,7 @@ pub async fn auction_handler(
 
 pub async fn auction_get_handler(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
     let body = match params.get("request") {
