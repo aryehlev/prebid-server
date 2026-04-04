@@ -6,6 +6,7 @@ use pbs_adapters::{BidderError, BidderResponse, ExtraRequestInfo, RequestData, R
 
 pub mod adserver_targeting;
 pub mod analytics;
+pub mod cache;
 pub mod currency;
 pub mod floors;
 pub mod gdpr;

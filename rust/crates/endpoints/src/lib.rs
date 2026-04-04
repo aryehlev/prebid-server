@@ -309,6 +309,27 @@ pub async fn auction_handler(
         }
     }
 
+    // Check for stored auction response short-circuit.
+    // If req.ext.prebid.storedauctionresponse.id is set, return the stored
+    // BidResponse directly without running the auction.
+    if let Some(stored_resp_id) = bid_request
+        .ext
+        .as_ref()
+        .and_then(|e| e.get("prebid"))
+        .and_then(|p| p.get("storedauctionresponse"))
+        .and_then(|s| s.get("id"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+    {
+        if let Some(mut stored_response) = state.stored_requests.fetch_stored_response(&stored_resp_id) {
+            if stored_response.id.is_empty() {
+                stored_response.id = bid_request.id.clone();
+            }
+            tracing::debug!(id = %stored_resp_id, "returning stored auction response; skipping auction");
+            return (StatusCode::OK, Json(stored_response)).into_response();
+        }
+    }
+
     // Apply account-level tmax override if set
     let mut bid_request = bid_request;
     if let Some(acct) = account_cfg {
@@ -1095,7 +1116,7 @@ impl EventParams {
 }
 
 pub async fn event_handler(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Query(params): Query<EventParams>,
 ) -> Response {
     // Validate required parameters
@@ -1109,7 +1130,7 @@ pub async fn event_handler(
     let bidder = params.bidder.as_deref().unwrap_or("");
     let timestamp = params.timestamp.unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
 
-    // Log the event at info level
+    // Record and log the event
     match event_type {
         "win" => {
             tracing::info!(
@@ -1120,6 +1141,7 @@ pub async fn event_handler(
                 timestamp = timestamp,
                 "win notification received"
             );
+            state.metrics.record_request("event_win", pbs_metrics::RequestStatus::Ok);
         }
         "imp" => {
             tracing::info!(
@@ -1130,6 +1152,7 @@ pub async fn event_handler(
                 timestamp = timestamp,
                 "impression notification received"
             );
+            state.metrics.record_request("event_imp", pbs_metrics::RequestStatus::Ok);
         }
         _ => {}
     }

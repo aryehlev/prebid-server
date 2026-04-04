@@ -195,6 +195,17 @@ pub struct CacheConfig {
     pub query: String,
     #[serde(default)]
     pub expected_millis: u64,
+    #[serde(default)]
+    pub default_ttl_secs: CacheTTL,
+}
+
+/// Per-format default TTL values for the prebid cache
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct CacheTTL {
+    pub banner_ttl_secs: u32,
+    pub video_ttl_secs: u32,
+    pub native_ttl_secs: u32,
+    pub audio_ttl_secs: u32,
 }
 
 /// Stored request configuration
