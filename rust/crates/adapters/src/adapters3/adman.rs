@@ -35,9 +35,9 @@ impl Bidder for AdmanAdapter {
         let mut requests = Vec::new();
         let mut errs = Vec::new();
 
-        // One request per imp (same pattern as Sonobi/Adman Go impl)
+        // One request per imp, setting tagid from imp.ext.bidder.TagID
         for imp in &request.imp {
-            // Go unmarshals ExtImpAdman{TagID string `json:"TagID"`} from imp.ext.bidder
+            // Go: ExtImpAdman{TagID string `json:"TagID"`} from imp.ext.bidder
             let tag_id = imp.ext.as_ref()
                 .and_then(|e| e.get("bidder"))
                 .and_then(|b| b.get("TagID"))
@@ -81,11 +81,16 @@ impl Bidder for AdmanAdapter {
         _external: &RequestData,
         response: &ResponseData,
     ) -> Result<BidderResponse, Vec<BidderError>> {
+        // Go returns nil, nil for 204
         if response.status_code == 204 {
             return Ok(BidderResponse::new());
         }
-        if let Err(e) = crate::check_response_status(response.status_code) {
-            return Err(vec![e]);
+        // Go returns BadServerResponse for 404
+        if response.status_code == 404 {
+            return Err(vec![BidderError::BadServerResponse(format!(
+                "Unexpected status code: {}. Run with request.debug = 1 for more info",
+                response.status_code
+            ))]);
         }
 
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
@@ -103,6 +108,10 @@ impl Bidder for AdmanAdapter {
             }
         }
 
+        // Per-bid media-type lookup errors are non-fatal. The trait signature
+        // (Result<BidderResponse, Vec<BidderError>>) does not allow returning both
+        // successful bids and non-fatal errors, so errors are dropped here.
+        let _ = errs;
         Ok(result)
     }
 }

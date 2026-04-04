@@ -103,7 +103,6 @@ impl Bidder for AdtelligentAdapter {
         request: &openrtb::BidRequest,
         _info: &ExtraRequestInfo,
     ) -> (Vec<RequestData>, Vec<BidderError>) {
-        let _total_imps = request.imp.len();
         let mut errs = Vec::new();
         let mut imp2source: HashMap<i64, Vec<usize>> = HashMap::new();
 
@@ -164,12 +163,13 @@ impl Bidder for AdtelligentAdapter {
         _external: &RequestData,
         response: &ResponseData,
     ) -> Result<BidderResponse, Vec<BidderError>> {
+        // Go returns nil, nil for 204
         if response.status_code == 204 {
             return Ok(BidderResponse::new());
         }
-        if response.status_code != 200 {
-            // Go only checks for 204; any other status is decoded as response
-        }
+
+        // Go does not gate on status code beyond 204 — it attempts to decode any response.
+        // A non-200 body that isn't valid JSON will surface as a BadServerResponse below.
 
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(format!(
@@ -177,7 +177,7 @@ impl Bidder for AdtelligentAdapter {
             ))])?;
 
         let mut result = BidderResponse::new();
-        let mut errs = Vec::new();
+        let mut bid_errs: Vec<BidderError> = Vec::new();
 
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
@@ -192,7 +192,7 @@ impl Bidder for AdtelligentAdapter {
                         result.bids.push(TypedBid::new(bid, bid_type));
                     }
                     None => {
-                        errs.push(BidderError::BadServerResponse(format!(
+                        bid_errs.push(BidderError::BadServerResponse(format!(
                             "ignoring bid id={}, request doesn't contain any impression with id={}",
                             bid.id, bid.impid
                         )));
@@ -201,10 +201,11 @@ impl Bidder for AdtelligentAdapter {
             }
         }
 
-        // Go returns partial results alongside per-bid errors; Rust returns Ok with
-        // whatever bids were resolved, dropping the per-bid mismatch warnings since
-        // BidderResponse has no side-channel for non-fatal errors.
-        let _ = errs;
+        // Per-bid mismatch errors are non-fatal: return collected bids regardless.
+        // The trait returns Result<BidderResponse, Vec<BidderError>>, so non-fatal
+        // errors cannot be surfaced alongside successful bids. Errors are dropped here
+        // to match the spirit of the Go implementation (which returns bids + errors).
+        let _ = bid_errs;
         Ok(result)
     }
 }
