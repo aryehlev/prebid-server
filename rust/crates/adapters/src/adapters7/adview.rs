@@ -18,6 +18,19 @@ struct ExtImpAdView {
     account_id: String,
 }
 
+fn get_media_type_for_bid(mtype: Option<i32>, imp_id: &str) -> Result<BidType, BidderError> {
+    match mtype {
+        Some(1) => Ok(BidType::Banner),
+        Some(2) => Ok(BidType::Video),
+        Some(4) => Ok(BidType::Native),
+        _ => Err(BidderError::BadServerResponse(format!(
+            "Unable to fetch mediaType in impID: {}, mType: {}",
+            imp_id,
+            mtype.unwrap_or(0)
+        ))),
+    }
+}
+
 impl Bidder for AdviewAdapter {
     fn make_requests(&self, request: &openrtb::BidRequest, _: &ExtraRequestInfo) -> (Vec<RequestData>, Vec<BidderError>) {
         let mut errs = Vec::new();
@@ -27,7 +40,7 @@ impl Bidder for AdviewAdapter {
             let bidder_ext: ExtImpBidder = match imp.ext.as_ref()
                 .and_then(|e| serde_json::from_value(e.clone()).ok()) {
                 Some(v) => v,
-                None => { errs.push(BidderError::BadInput(format!("invalid imp.ext for imp {}", imp.id))); continue; }
+                None => { errs.push(BidderError::BadInput(format!("invalid imp.ext, imp {}", imp.id))); continue; }
             };
             let ext: ExtImpAdView = match serde_json::from_value(bidder_ext.bidder) {
                 Ok(v) => v,
@@ -35,8 +48,9 @@ impl Bidder for AdviewAdapter {
             };
             let uri = self.endpoint.replace("{{.AccountID}}", &ext.account_id);
             let mut imp_copy = imp.clone();
+            // Set tagid from placementId (mirrors Go: imp.TagID = advImpExt.MasterTagID)
             imp_copy.tagid = Some(ext.master_tag_id);
-            // For adview, set banner w/h from first format
+            // For adview, set banner w/h from first format entry
             if let Some(banner) = &imp_copy.banner {
                 if let Some(formats) = &banner.format {
                     if !formats.is_empty() {
@@ -47,7 +61,10 @@ impl Bidder for AdviewAdapter {
                     }
                 }
             }
+            // Note: bid floor currency conversion (requestInfo.ConvertCurrency) is not
+            // available in the Rust infrastructure; floor values are passed as-is.
             req.imp = vec![imp_copy];
+            // Set currency to USD
             req.cur = Some(vec!["USD".to_string()]);
             let body = match serde_json::to_vec(&req) {
                 Ok(b) => b,
@@ -60,16 +77,24 @@ impl Bidder for AdviewAdapter {
 
     fn make_bids(&self, _: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
         if response.status_code == 204 { return Ok(BidderResponse::new()); }
+        if response.status_code == 400 {
+            return Err(vec![BidderError::BadInput("Unexpected status code: 400. Bad request from publisher.".to_string())]);
+        }
         if response.status_code != 200 {
-            return Err(vec![BidderError::BadServerResponse(format!("Unexpected status code: {}. Run with request.debug = 1 for more info.", response.status_code))]);
+            return Err(vec![BidderError::BadServerResponse(format!("Unexpected status code: {}.", response.status_code))]);
         }
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
         let mut result = BidderResponse::with_capacity(5);
-        if let Some(cur) = &bid_resp.cur { result.currency = cur.clone(); }
+        // adview only supports USD
+        result.currency = "USD".to_string();
+        let mut errors = Vec::new();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
-                result.bids.push(TypedBid::new(bid, BidType::Banner));
+                match get_media_type_for_bid(bid.mtype, &bid.impid) {
+                    Ok(bid_type) => result.bids.push(TypedBid::new(bid, bid_type)),
+                    Err(e) => errors.push(e),
+                }
             }
         }
         Ok(result)

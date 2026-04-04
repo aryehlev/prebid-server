@@ -37,7 +37,11 @@ impl Bidder for AcuityadsAdapter {
             .replace("{{.Host}}", &ext.host)
             .replace("{{.AccountID}}", &ext.account_id);
 
-        let body = match serde_json::to_vec(&request) {
+        // Clear imp.ext before marshaling (mirrors Go: imp.Ext = nil)
+        let mut req = request.clone();
+        req.imp[0].ext = None;
+
+        let body = match serde_json::to_vec(&req) {
             Ok(b) => b,
             Err(e) => return (vec![], vec![BidderError::BadInput(e.to_string())]),
         };
@@ -55,7 +59,15 @@ impl Bidder for AcuityadsAdapter {
 
     fn make_bids(&self, internal: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
         if response.status_code == 204 { return Ok(BidderResponse::new()); }
-        if let Err(e) = crate::check_response_status(response.status_code) { return Err(vec![e]); }
+        if response.status_code == 400 {
+            return Err(vec![BidderError::BadInput(format!("Unexpected status code: [ {} ]", response.status_code))]);
+        }
+        if response.status_code == 503 {
+            return Err(vec![BidderError::BadInput(format!("Something went wrong, please contact your Account Manager. Status Code: [ {} ] ", response.status_code))]);
+        }
+        if response.status_code != 200 {
+            return Err(vec![BidderError::BadInput(format!("Unexpected status code: [ {} ]. Run with request.debug = 1 for more info", response.status_code))]);
+        }
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|_| vec![BidderError::BadServerResponse("Bad Server Response".to_string())])?;
         if bid_resp.seatbid.is_empty() {

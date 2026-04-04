@@ -14,26 +14,42 @@ impl Bidder for VungleAdapter {
         headers.insert("Accept".to_string(), "application/json".to_string());
         headers.insert("X-OpenRTB-Version".to_string(), "2.5".to_string());
 
+        // Get buyer_uid from user for bid_token
+        let buyer_uid = request.user.as_ref()
+            .and_then(|u| u.buyeruid.as_deref())
+            .unwrap_or("")
+            .to_string();
+
         for imp in &request.imp {
             let bidder = imp.ext.as_ref().and_then(|e| e.get("bidder"));
+            // Go ext JSON fields: placement_reference_id, app_store_id
             let placement_ref_id = bidder
-                .and_then(|b| b.get("placementRefId"))
+                .and_then(|b| b.get("placement_reference_id"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
             let pub_app_store_id = bidder
-                .and_then(|b| b.get("pubAppStoreID"))
+                .and_then(|b| b.get("app_store_id"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
 
             let mut imp_copy = imp.clone();
             imp_copy.tagid = Some(placement_ref_id.to_string());
-            imp_copy.ext = None;
+
+            // Build new imp ext with vungle fields including bid_token
+            let vungle_ext = serde_json::json!({
+                "vungle": {
+                    "placement_reference_id": placement_ref_id,
+                    "app_store_id": pub_app_store_id,
+                    "bid_token": buyer_uid,
+                }
+            });
+            imp_copy.ext = Some(vungle_ext);
 
             let mut req_copy = request.clone();
             req_copy.imp = vec![imp_copy];
 
             // Construct app from existing app or create from site
-            let mut app = if let Some(existing_app) = &request.app {
+            let app_obj = if let Some(existing_app) = &request.app {
                 let mut a = existing_app.clone();
                 a.id = Some(pub_app_store_id.to_string());
                 a
@@ -44,7 +60,7 @@ impl Bidder for VungleAdapter {
                 errs.push(BidderError::BadInput("failed constructing app, must have app or site object in bid request".to_string()));
                 continue;
             };
-            req_copy.app = Some(app);
+            req_copy.app = Some(app_obj);
 
             let body = match serde_json::to_vec(&req_copy) {
                 Ok(b) => b,
@@ -64,6 +80,7 @@ impl Bidder for VungleAdapter {
         if let Some(cur) = &bid_resp.cur { result.currency = cur.clone(); }
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
+                // Vungle always returns video
                 result.bids.push(TypedBid::new(bid, BidType::Video));
             }
         }
