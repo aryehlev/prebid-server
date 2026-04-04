@@ -11,6 +11,7 @@ pub mod currency;
 pub mod floors;
 pub mod gdpr;
 pub mod hooks;
+pub mod macros;
 pub mod usersync;
 pub mod validation;
 
@@ -228,10 +229,6 @@ fn compress_gzip(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
     encoder.finish()
 }
 
-/// Resolve `${AUCTION_PRICE}` macro in a string with the given price.
-fn resolve_price_macro(s: &str, price: f64) -> String {
-    s.replace("${AUCTION_PRICE}", &format!("{:.4}", price))
-}
 
 /// AdaptedBidder wraps a Bidder implementation with HTTP execution logic.
 pub struct AdaptedBidder {
@@ -1518,21 +1515,30 @@ impl Exchange {
             }
         }
 
-        // Assemble seat bids from collected results, resolving ${AUCTION_PRICE} macros.
+        // Assemble seat bids from collected results, resolving all auction macros.
+        let auction_id = bid_request.id.clone();
+        let auction_currency = bid_request
+            .cur
+            .as_ref()
+            .and_then(|c| c.first())
+            .cloned()
+            .unwrap_or_else(|| "USD".to_string());
+        let timeout_ms = bid_request.tmax.unwrap_or(0) as u64;
+
         let mut seat_bids: Vec<openrtb::SeatBid> = Vec::new();
         for (bidder_name, typed_bids) in bidder_results {
             let bids: Vec<openrtb::Bid> = typed_bids.into_iter().map(|tb| {
-                let price = tb.bid.price;
                 let mut bid = tb.bid;
-                if let Some(nurl) = bid.nurl.as_deref() {
-                    bid.nurl = Some(resolve_price_macro(nurl, price));
-                }
-                if let Some(adm) = bid.adm.as_deref() {
-                    bid.adm = Some(resolve_price_macro(adm, price));
-                }
-                if let Some(burl) = bid.burl.as_deref() {
-                    bid.burl = Some(resolve_price_macro(burl, price));
-                }
+                let macro_values = macros::MacroValues {
+                    auction_price: bid.price,
+                    auction_currency: auction_currency.clone(),
+                    auction_id: auction_id.clone(),
+                    bidder_name: bidder_name.clone(),
+                    imp_id: bid.impid.clone(),
+                    timeout: timeout_ms,
+                    ad_markup: bid.adm.clone(),
+                };
+                macros::apply_bid_macros(&mut bid, &macro_values);
                 bid
             }).collect();
             seat_bids.push(openrtb::SeatBid {
