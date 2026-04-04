@@ -555,6 +555,23 @@ pub struct ExtImpBidder {
     pub prebid: Option<serde_json::Value>,
 }
 
+/// MultiBid describes multi-bid configuration for a bidder from req.ext.prebid.multibid
+#[derive(Debug, Deserialize, Clone)]
+pub struct MultiBid {
+    /// Single bidder name (mutually exclusive with `bidders`)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bidder: Option<String>,
+    /// Multiple bidder names (mutually exclusive with `bidder`)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bidders: Option<Vec<String>>,
+    /// Maximum number of bids allowed from this bidder per imp
+    #[serde(rename = "maxBids")]
+    pub max_bids: Option<u32>,
+    /// Prefix used to set targeting keys for additional bids
+    #[serde(rename = "targetBidderCodePrefix", skip_serializing_if = "Option::is_none")]
+    pub target_bidder_code_prefix: Option<String>,
+}
+
 // ── Bidder name constructor functions ────────────────────────────────────────
 // Each function returns a BidderName with the canonical string value from Go.
 

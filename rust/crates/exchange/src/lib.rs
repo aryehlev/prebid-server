@@ -590,6 +590,32 @@ impl Exchange {
             return Err(anyhow::anyhow!("request.imp must contain at least one impression"));
         }
 
+        // Parse multi-bid configuration from req.ext.prebid.multibid.
+        // Builds a map of bidder_name -> max_bids_per_imp.
+        let multi_bid_limits: HashMap<String, u32> = {
+            let entries: Vec<openrtb_ext::MultiBid> = bid_request
+                .ext
+                .as_ref()
+                .and_then(|e| e.get("prebid"))
+                .and_then(|p| p.get("multibid"))
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default();
+
+            let mut limits: HashMap<String, u32> = HashMap::new();
+            for entry in &entries {
+                let max = entry.max_bids.unwrap_or(1).max(1);
+                if let Some(bidder) = &entry.bidder {
+                    limits.insert(bidder.clone(), max);
+                }
+                if let Some(bidders) = &entry.bidders {
+                    for b in bidders {
+                        limits.insert(b.clone(), max);
+                    }
+                }
+            }
+            limits
+        };
+
         // Validate tmax (auction timeout)
         if let Some(tmax) = bid_request.tmax {
             if tmax < 0 {
@@ -911,6 +937,41 @@ impl Exchange {
                                         deduped.push(tb);
                                     }
                                 }
+
+                                // Multi-bid enforcement: limit the number of bids per imp
+                                // based on req.ext.prebid.multibid configuration.
+                                // Default is 1 bid per imp per bidder.
+                                let max_bids_per_imp = multi_bid_limits
+                                    .get(&bidder_result.bidder_name)
+                                    .copied()
+                                    .unwrap_or(1) as usize;
+
+                                let deduped = if max_bids_per_imp <= 1 {
+                                    // Default: keep only the highest-priced bid per imp.
+                                    let mut best_per_imp: HashMap<String, pbs_adapters::TypedBid> = HashMap::new();
+                                    for tb in deduped {
+                                        let imp_id = tb.bid.impid.clone();
+                                        match best_per_imp.get(&imp_id) {
+                                            Some(existing) if existing.bid.price >= tb.bid.price => {}
+                                            _ => { best_per_imp.insert(imp_id, tb); }
+                                        }
+                                    }
+                                    best_per_imp.into_values().collect::<Vec<_>>()
+                                } else {
+                                    // Multi-bid: keep up to max_bids_per_imp highest-priced bids per imp.
+                                    let mut bids_per_imp: HashMap<String, Vec<pbs_adapters::TypedBid>> = HashMap::new();
+                                    for tb in deduped {
+                                        bids_per_imp.entry(tb.bid.impid.clone()).or_default().push(tb);
+                                    }
+                                    let mut result = Vec::new();
+                                    for (_imp_id, mut imp_bids) in bids_per_imp {
+                                        // Sort descending by price, keep top N.
+                                        imp_bids.sort_by(|a, b| b.bid.price.partial_cmp(&a.bid.price).unwrap_or(std::cmp::Ordering::Equal));
+                                        imp_bids.truncate(max_bids_per_imp);
+                                        result.extend(imp_bids);
+                                    }
+                                    result
+                                };
 
                                 if !deduped.is_empty() {
                                     bidder_results.push((bidder_result.bidder_name, deduped));
