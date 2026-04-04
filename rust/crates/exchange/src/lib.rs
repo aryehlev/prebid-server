@@ -787,11 +787,31 @@ impl Exchange {
         let mut bidder_results: Vec<(String, Vec<pbs_adapters::TypedBid>)> = Vec::new();
         let mut timed_out_bidders: Vec<String> = Vec::new();
 
+        // Debug mode collections (populated only when bid_request.test == Some(1)).
+        let is_test = bid_request.test == Some(1);
+        let mut debug_http_calls: HashMap<String, Vec<openrtb_ext::ExtHttpCall>> = HashMap::new();
+        let mut debug_bidder_timing: HashMap<String, u64> = HashMap::new();
+        let mut bidder_errors: HashMap<String, Vec<String>> = HashMap::new();
+
         while let Some(result) = join_set.join_next().await {
             match result {
                 Ok(bidder_result) => {
                     if bidder_result.timed_out {
                         timed_out_bidders.push(bidder_result.bidder_name.clone());
+                    }
+
+                    // Collect debug info when test mode is active.
+                    if is_test {
+                        if !bidder_result.http_calls.is_empty() {
+                            debug_http_calls
+                                .entry(bidder_result.bidder_name.clone())
+                                .or_default()
+                                .extend(bidder_result.http_calls.clone());
+                        }
+                        debug_bidder_timing.insert(
+                            bidder_result.bidder_name.clone(),
+                            bidder_result.duration_ms,
+                        );
                     }
 
                     // Record per-bidder metrics.
@@ -897,7 +917,15 @@ impl Exchange {
                                 }
                             }
                         }
-                        Err(_errs) => {
+                        Err(errs) => {
+                            // Collect error strings for response.ext.prebid.errors.
+                            let err_strings: Vec<String> = errs.iter().map(|e| e.to_string()).collect();
+                            if !err_strings.is_empty() {
+                                bidder_errors
+                                    .entry(bidder_result.bidder_name.clone())
+                                    .or_default()
+                                    .extend(err_strings);
+                            }
                             // Bidder returned errors — record a non-bid with reason code 200 per imp.
                             let non_bids: Vec<NonBid> = bid_request.imp.iter().map(|imp| NonBid {
                                 impid: imp.id.clone(),
@@ -1038,13 +1066,63 @@ impl Exchange {
             });
         }
 
-        // Build response ext, including DSA passthrough from request if present.
-        let response_ext: Option<serde_json::Value> = bid_request
+        // Build response ext.
+        //
+        // Structure:
+        //   {
+        //     "prebid": {
+        //       "timing": { "respondedMs": <ms> },
+        //       "errors": { "<bidder>": ["..."] },        // omitted when empty
+        //       "seatnonbid": [...]                       // omitted when empty
+        //     },
+        //     "debug": {                                  // only when test == 1
+        //       "httpcalls": { "<bidder>": [...] },
+        //       "bidmeta":   { "<bidder>": { "serverResponseTimeMs": <ms> } }
+        //     },
+        //     "dsa": { ... }                              // passthrough, omitted when absent
+        //   }
+        let elapsed_ms = request.start_time.elapsed().as_millis() as u64;
+
+        let mut prebid_obj = serde_json::json!({
+            "timing": { "respondedMs": elapsed_ms }
+        });
+
+        if !bidder_errors.is_empty() {
+            prebid_obj["errors"] = serde_json::to_value(&bidder_errors).unwrap_or_default();
+        }
+
+        if !collected_non_bids.is_empty() {
+            prebid_obj["seatnonbid"] = serde_json::to_value(&collected_non_bids).unwrap_or_default();
+        }
+
+        let mut ext_obj = serde_json::json!({ "prebid": prebid_obj });
+
+        // DSA passthrough from request regs.dsa.
+        if let Some(dsa_val) = bid_request
             .regs
             .as_ref()
             .and_then(|r| r.dsa.as_ref())
             .and_then(|dsa| serde_json::to_value(dsa).ok())
-            .map(|dsa_val| serde_json::json!({ "dsa": dsa_val }));
+        {
+            ext_obj["dsa"] = dsa_val;
+        }
+
+        // Debug block — only included when request.test == 1.
+        if is_test {
+            let mut bidmeta = serde_json::Map::new();
+            for (bidder, ms) in &debug_bidder_timing {
+                bidmeta.insert(
+                    bidder.clone(),
+                    serde_json::json!({ "serverResponseTimeMs": ms }),
+                );
+            }
+            ext_obj["debug"] = serde_json::json!({
+                "httpcalls": debug_http_calls,
+                "bidmeta":   bidmeta,
+            });
+        }
+
+        let response_ext: Option<serde_json::Value> = Some(ext_obj);
 
         let bid_response = openrtb::BidResponse {
             id: bid_request.id.clone(),
