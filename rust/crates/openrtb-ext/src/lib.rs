@@ -575,7 +575,7 @@ pub struct MultiBid {
 
 /// ExtIncludeBrandCategory describes the includebrandcategory targeting option.
 /// When present in req.ext.prebid.targeting, competitive exclusion (category mapping) is enabled.
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct ExtIncludeBrandCategory {
     /// 1 = FreeWheel, 2 = DFP
     #[serde(rename = "primaryAdServer")]
@@ -611,6 +611,91 @@ pub struct Adjustment {
     pub adj_type: String,
     pub value: f64,
     pub currency: Option<String>,
+}
+
+// ── Cache extension structs ──────────────────────────────────────────────────
+
+/// ExtRequestPrebidCache defines caching options for prebid request
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct ExtRequestPrebidCache {
+    pub bids: Option<ExtRequestPrebidCacheBids>,
+    pub vastxml: Option<ExtRequestPrebidCacheVAST>,
+    pub winningonly: Option<bool>,
+}
+
+/// ExtRequestPrebidCacheBids defines bid caching options
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct ExtRequestPrebidCacheBids {
+    pub ttl_seconds: Option<i64>,
+    pub return_creative: Option<bool>,
+}
+
+/// ExtRequestPrebidCacheVAST defines VAST XML caching options
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct ExtRequestPrebidCacheVAST {
+    pub ttl_seconds: Option<i64>,
+    pub return_creative: Option<bool>,
+}
+
+// ── Targeting extension ──────────────────────────────────────────────────────
+
+/// ExtRequestTargeting describes targeting options from req.ext.prebid.targeting
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct ExtRequestTargeting {
+    pub pricegranularity: Option<serde_json::Value>,
+    pub mediatypepricegranularity: Option<serde_json::Value>,
+    pub currency: Option<String>,
+    pub includebrandcategory: Option<ExtIncludeBrandCategory>,
+    pub includeformat: Option<bool>,
+    pub durationrangeinmssupport: Option<bool>,
+    pub preferdeals: Option<bool>,
+    pub includewinners: Option<bool>,
+    pub includebidderkeys: Option<bool>,
+    pub truncateattrvalue: Option<i32>,
+}
+
+// ── Response prebid extension structs ────────────────────────────────────────
+
+/// ExtResponsePrebid holds prebid-specific fields in the response ext
+#[derive(Debug, Serialize, Clone, Default)]
+pub struct ExtResponsePrebid {
+    pub auctiontimestamp: Option<u64>,
+    pub passthrough: Option<serde_json::Value>,
+    pub seatnonbid: Option<Vec<SeatNonBid>>,
+    pub timing: Option<ExtResponseTiming>,
+    pub errors: Option<std::collections::HashMap<String, Vec<ExtBidderMessage>>>,
+}
+
+/// ExtResponseTiming holds timing information in the response ext
+#[derive(Debug, Serialize, Clone, Default)]
+pub struct ExtResponseTiming {
+    #[serde(rename = "respondedin")]
+    pub responded_in: u64,
+}
+
+// ── Channel / SDK extension structs ─────────────────────────────────────────
+
+/// ExtRequestPrebidChannel describes the channel (name/version) for a request
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct ExtRequestPrebidChannel {
+    pub name: String,
+    pub version: String,
+}
+
+/// ExtRequestSdk describes the SDK used to generate the request
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct ExtRequestSdk {
+    pub renderers: Option<Vec<ExtRequestSdkRenderer>>,
+    pub source: Option<String>,
+    pub version: Option<String>,
+}
+
+/// ExtRequestSdkRenderer describes a renderer registered by the SDK
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct ExtRequestSdkRenderer {
+    pub name: String,
+    pub version: Option<String>,
+    pub data: Option<serde_json::Value>,
 }
 
 // ── Bidder name constructor functions ────────────────────────────────────────
