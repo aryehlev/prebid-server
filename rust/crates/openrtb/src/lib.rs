@@ -250,6 +250,9 @@ pub struct Video {
     pub startdelay: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub placement: Option<i32>,
+    /// OpenRTB 2.6 video placement type (replaces `placement`)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plcmt: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub linearity: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -213,6 +213,40 @@ pub async fn readiness_handler(State(state): State<AppState>) -> Response {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Request validation helper
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Validate a BidRequest and return an error message string if invalid.
+fn validate_bid_request(req: &openrtb::BidRequest) -> Result<(), String> {
+    if req.id.is_empty() {
+        return Err("request.id is required".to_string());
+    }
+    if req.imp.is_empty() {
+        return Err("request.imp must contain at least one impression".to_string());
+    }
+    // site and app must not both be present
+    if req.site.is_some() && req.app.is_some() {
+        return Err("request.site and request.app are mutually exclusive".to_string());
+    }
+    // tmax must be positive if provided
+    if let Some(tmax) = req.tmax {
+        if tmax <= 0 {
+            return Err(format!("request.tmax must be positive, got {}", tmax));
+        }
+    }
+    // Each imp must have at least one media type: banner, video, or native
+    for (i, imp) in req.imp.iter().enumerate() {
+        if imp.banner.is_none() && imp.video.is_none() && imp.native.is_none() {
+            return Err(format!(
+                "request.imp[{}] must have at least one of banner, video, or native",
+                i
+            ));
+        }
+    }
+    Ok(())
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // POST /openrtb2/auction
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -241,11 +275,8 @@ pub async fn auction_handler(
         }
     }
 
-    if bid_request.id.is_empty() {
-        return (StatusCode::BAD_REQUEST, "request.id is required").into_response();
-    }
-    if bid_request.imp.is_empty() {
-        return (StatusCode::BAD_REQUEST, "request.imp must contain at least one impression").into_response();
+    if let Err(msg) = validate_bid_request(&bid_request) {
+        return (StatusCode::BAD_REQUEST, msg).into_response();
     }
 
     // Look up account config from the publisher ID embedded in site.publisher.id
@@ -329,11 +360,8 @@ pub async fn auction_get_handler(
     };
 
     // Reuse same validation and auction logic as auction_handler
-    if bid_request.id.is_empty() {
-        return (StatusCode::BAD_REQUEST, "request.id is required").into_response();
-    }
-    if bid_request.imp.is_empty() {
-        return (StatusCode::BAD_REQUEST, "request.imp must contain at least one impression").into_response();
+    if let Err(msg) = validate_bid_request(&bid_request) {
+        return (StatusCode::BAD_REQUEST, msg).into_response();
     }
 
     let account_id = bid_request
@@ -436,6 +464,17 @@ pub async fn video_auction_handler(
         }
     }
 
+    // Pod/slot deduplication: remove duplicate imp IDs, keeping first occurrence.
+    {
+        let mut seen_ids = std::collections::HashSet::new();
+        bid_request.imp.retain(|imp| seen_ids.insert(imp.id.clone()));
+    }
+
+    // Validate the (possibly merged and deduplicated) request.
+    if let Err(msg) = validate_bid_request(&bid_request) {
+        return (StatusCode::BAD_REQUEST, msg).into_response();
+    }
+
     let auction_req = pbs_exchange::AuctionRequest {
         bid_request,
         account: None,
@@ -445,7 +484,65 @@ pub async fn video_auction_handler(
     };
 
     match state.exchange.hold_auction(auction_req).await {
-        Ok(r) => (StatusCode::OK, Json(r.bid_response)).into_response(),
+        Ok(mut r) => {
+            // Inject adpod targeting (hb_pb_cat_dur) for video bids.
+            // For each bid in each seatbid that corresponds to a video impression,
+            // add hb_pb_cat_dur targeting in the bid's ext.prebid.targeting map.
+            for seatbid in &mut r.bid_response.seatbid {
+                for bid in &mut seatbid.bid {
+                    // Build hb_pb_cat_dur value: "<price_bucket>_<category>_<duration>s"
+                    // Price bucket: floor price to 2 decimal places
+                    let price_bucket = format!("{:.2}", bid.price);
+                    // Extract category from bid.cat if present
+                    let category = bid
+                        .cat
+                        .as_ref()
+                        .and_then(|cats| cats.first())
+                        .map(|s| s.as_str())
+                        .unwrap_or("unknown");
+                    // Extract duration from bid ext if available, else default to 0
+                    let duration = bid
+                        .ext
+                        .as_ref()
+                        .and_then(|e| e.get("prebid"))
+                        .and_then(|p| p.get("video"))
+                        .and_then(|v| v.get("duration"))
+                        .and_then(|d| d.as_i64())
+                        .unwrap_or(0);
+                    let hb_pb_cat_dur = format!("{}_{}_{duration}s", price_bucket, category);
+
+                    // Merge into bid.ext.prebid.targeting
+                    let ext = bid.ext.get_or_insert_with(|| serde_json::json!({}));
+                    let prebid = ext
+                        .as_object_mut()
+                        .and_then(|m| {
+                            if !m.contains_key("prebid") {
+                                m.insert("prebid".to_string(), serde_json::json!({}));
+                            }
+                            m.get_mut("prebid")
+                        });
+                    if let Some(prebid_obj) = prebid {
+                        let targeting = prebid_obj
+                            .as_object_mut()
+                            .and_then(|m| {
+                                if !m.contains_key("targeting") {
+                                    m.insert("targeting".to_string(), serde_json::json!({}));
+                                }
+                                m.get_mut("targeting")
+                            });
+                        if let Some(t) = targeting {
+                            if let Some(t_map) = t.as_object_mut() {
+                                t_map.insert(
+                                    "hb_pb_cat_dur".to_string(),
+                                    serde_json::Value::String(hb_pb_cat_dur),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            (StatusCode::OK, Json(r.bid_response)).into_response()
+        }
         Err(e) => {
             tracing::error!("Video auction error: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
@@ -481,29 +578,161 @@ pub async fn amp_handler(
     let tag_id = match &params.tag_id {
         Some(t) if !t.is_empty() => t.clone(),
         _ => {
-            return (StatusCode::BAD_REQUEST, "AMP request missing required tag_id query parameter").into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                "AMP request missing required tag_id query parameter",
+            )
+                .into_response();
         }
     };
 
-    // Look up the stored request by tag_id
-    match state.stored_requests.get(&tag_id) {
-        Some(stored) => {
-            let response = serde_json::json!({
-                "tag_id": tag_id,
-                "targeting": {},
-                "stored_request": stored,
-            });
-            (StatusCode::OK, Json(response)).into_response()
-        }
+    // ── 1. Load stored request by tag_id ─────────────────────────────────────
+    let stored_json = match state.stored_requests.get(&tag_id) {
+        Some(v) => v.clone(),
         None => {
             let response = serde_json::json!({
-                "tag_id": tag_id,
                 "targeting": {},
-                "errors": { "prebid": [{"code": 2, "message": format!("stored request not found for tag_id: {}", tag_id)}] }
+                "errors": {
+                    "prebid": [{
+                        "code": 2,
+                        "message": format!("stored request not found for tag_id: {}", tag_id)
+                    }]
+                }
             });
-            (StatusCode::BAD_REQUEST, Json(response)).into_response()
+            return (StatusCode::BAD_REQUEST, Json(response)).into_response();
+        }
+    };
+
+    // ── 2. Deserialise the stored BidRequest fragment ─────────────────────────
+    let mut bid_request: openrtb::BidRequest =
+        match serde_json::from_value(stored_json) {
+            Ok(r) => r,
+            Err(e) => {
+                let response = serde_json::json!({
+                    "targeting": {},
+                    "errors": {
+                        "prebid": [{
+                            "code": 3,
+                            "message": format!("stored request for tag_id '{}' is not a valid BidRequest: {}", tag_id, e)
+                        }]
+                    }
+                });
+                return (StatusCode::BAD_REQUEST, Json(response)).into_response();
+            }
+        };
+
+    // Ensure request has an ID (use tag_id if absent).
+    if bid_request.id.is_empty() {
+        bid_request.id = tag_id.clone();
+    }
+
+    // ── 3. Apply query-param overrides ────────────────────────────────────────
+    // curl → site.page (canonical URL of the AMP page)
+    if let Some(curl) = params.curl.as_deref().filter(|s| !s.is_empty()) {
+        let site = bid_request.site.get_or_insert_with(Default::default);
+        if site.page.is_none() {
+            site.page = Some(curl.to_string());
         }
     }
+
+    // w / h → override banner size on the first impression's banner object.
+    if params.w.is_some() || params.h.is_some() {
+        if let Some(imp) = bid_request.imp.first_mut() {
+            let banner = imp.banner.get_or_insert_with(Default::default);
+            if let Some(w) = params.w {
+                banner.w = Some(w);
+            }
+            if let Some(h) = params.h {
+                banner.h = Some(h);
+            }
+        }
+    }
+
+    // slot → imp[0].tagid
+    if let Some(slot) = params.slot.as_deref().filter(|s| !s.is_empty()) {
+        if let Some(imp) = bid_request.imp.first_mut() {
+            if imp.tagid.is_none() {
+                imp.tagid = Some(slot.to_string());
+            }
+        }
+    }
+
+    // gdpr_consent / gdpr_applies → user.ext.consent and regs.ext.gdpr
+    if let Some(consent) = params.gdpr_consent.as_deref().filter(|s| !s.is_empty()) {
+        let user = bid_request.user.get_or_insert_with(Default::default);
+        let ext = user.ext.get_or_insert_with(|| serde_json::json!({}));
+        if ext.get("consent").is_none() {
+            ext["consent"] = serde_json::Value::String(consent.to_string());
+        }
+    }
+    if let Some(gdpr) = params.gdpr_applies {
+        let regs = bid_request.regs.get_or_insert_with(Default::default);
+        let ext = regs.ext.get_or_insert_with(|| serde_json::json!({}));
+        if ext.get("gdpr").is_none() {
+            ext["gdpr"] = serde_json::Value::Number(if gdpr { 1.into() } else { 0.into() });
+        }
+    }
+
+    // us_privacy → regs.us_privacy
+    if let Some(usp) = params.us_privacy.as_deref().filter(|s| !s.is_empty()) {
+        let regs = bid_request.regs.get_or_insert_with(Default::default);
+        if regs.us_privacy.is_none() {
+            regs.us_privacy = Some(usp.to_string());
+        }
+    }
+
+    // account → site.publisher.id
+    if let Some(account) = params.account.as_deref().filter(|s| !s.is_empty()) {
+        let site = bid_request.site.get_or_insert_with(Default::default);
+        let pub_ = site.publisher.get_or_insert_with(Default::default);
+        if pub_.id.is_none() {
+            pub_.id = Some(account.to_string());
+        }
+    }
+
+    // ── 4. Run the auction ────────────────────────────────────────────────────
+    let auction_req = pbs_exchange::AuctionRequest {
+        bid_request,
+        account: None,
+        user_syncs: None,
+        start_time: std::time::Instant::now(),
+        currency_rates: None,
+    };
+
+    let auction_response = match state.exchange.hold_auction(auction_req).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(tag_id = %tag_id, "AMP auction error: {}", e);
+            let response = serde_json::json!({
+                "targeting": {},
+                "errors": {
+                    "prebid": [{"code": 999, "message": format!("auction error: {}", e)}]
+                }
+            });
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(response)).into_response();
+        }
+    };
+
+    // ── 5. Collect targeting keys from the winning bid ─────────────────────────
+    // Flatten all per-impression targeting maps into a single map.
+    // For AMP, targeting keys from the auction's first/only impression are used.
+    // If the exchange computed winner keys (hb_pb, hb_bidder, hb_adid), they are
+    // already in `auction_response.targeting`.
+    let mut flat_targeting: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+
+    for (_imp_id, keys) in auction_response.targeting {
+        for (k, v) in keys {
+            flat_targeting.entry(k).or_insert(v);
+        }
+    }
+
+    state
+        .metrics
+        .record_request("amp", pbs_metrics::RequestStatus::Ok);
+
+    let response = serde_json::json!({ "targeting": flat_targeting });
+    (StatusCode::OK, Json(response)).into_response()
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
