@@ -282,7 +282,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     gen!("definemedia");
     reg!("dianomi", crate::adapters14::DianomiAdapter::new(ep("dianomi")));
     reg!("displayio", crate::adapters14::DisplayioAdapter::new(ep("displayio")));
-    gen!("edge226");
+    reg!("edge226", crate::adapters14::Edge226Adapter::new(ep("edge226")));
     reg!("exco", crate::adapters14::ExcoAdapter::new(ep("exco")));
     gen!("feedad");
     reg!("flatads", crate::adapters14::FlatadsAdapter::new(ep("flatads")));
@@ -291,7 +291,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     gen!("interactiveoffers");
     reg!("iqx", crate::adapters14::IqxAdapter::new(ep("iqx")));
     gen!("iqzone");
-    gen!("kiviads");
+    reg!("kiviads", crate::adapters14::KiviadsAdapter::new(ep("kiviads")));
     reg!("krushmedia", crate::adapters14::KrushmediaAdapter::new(ep("krushmedia")));
     gen!("kueezrtb");
     gen!("lemmadigital");
@@ -310,7 +310,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     reg!("pubnative", crate::adapters14::PubnativeAdapter::new(ep("pubnative")));
     reg!("pubrise", crate::adapters14::PubriseAdapter::new(ep("pubrise")));
     gen!("pwbid");
-    gen!("qt");
+    reg!("qt", crate::adapters14::QtAdapter::new(ep("qt")));
     reg!("readpeak", crate::adapters14::ReadpeakAdapter::new(ep("readpeak")));
     reg!("rediads", crate::adapters14::RediadsAdapter::new(ep("rediads")));
     reg!("relevantdigital", crate::adapters14::RelevantdigitalAdapter::new(ep("relevantdigital")));
@@ -327,11 +327,11 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     gen!("sovrn_xsp");
     reg!("sparteo", crate::adapters14::SparteoAdapter::new(ep("sparteo")));
     gen!("sspbc");
-    gen!("startio");
+    reg!("startio", crate::adapters14::StartioAdapter::new(ep("startio")));
     gen!("stroeer_core");
     reg!("tappx", crate::adapters14::TappxAdapter::new(ep("tappx")));
-    gen!("teqblaze");
-    gen!("theadx");
+    reg!("teqblaze", crate::adapters14::TeqblazeAdapter::new(ep("teqblaze")));
+    reg!("theadx", crate::adapters14::TheadxAdapter::new(ep("theadx")));
     reg!("thetradedesk", crate::adapters14::ThetradedeskAdapter::new(ep("thetradedesk")));
     gen!("tpmn");
     gen!("tradplus");
@@ -352,7 +352,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     gen!("yahoo_ads");
     reg!("yeahmobi", crate::adapters14::YeahmobiAdapter::new(ep("yeahmobi")));
     reg!("yieldmo", crate::adapters14::YieldmoAdapter::new(ep("yieldmo")));
-    gen!("yieldone");
+    reg!("yieldone", crate::adapters14::YieldoneAdapter::new(ep("yieldone")));
     gen!("zentotem");
     reg!("zeroclickfraud", crate::adapters14::ZeroclickfraudAdapter::new(ep("zeroclickfraud")));
     gen!("zeta_global_ssp");
