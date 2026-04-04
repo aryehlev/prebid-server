@@ -151,7 +151,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     reg!("adf", crate::adapters6::AdfAdapter::new(ep("adf")));
     reg!("adgeneration", crate::adapters6::AdgenerationAdapter::new(ep("adgeneration")));
     reg!("adhese", crate::adapters6::AdheseAdapter::new(ep("adhese")));
-    reg!("adkerneladn", crate::adapters6::AdkernelAdnAdapter::new(ep("adkerneladn")));
+    reg!("adkernelAdn", crate::adapters6::AdkernelAdnAdapter::new(ep("adkernelAdn")));
     reg!("admatic", crate::adapters6::AdmaticAdapter::new(ep("admatic")));
     reg!("adnuntius", crate::adapters6::AdnuntiusAdapter::new(ep("adnuntius")));
     reg!("adot", crate::adapters6::AdotAdapter::new(ep("adot")));
@@ -332,7 +332,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     gen!("tappx");
     gen!("teqblaze");
     gen!("theadx");
-    gen!("thetradedesk");
+    reg!("thetradedesk", crate::adapters14::ThetradedeskAdapter::new(ep("thetradedesk")));
     gen!("tpmn");
     gen!("tradplus");
     gen!("trafficgate");
@@ -364,7 +364,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     gen!("360playvid");
     gen!("adastra");
     gen!("addigi");
-    gen!("adkernelAdn");
+    // adkernelAdn uses real adapter registered above
     gen!("admaticde");
     gen!("adport");
     gen!("ads_interactive");

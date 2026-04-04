@@ -76,7 +76,7 @@ impl Bidder for ThetradedeskAdapter {
         request: &openrtb::BidRequest,
         _info: &ExtraRequestInfo,
     ) -> (Vec<RequestData>, Vec<BidderError>) {
-        let (pub_id, _supply_source_id) = match get_extension_info(&request.imp) {
+        let (pub_id, supply_source_id) = match get_extension_info(&request.imp) {
             Ok(info) => info,
             Err(e) => return (vec![], vec![e]),
         };
@@ -111,6 +111,14 @@ impl Bidder for ThetradedeskAdapter {
             }
         }
 
+        // Build endpoint URL: replace {{.SupplyId}} macro with supplySourceId if present
+        let uri = if !supply_source_id.is_empty() {
+            self.endpoint.replace("{{.SupplyId}}", &supply_source_id)
+        } else {
+            // Use endpoint as-is (with SupplyId macro replaced by empty string if needed)
+            self.endpoint.replace("{{.SupplyId}}", "")
+        };
+
         let body = match serde_json::to_vec(&req) {
             Ok(b) => b,
             Err(e) => return (vec![], vec![BidderError::BadInput(e.to_string())]),
@@ -123,7 +131,7 @@ impl Bidder for ThetradedeskAdapter {
         (
             vec![RequestData {
                 method: "POST".to_string(),
-                uri: self.endpoint.clone(),
+                uri,
                 body,
                 headers,
                 imp_ids: get_imp_ids(&req.imp),
@@ -168,12 +176,7 @@ impl Bidder for ThetradedeskAdapter {
             for mut bid in seat_bid.bid {
                 resolve_auction_price_macros(&mut bid);
 
-                // mtype comes from bid.ext since openrtb struct doesn't have it
-                let mtype = bid.ext
-                    .as_ref()
-                    .and_then(|e| e.get("mtype"))
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(1) as u32; // default to banner
+                let mtype = bid.mtype.unwrap_or(0) as u32;
 
                 let bid_type = match get_bid_type_from_mtype(mtype) {
                     Ok(bt) => bt,
