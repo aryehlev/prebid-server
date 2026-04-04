@@ -1,9 +1,19 @@
 use std::collections::HashMap;
-use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_bid_type_from_mtype, get_imp_ids};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid};
+use openrtb_ext::BidType;
 use serde_json::json;
 
 pub struct PubriseAdapter { pub endpoint: String }
 impl PubriseAdapter { pub fn new(endpoint: String) -> Self { Self { endpoint } } }
+
+fn get_bid_type(mtype: i32, imp_id: &str) -> Result<BidType, BidderError> {
+    match mtype {
+        1 => Ok(BidType::Banner),
+        2 => Ok(BidType::Video),
+        4 => Ok(BidType::Native),
+        _ => Err(BidderError::BadServerResponse(format!("could not define media type for impression: {}", imp_id))),
+    }
+}
 
 impl Bidder for PubriseAdapter {
     fn make_requests(&self, request: &openrtb::BidRequest, _: &ExtraRequestInfo) -> (Vec<RequestData>, Vec<BidderError>) {
@@ -51,18 +61,14 @@ impl Bidder for PubriseAdapter {
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
         let mut result = BidderResponse::with_capacity(5);
         if let Some(cur) = &bid_resp.cur { if !cur.is_empty() { result.currency = cur.clone(); } }
-        let mut errs = Vec::new();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
                 let mtype = bid.mtype.unwrap_or(0);
-                if mtype == 0 {
-                    errs.push(BidderError::BadServerResponse(format!("could not define media type for impression: {}", bid.impid)));
-                    continue;
-                }
-                result.bids.push(TypedBid::new(bid, get_bid_type_from_mtype(mtype)));
+                let bid_type = get_bid_type(mtype, &bid.impid)
+                    .map_err(|e| vec![e])?;
+                result.bids.push(TypedBid::new(bid, bid_type));
             }
         }
-        if !errs.is_empty() && result.bids.is_empty() { return Err(errs); }
         Ok(result)
     }
 }

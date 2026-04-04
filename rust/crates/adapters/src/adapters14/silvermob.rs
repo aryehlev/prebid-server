@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_bid_type_from_mtype, get_imp_ids};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid};
+use openrtb_ext::BidType;
 
 pub struct SilvermobAdapter { pub endpoint: String }
 impl SilvermobAdapter { pub fn new(endpoint: String) -> Self { Self { endpoint } } }
@@ -15,6 +16,15 @@ fn build_url(endpoint: &str, host: &str, zone_id: &str) -> String {
     endpoint
         .replace("{{.Host}}", host)
         .replace("{{.ZoneID}}", zone_id)
+}
+
+fn get_bid_media_type_from_mtype(bid: &openrtb::Bid) -> Result<BidType, BidderError> {
+    match bid.mtype.unwrap_or(0) {
+        1 => Ok(BidType::Banner),
+        2 => Ok(BidType::Video),
+        4 => Ok(BidType::Native),
+        _ => Err(BidderError::BadServerResponse(format!("Unable to fetch mediaType for imp: {}", bid.impid))),
+    }
 }
 
 impl Bidder for SilvermobAdapter {
@@ -62,16 +72,13 @@ impl Bidder for SilvermobAdapter {
             return Err(vec![BidderError::BadServerResponse("Empty SeatBid array".to_string())]);
         }
         let mut result = BidderResponse::with_capacity(1);
-        if let Some(cur) = &bid_resp.cur { if !cur.is_empty() { result.currency = cur.clone(); } }
         let mut errs = Vec::new();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
-                let mtype = bid.mtype.unwrap_or(0);
-                if mtype == 0 {
-                    errs.push(BidderError::BadServerResponse(format!("Unable to fetch mediaType for imp: {}", bid.impid)));
-                    continue;
+                match get_bid_media_type_from_mtype(&bid) {
+                    Ok(bid_type) => result.bids.push(TypedBid::new(bid, bid_type)),
+                    Err(e) => errs.push(e),
                 }
-                result.bids.push(TypedBid::new(bid, get_bid_type_from_mtype(mtype)));
             }
         }
         if !errs.is_empty() && result.bids.is_empty() { return Err(errs); }

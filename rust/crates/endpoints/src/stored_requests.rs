@@ -5,15 +5,19 @@ pub use pbs_exchange::StoredResponseFetcher;
 
 /// Simple in-memory stored request cache loaded from filesystem.
 ///
-/// Supports two kinds of stored data:
+/// Supports three kinds of stored data:
 /// - **Request fragments**: full or partial `BidRequest` JSON, loaded from
 ///   `<dir>/requests/<id>.json` (or the directory root for backwards compat).
 /// - **Imp fragments**: partial `Imp` JSON, loaded from `<dir>/imps/<id>.json`.
+/// - **Auction responses**: full pre-built `BidResponse` JSON, loaded from
+///   `<dir>/storedresponses/<id>.json`.
 pub struct StoredRequestFetcher {
     /// Map from request ID to stored BidRequest fragment JSON
     requests: HashMap<String, serde_json::Value>,
     /// Map from imp ID to stored Imp fragment JSON
     imps: HashMap<String, serde_json::Value>,
+    /// Map from response ID to stored BidResponse JSON
+    responses: HashMap<String, serde_json::Value>,
 }
 
 impl StoredRequestFetcher {
@@ -25,8 +29,9 @@ impl StoredRequestFetcher {
     pub fn from_directory(dir: &str) -> Self {
         let mut requests = HashMap::new();
         let mut imps = HashMap::new();
+        let mut responses = HashMap::new();
 
-        // Helper closure: load all JSON files in `path` into `map`.
+        // Helper: load all JSON files in `path` into `map`.
         let load_json_files = |path: &str, map: &mut HashMap<String, serde_json::Value>| {
             if let Ok(entries) = std::fs::read_dir(path) {
                 for entry in entries.flatten() {
@@ -52,17 +57,20 @@ impl StoredRequestFetcher {
         // Optional sub-directories that take precedence.
         let requests_subdir = format!("{}/requests", dir);
         let imps_subdir = format!("{}/imps", dir);
+        let responses_subdir = format!("{}/storedresponses", dir);
         load_json_files(&requests_subdir, &mut requests);
         load_json_files(&imps_subdir, &mut imps);
+        load_json_files(&responses_subdir, &mut responses);
 
-        Self { requests, imps }
+        Self { requests, imps, responses }
     }
 
-    /// Construct an empty fetcher (no stored requests or imps).
+    /// Construct an empty fetcher (no stored requests, imps, or responses).
     pub fn empty() -> Self {
         Self {
             requests: HashMap::new(),
             imps: HashMap::new(),
+            responses: HashMap::new(),
         }
     }
 
@@ -87,6 +95,19 @@ impl StoredRequestFetcher {
     /// auction (base imp wins on conflict, using JSON deep-merge semantics).
     pub fn fetch_imp(&self, id: &str) -> Option<&serde_json::Value> {
         self.imps.get(id)
+    }
+
+    /// Return a stored auction response for `id`, or `None` if not found.
+    ///
+    /// Stored auction responses are full pre-built `BidResponse` JSON objects,
+    /// loaded from `<dir>/storedresponses/<id>.json`.  When present, the auction
+    /// can be short-circuited and the stored response returned directly without
+    /// calling any bidders.
+    pub fn fetch_stored_response(&self, id: &str) -> Option<openrtb::BidResponse> {
+        self.responses
+            .get(id)
+            .or_else(|| self.requests.get(id))
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
     }
 
     // ── Merge helpers ─────────────────────────────────────────────────────────
@@ -133,8 +154,7 @@ impl StoredRequestFetcher {
 /// ID and reference it via `req.ext.prebid.storedauctionresponse.id`.
 impl StoredResponseFetcher for StoredRequestFetcher {
     fn fetch(&self, id: &str) -> Option<&serde_json::Value> {
-        // Stored auction responses share the same on-disk store as request
-        // fragments: look up by id in the requests map.
-        self.requests.get(id)
+        // Check dedicated storedresponses map first, fall back to requests map.
+        self.responses.get(id).or_else(|| self.requests.get(id))
     }
 }
