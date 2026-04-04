@@ -392,7 +392,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     gen!("felixads");
     gen!("filmzie");
     gen!("finative");
-    gen!("freewheel-ssp");
+    reg!("freewheel-ssp", crate::adapters10::FreewheelsspAdapter::new(ep("freewheelssp")));
     gen!("gravite");
     gen!("greedygame");
     gen!("iionads");
@@ -405,7 +405,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     gen!("magnite");
     gen!("markapp");
     gen!("mediayo");
-    gen!("mgidX");
+    reg!("mgidX", crate::adapters14::MgidXAdapter::new(ep("mgid_x")));
     gen!("monetixads");
     gen!("netaddiction");
     gen!("nuba");
