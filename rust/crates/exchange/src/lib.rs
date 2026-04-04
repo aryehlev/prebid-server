@@ -12,6 +12,7 @@ pub mod floors;
 pub mod gdpr;
 pub mod hooks;
 pub mod usersync;
+pub mod validation;
 
 #[cfg(test)]
 mod tests;
@@ -595,6 +596,13 @@ impl Exchange {
         request: AuctionRequest,
         per_bidder_timeouts: &HashMap<String, u64>,
     ) -> Result<AuctionResponse, anyhow::Error> {
+        // Validate the request before any processing.
+        let validation_errors = validation::validate_request(&request.bid_request);
+        if validation::has_fatal_errors(&validation_errors) {
+            let msgs: Vec<String> = validation_errors.iter().map(|e| e.to_string()).collect();
+            return Err(anyhow::anyhow!("invalid request: {}", msgs.join("; ")));
+        }
+
         // Execute EntrypointRequest hooks before any processing.
         if let Some(plan) = &self.hook_plan {
             let payload = serde_json::to_value(&request.bid_request)

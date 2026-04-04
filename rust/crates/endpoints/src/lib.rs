@@ -5,6 +5,7 @@ use axum::{
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use pbs_exchange::usersync::{PrebidCookie, Syncer, SyncType};
+use pbs_exchange::validation::ValidationError;
 use pbs_metrics::MetricsEngine as _;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
@@ -238,34 +239,49 @@ pub async fn readiness_handler(State(state): State<AppState>) -> Response {
 // Request validation helper
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Validate a BidRequest and return an error message string if invalid.
-fn validate_bid_request(req: &openrtb::BidRequest) -> Result<(), String> {
+/// Validate a BidRequest using the structured validation module.
+/// Returns an error response body if there are fatal validation errors.
+fn check_fatal_validation(req: &openrtb::BidRequest) -> Option<Response> {
+    // Always require a non-empty request ID
     if req.id.is_empty() {
-        return Err("request.id is required".to_string());
+        return Some(
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"errors": ["request missing required field: request.id"]})),
+            )
+                .into_response(),
+        );
     }
-    if req.imp.is_empty() {
-        return Err("request.imp must contain at least one impression".to_string());
+    let errors = pbs_exchange::validation::validate_request(req);
+    let fatal = errors.iter().any(|e| {
+        matches!(e, ValidationError::NoImps | ValidationError::BothSiteAndApp)
+    });
+    if fatal {
+        Some(
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "errors": errors.iter().map(|e| e.to_string()).collect::<Vec<_>>()
+                })),
+            )
+                .into_response(),
+        )
+    } else {
+        None
     }
-    // site and app must not both be present
-    if req.site.is_some() && req.app.is_some() {
-        return Err("request.site and request.app are mutually exclusive".to_string());
+}
+
+/// Alias used by handlers that call validate_bid_request
+fn validate_bid_request(req: &openrtb::BidRequest) -> Result<(), String> {
+    let errors = pbs_exchange::validation::validate_request(req);
+    let fatal = errors.iter().any(|e| {
+        matches!(e, ValidationError::NoImps | ValidationError::BothSiteAndApp)
+    });
+    if fatal {
+        Err(errors.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; "))
+    } else {
+        Ok(())
     }
-    // tmax must be positive if provided
-    if let Some(tmax) = req.tmax {
-        if tmax <= 0 {
-            return Err(format!("request.tmax must be positive, got {}", tmax));
-        }
-    }
-    // Each imp must have at least one media type: banner, video, or native
-    for (i, imp) in req.imp.iter().enumerate() {
-        if imp.banner.is_none() && imp.video.is_none() && imp.native.is_none() {
-            return Err(format!(
-                "request.imp[{}] must have at least one of banner, video, or native",
-                i
-            ));
-        }
-    }
-    Ok(())
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
