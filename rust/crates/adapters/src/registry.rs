@@ -295,7 +295,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     reg!("krushmedia", crate::adapters14::KrushmediaAdapter::new(ep("krushmedia")));
     reg!("kueezrtb", crate::adapters14::KueezrtbAdapter::new(ep("kueezrtb")));
     gen!("lemmadigital");
-    gen!("limelight_digital");
+    reg!("limelight_digital", crate::adapters14::LimelightDigitalAdapter::new(ep("limelight_digital")));
     gen!("lm_kiviads");
     reg!("logan", crate::adapters14::LoganAdapter::new(ep("logan")));
     gen!("mediasquare");
@@ -324,7 +324,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     gen!("smilewanted");
     reg!("smoot", crate::adapters14::SmootAdapter::new(ep("smoot")));
     reg!("smrtconnect", crate::adapters14::SmrtconnectAdapter::new(ep("smrtconnect")));
-    gen!("sovrn_xsp");
+    reg!("sovrn_xsp", crate::adapters14::SovrnXspAdapter::new(ep("sovrn_xsp")));
     reg!("sparteo", crate::adapters14::SparteoAdapter::new(ep("sparteo")));
     gen!("sspbc");
     reg!("startio", crate::adapters14::StartioAdapter::new(ep("startio")));
@@ -349,7 +349,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     gen!("vrtcal");
     reg!("vungle", crate::adapters14::VungleAdapter::new(ep("vungle")));
     reg!("xeworks", crate::adapters14::XeworksAdapter::new(ep("xeworks")));
-    gen!("yahoo_ads");
+    reg!("yahoo_ads", crate::adapters14::YahooAdsAdapter::new(ep("yahoo_ads")));
     reg!("yeahmobi", crate::adapters14::YeahmobiAdapter::new(ep("yeahmobi")));
     reg!("yieldmo", crate::adapters14::YieldmoAdapter::new(ep("yieldmo")));
     reg!("yieldone", crate::adapters14::YieldoneAdapter::new(ep("yieldone")));
@@ -401,7 +401,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     gen!("janet");
     gen!("jdpmedia");
     gen!("kuantyx");
-    gen!("limelightDigital");
+    reg!("limelightDigital", crate::adapters14::LimelightDigitalAdapter::new(ep("limelightDigital")));
     gen!("magnite");
     gen!("markapp");
     gen!("mediayo");
@@ -426,11 +426,11 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     gen!("rtbdemand");
     gen!("rxnetwork");
     gen!("screencore");
-    gen!("seedingAlliance");
+    reg!("seedingAlliance", crate::adapters14::SeedingAllianceAdapter::new(ep("seedingAlliance")));
     gen!("showheroes-bs");
     gen!("showheroesBs");
     gen!("smootai");
-    gen!("sovrnXsp");
+    reg!("sovrnXsp", crate::adapters14::SovrnXspAdapter::new(ep("sovrnXsp")));
     gen!("sspBC");
     gen!("streamkey");
     gen!("streamlyn");
@@ -446,7 +446,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     gen!("viewdeos");
     gen!("xapads");
     gen!("xtrmqb");
-    gen!("yahooAds");
+    reg!("yahooAds", crate::adapters14::YahooAdsAdapter::new(ep("yahooAds")));
     gen!("yahooAdvertising");
     gen!("yahoossp");
     gen!("yobee");
