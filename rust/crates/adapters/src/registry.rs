@@ -316,8 +316,8 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     gen!("relevantdigital");
     gen!("rise");
     gen!("showheroes");
-    gen!("silvermob");
-    gen!("smarthub");
+    reg!("silvermob", crate::adapters14::SilvermobAdapter::new(ep("silvermob")));
+    reg!("smarthub", crate::adapters14::SmarthubAdapter::new(ep("smarthub")));
     gen!("smartrtb");
     gen!("smartx");
     gen!("smartyads");
@@ -337,14 +337,14 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     gen!("tradplus");
     gen!("trafficgate");
     gen!("trustedstack");
-    gen!("trustx");
+    reg!("trustx", crate::adapters14::TrustxAdapter::new(ep("trustx")));
     gen!("ucfunnel");
     gen!("undertone");
     gen!("videobyte");
     gen!("videoheroes");
     gen!("vidoomy");
     gen!("visiblemeasures");
-    gen!("visx");
+    reg!("visx", crate::adapters14::VisxAdapter::new(ep("visx")));
     gen!("vox");
     gen!("vrtcal");
     gen!("vungle");
