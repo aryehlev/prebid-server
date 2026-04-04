@@ -868,6 +868,11 @@ impl Exchange {
                     .copied()
                     .unwrap_or(timeout_ms);
 
+                // Record that we are sending a request to this bidder.
+                if let Some(m) = &self.metrics {
+                    m.record_bidder_request(&bidder_name);
+                }
+
                 // Clone everything needed for the async task.
                 let adapted = AdaptedBidder {
                     bidder: adapted.bidder.clone(),
@@ -1066,6 +1071,15 @@ impl Exchange {
                                 };
 
                                 if !deduped.is_empty() {
+                                    // Record per-bid metrics for each accepted bid.
+                                    if let Some(m) = &self.metrics {
+                                        for typed_bid in &deduped {
+                                            m.record_bid_count(
+                                                &bidder_result.bidder_name,
+                                                &typed_bid.bid_type.to_string(),
+                                            );
+                                        }
+                                    }
                                     bidder_results.push((bidder_result.bidder_name, deduped));
                                 }
                             }
@@ -1074,6 +1088,18 @@ impl Exchange {
                             // Collect error strings for response.ext.prebid.errors.
                             let err_strings: Vec<String> = errs.iter().map(|e| e.to_string()).collect();
                             if !err_strings.is_empty() {
+                                // Record error metrics for each error.
+                                if let Some(m) = &self.metrics {
+                                    for err in &errs {
+                                        let err_type = match err {
+                                            pbs_adapters::BidderError::Timeout => "timeout",
+                                            pbs_adapters::BidderError::BadInput(_) => "bad_input",
+                                            pbs_adapters::BidderError::BadServerResponse(_) => "bad_server_response",
+                                            _ => "unknown",
+                                        };
+                                        m.record_bid_count(&bidder_result.bidder_name, err_type);
+                                    }
+                                }
                                 bidder_errors
                                     .entry(bidder_result.bidder_name.clone())
                                     .or_default()
