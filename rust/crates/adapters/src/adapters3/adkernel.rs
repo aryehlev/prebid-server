@@ -140,10 +140,7 @@ impl Bidder for AdkernelAdapter {
                 bid.impid = bid.impid[..new_len].to_string();
             }
 
-            let mtype = bid.ext.as_ref()
-                .and_then(|e| e.get("mtype"))
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as u32;
+            let mtype = bid.mtype.unwrap_or(0) as u32;
             let bid_type = get_bid_type_from_mtype(mtype)
                 .map_err(|e| vec![e])?;
             result.bids.push(TypedBid::new(bid, bid_type));
