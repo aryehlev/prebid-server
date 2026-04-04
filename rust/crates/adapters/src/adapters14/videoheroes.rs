@@ -22,11 +22,11 @@ impl Bidder for VideoHeroesAdapter {
             return (vec![], vec![BidderError::BadInput("no impressions".to_string())]);
         }
         let bidder = request.imp[0].ext.as_ref().and_then(|e| e.get("bidder"));
-        let account_id = bidder.and_then(|b| b.get("accountId")).and_then(|v| v.as_str()).unwrap_or("");
-        let host = bidder.and_then(|b| b.get("host")).and_then(|v| v.as_str()).unwrap_or("");
-        let url = self.endpoint
-            .replace("{{.AccountID}}", account_id)
-            .replace("{{.Host}}", host);
+        let placement_id = bidder.and_then(|b| b.get("placementId")).and_then(|v| v.as_str()).unwrap_or("");
+        if placement_id.is_empty() {
+            return (vec![], vec![BidderError::BadInput("ext.bidder not provided".to_string())]);
+        }
+        let url = self.endpoint.replace("{{.PublisherID}}", placement_id);
         let mut req_copy = request.clone();
         req_copy.imp[0].ext = None;
         let body = match serde_json::to_vec(&req_copy) {
@@ -40,17 +40,29 @@ impl Bidder for VideoHeroesAdapter {
     }
 
     fn make_bids(&self, internal: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
-        if response.status_code == 204 { return Ok(BidderResponse::new()); }
-        if let Err(e) = crate::check_response_status(response.status_code) { return Err(vec![e]); }
+        match response.status_code {
+            204 => return Err(vec![BidderError::BadInput("No bid".to_string())]),
+            400 => return Err(vec![BidderError::BadInput(format!(
+                "Unexpected status code: {}. Run with request.debug = 1 for more info", response.status_code
+            ))]),
+            503 => return Err(vec![BidderError::BadInput(format!(
+                "Service Unavailable. Status Code: [ {} ] ", response.status_code
+            ))]),
+            200 => {}
+            _ => return Err(vec![BidderError::BadServerResponse(format!(
+                "Something went wrong, please contact your Account Manager. Status Code: [ {} ] ", response.status_code
+            ))]),
+        }
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
-            .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
-        let mut result = BidderResponse::with_capacity(5);
-        if let Some(cur) = &bid_resp.cur { if !cur.is_empty() { result.currency = cur.clone(); } }
-        for sb in bid_resp.seatbid {
-            for bid in sb.bid {
-                let bid_type = get_media_type_for_imp(&bid.impid, &internal.imp);
-                result.bids.push(TypedBid::new(bid, bid_type));
-            }
+            .map_err(|_| vec![BidderError::BadServerResponse("Bad Server Response".to_string())])?;
+        if bid_resp.seatbid.is_empty() {
+            return Err(vec![BidderError::BadServerResponse("Empty SeatBid array".to_string())]);
+        }
+        let mut result = BidderResponse::with_capacity(bid_resp.seatbid[0].bid.len());
+        let sb = &bid_resp.seatbid[0];
+        for bid in &sb.bid {
+            let bid_type = get_media_type_for_imp(&bid.impid, &internal.imp);
+            result.bids.push(TypedBid::new(bid.clone(), bid_type));
         }
         Ok(result)
     }

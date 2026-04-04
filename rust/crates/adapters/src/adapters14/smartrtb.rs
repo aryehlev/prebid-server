@@ -61,13 +61,12 @@ impl Bidder for SmartrtbAdapter {
                 let bid_type = match creative_type {
                     "BANNER" => BidType::Banner,
                     "VIDEO" => BidType::Video,
-                    "NATIVE" => BidType::Native,
-                    "AUDIO" => BidType::Audio,
                     other => {
-                        errs.push(BidderError::BadServerResponse(format!("Unsupported creative type {}.", other)));
-                        continue;
+                        return Err(vec![BidderError::BadServerResponse(format!("Unsupported creative type {}.", other))]);
                     }
                 };
+                let mut bid = bid;
+                bid.ext = None;
                 result.bids.push(TypedBid::new(bid, bid_type));
             }
         }

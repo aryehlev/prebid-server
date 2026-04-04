@@ -24,18 +24,23 @@ impl Bidder for VisiblemeasuresAdapter {
             let bidder = imp.ext.as_ref().and_then(|e| e.get("bidder"));
             let placement_id = bidder.and_then(|b| b.get("placementId")).and_then(|v| v.as_str()).unwrap_or("").to_string();
             let endpoint_id = bidder.and_then(|b| b.get("endpointId")).and_then(|v| v.as_str()).unwrap_or("").to_string();
-            // Build ext with type field
-            let (imp_type, type_val) = if !placement_id.is_empty() {
-                ("placementId", placement_id.as_str())
+
+            // Build imp.ext as {"bidder": {"type": ..., "placementId"|"endpointId": ...}}
+            let bidder_ext = if !placement_id.is_empty() {
+                serde_json::json!({
+                    "type": "publisher",
+                    "placementId": placement_id
+                })
             } else {
-                ("endpointId", endpoint_id.as_str())
+                serde_json::json!({
+                    "type": "network",
+                    "endpointId": endpoint_id
+                })
             };
-            let ext_val = serde_json::json!({
-                imp_type: type_val,
-                "type": if !placement_id.is_empty() { "publisher" } else { "network" }
-            });
+            let new_imp_ext = serde_json::json!({ "bidder": bidder_ext });
+
             let mut imp_copy = imp.clone();
-            imp_copy.ext = Some(ext_val);
+            imp_copy.ext = Some(new_imp_ext);
             let mut req_copy = request.clone();
             req_copy.imp = vec![imp_copy];
             let body = match serde_json::to_vec(&req_copy) {
@@ -52,16 +57,26 @@ impl Bidder for VisiblemeasuresAdapter {
 
     fn make_bids(&self, internal: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
         if response.status_code == 204 { return Ok(BidderResponse::new()); }
-        if let Err(e) = crate::check_response_status(response.status_code) { return Err(vec![e]); }
+        if response.status_code != 200 {
+            return Err(vec![BidderError::BadServerResponse(format!(
+                "Unexpected status code: {}. Run with request.debug = 1 for more info.", response.status_code
+            ))]);
+        }
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
-        let mut result = BidderResponse::with_capacity(5);
+        let mut result = BidderResponse::with_capacity(internal.imp.len());
+        // Pass through currency from response
+        if let Some(cur) = &bid_resp.cur {
+            if !cur.is_empty() {
+                result.currency = cur.clone();
+            }
+        }
         let mut errs = Vec::new();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
                 match get_media_type_for_imp(&bid.impid, &internal.imp) {
                     Ok(t) => result.bids.push(TypedBid::new(bid, t)),
-                    Err(e) => errs.push(e),
+                    Err(e) => { return Err(vec![e]); }
                 }
             }
         }
