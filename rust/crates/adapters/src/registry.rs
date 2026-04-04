@@ -340,14 +340,14 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     reg!("trustx", crate::adapters14::TrustxAdapter::new(ep("trustx")));
     gen!("ucfunnel");
     gen!("undertone");
-    gen!("videobyte");
+    reg!("videobyte", crate::adapters14::VideobyteAdapter::new(ep("videobyte")));
     reg!("videoheroes", crate::adapters14::VideoHeroesAdapter::new(ep("videoheroes")));
     reg!("vidoomy", crate::adapters14::VidoomyAdapter::new(ep("vidoomy")));
     reg!("visiblemeasures", crate::adapters14::VisiblemeasuresAdapter::new(ep("visiblemeasures")));
     reg!("visx", crate::adapters14::VisxAdapter::new(ep("visx")));
     gen!("vox");
     gen!("vrtcal");
-    gen!("vungle");
+    reg!("vungle", crate::adapters14::VungleAdapter::new(ep("vungle")));
     gen!("xeworks");
     gen!("yahoo_ads");
     gen!("yeahmobi");
@@ -356,7 +356,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     gen!("zentotem");
     gen!("zeroclickfraud");
     gen!("zeta_global_ssp");
-    gen!("zmaticoo");
+    reg!("zmaticoo", crate::adapters14::ZmaticooAdapter::new(ep("zmaticoo")));
 
     // Additional missing bidders (aliases and generics)
     gen!("152media");

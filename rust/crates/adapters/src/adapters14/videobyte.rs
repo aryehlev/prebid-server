@@ -13,9 +13,17 @@ fn get_headers(request: &openrtb::BidRequest) -> HashMap<String, String> {
     let mut h = HashMap::new();
     h.insert("Content-Type".to_string(), "application/json;charset=utf-8".to_string());
     h.insert("Accept".to_string(), "application/json".to_string());
-    if let Some(device) = &request.device {
-        if let Some(ua) = &device.ua { h.insert("User-Agent".to_string(), ua.clone()); }
-        if let Some(ip) = &device.ip { h.insert("X-Forwarded-For".to_string(), ip.clone()); }
+    if let Some(site) = &request.site {
+        if let Some(domain) = &site.domain {
+            if !domain.is_empty() {
+                h.insert("Origin".to_string(), domain.clone());
+            }
+        }
+        if let Some(ref_) = &site.ref_ {
+            if !ref_.is_empty() {
+                h.insert("Referer".to_string(), ref_.clone());
+            }
+        }
     }
     h
 }
@@ -28,9 +36,11 @@ impl Bidder for VideobyteAdapter {
         let headers = get_headers(request);
         for imp in &original_imps {
             let bidder = imp.ext.as_ref().and_then(|e| e.get("bidder"));
-            let publisher_id = bidder.and_then(|b| b.get("publisherId")).and_then(|v| v.as_str()).unwrap_or("");
+            // Go ext field is json:"pubId" -> key "pubId"
+            let publisher_id = bidder.and_then(|b| b.get("pubId")).and_then(|v| v.as_str()).unwrap_or("");
             let placement_id = bidder.and_then(|b| b.get("placementId")).and_then(|v| v.as_str()).unwrap_or("");
-            let network_id = bidder.and_then(|b| b.get("networkId")).and_then(|v| v.as_str()).unwrap_or("");
+            // Go ext field is json:"nid" -> key "nid"
+            let network_id = bidder.and_then(|b| b.get("nid")).and_then(|v| v.as_str()).unwrap_or("");
             let mut params = vec![("source".to_string(), "pbs".to_string()), ("pid".to_string(), publisher_id.to_string())];
             if !placement_id.is_empty() { params.push(("placementId".to_string(), placement_id.to_string())); }
             if !network_id.is_empty() { params.push(("nid".to_string(), network_id.to_string())); }
@@ -49,10 +59,19 @@ impl Bidder for VideobyteAdapter {
 
     fn make_bids(&self, internal: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
         if response.status_code == 204 { return Ok(BidderResponse::new()); }
-        if let Err(e) = crate::check_response_status(response.status_code) { return Err(vec![e]); }
+        if response.status_code == 400 {
+            return Err(vec![BidderError::BadInput(format!(
+                "Bad user input: HTTP status {}. Run with request.debug = 1 for more info", response.status_code
+            ))]);
+        }
+        if response.status_code != 200 {
+            return Err(vec![BidderError::BadServerResponse(format!(
+                "Unexpected status code: {}. Run with request.debug = 1 for more info", response.status_code
+            ))]);
+        }
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
-            .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
-        let mut result = BidderResponse::with_capacity(5);
+            .map_err(|_| vec![BidderError::BadServerResponse("Bad Server Response".to_string())])?;
+        let mut result = BidderResponse::with_capacity(1);
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
                 let bid_type = internal.imp.iter().find(|i| i.id == bid.impid)
