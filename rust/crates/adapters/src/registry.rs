@@ -281,7 +281,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     gen!("decenterads");
     gen!("definemedia");
     gen!("dianomi");
-    gen!("displayio");
+    reg!("displayio", crate::adapters14::DisplayioAdapter::new(ep("displayio")));
     gen!("edge226");
     gen!("exco");
     gen!("feedad");
@@ -292,7 +292,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     gen!("iqx");
     gen!("iqzone");
     gen!("kiviads");
-    gen!("krushmedia");
+    reg!("krushmedia", crate::adapters14::KrushmediaAdapter::new(ep("krushmedia")));
     gen!("kueezrtb");
     gen!("lemmadigital");
     gen!("limelight_digital");
@@ -307,7 +307,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     gen!("mobkoi");
     gen!("motorik");
     reg!("nexx360", crate::adapters14::Nexx360Adapter::new(ep("nexx360")));
-    gen!("pubnative");
+    reg!("pubnative", crate::adapters14::PubnativeAdapter::new(ep("pubnative")));
     reg!("pubrise", crate::adapters14::PubriseAdapter::new(ep("pubrise")));
     gen!("pwbid");
     gen!("qt");
@@ -351,7 +351,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     gen!("xeworks");
     gen!("yahoo_ads");
     reg!("yeahmobi", crate::adapters14::YeahmobiAdapter::new(ep("yeahmobi")));
-    gen!("yieldmo");
+    reg!("yieldmo", crate::adapters14::YieldmoAdapter::new(ep("yieldmo")));
     gen!("yieldone");
     gen!("zentotem");
     reg!("zeroclickfraud", crate::adapters14::ZeroclickfraudAdapter::new(ep("zeroclickfraud")));
