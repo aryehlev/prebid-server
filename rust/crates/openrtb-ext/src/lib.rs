@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 /// BidderName is a newtype wrapper around String representing a bidder identifier.
@@ -570,6 +571,46 @@ pub struct MultiBid {
     /// Prefix used to set targeting keys for additional bids
     #[serde(rename = "targetBidderCodePrefix", skip_serializing_if = "Option::is_none")]
     pub target_bidder_code_prefix: Option<String>,
+}
+
+/// ExtIncludeBrandCategory describes the includebrandcategory targeting option.
+/// When present in req.ext.prebid.targeting, competitive exclusion (category mapping) is enabled.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct ExtIncludeBrandCategory {
+    /// 1 = FreeWheel, 2 = DFP
+    #[serde(rename = "primaryAdServer")]
+    pub primary_ad_server: Option<i32>,
+    pub publisher: Option<String>,
+    #[serde(rename = "withCategory")]
+    pub with_category: Option<bool>,
+    #[serde(rename = "translateCategories")]
+    pub translate_categories: Option<bool>,
+}
+
+/// DealTier describes minimum deal tier configuration for an imp.pmp.deal extension.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct DealTier {
+    pub prefix: Option<String>,
+    #[serde(rename = "minDealTier")]
+    pub min_deal_tier: Option<i32>,
+}
+
+/// BidAdjustmentRule holds the new-style bid adjustment rules from req.ext.prebid.bidadjustments.
+/// The `bidders` map is keyed by bidder name, then by deal ID (or "*" for any deal),
+/// and contains a list of Adjustment rules.
+#[derive(Debug, Deserialize, Clone)]
+pub struct BidAdjustmentRule {
+    pub bidders: Option<HashMap<String, HashMap<String, Vec<Adjustment>>>>,
+}
+
+/// Adjustment is a single bid adjustment entry within a BidAdjustmentRule.
+#[derive(Debug, Deserialize, Clone)]
+pub struct Adjustment {
+    /// "multiplier", "static", or "cpm"
+    #[serde(rename = "adjtype")]
+    pub adj_type: String,
+    pub value: f64,
+    pub currency: Option<String>,
 }
 
 // ── Bidder name constructor functions ────────────────────────────────────────

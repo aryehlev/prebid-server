@@ -737,4 +737,228 @@ mod tests {
         assert_eq!(requests[0].method, "POST");
         assert_eq!(requests[0].uri, "https://ssc.33across.com/api/v1/hb");
     }
+
+    // ── Yandex ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_yandex_makes_per_imp_request() {
+        // Two imps with different placement IDs → should produce 2 separate requests.
+        let adapter = crate::adapters2::yandex::YandexAdapter::new(
+            "https://bidding.yandex.net/openrtb/2.5".to_string(),
+        );
+
+        let imp1 = openrtb::Imp {
+            id: "imp1".to_string(),
+            banner: Some(Banner {
+                format: Some(vec![make_format(300, 250)]),
+                w: Some(300),
+                h: Some(250),
+                ..Default::default()
+            }),
+            ext: Some(serde_json::json!({"bidder": {"placementId": "123456-78901"}})),
+            ..Default::default()
+        };
+        let imp2 = openrtb::Imp {
+            id: "imp2".to_string(),
+            banner: Some(Banner {
+                format: Some(vec![make_format(728, 90)]),
+                w: Some(728),
+                h: Some(90),
+                ..Default::default()
+            }),
+            ext: Some(serde_json::json!({"bidder": {"placementId": "234567-89012"}})),
+            ..Default::default()
+        };
+
+        let req = openrtb::BidRequest {
+            id: "yandex-req".to_string(),
+            imp: vec![imp1, imp2],
+            ..Default::default()
+        };
+
+        let (requests, errors) = adapter.make_requests(&req, &ExtraRequestInfo::default());
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+        assert_eq!(
+            requests.len(),
+            2,
+            "yandex should create one request per imp; got {} requests",
+            requests.len()
+        );
+        for rd in &requests {
+            assert_eq!(rd.method, "POST");
+            assert!(!rd.body.is_empty(), "request body should not be empty");
+        }
+    }
+
+    #[test]
+    fn test_yandex_invalid_placement_id_produces_error() {
+        let adapter = crate::adapters2::yandex::YandexAdapter::new(
+            "https://bidding.yandex.net/openrtb/2.5".to_string(),
+        );
+
+        let imp = openrtb::Imp {
+            id: "imp1".to_string(),
+            banner: Some(Banner {
+                format: Some(vec![make_format(300, 250)]),
+                w: Some(300),
+                h: Some(250),
+                ..Default::default()
+            }),
+            // placementId has only one numeric part
+            ext: Some(serde_json::json!({"bidder": {"placementId": "only-one"}})),
+            ..Default::default()
+        };
+
+        let req = openrtb::BidRequest {
+            id: "yandex-bad".to_string(),
+            imp: vec![imp],
+            ..Default::default()
+        };
+
+        let (requests, errors) = adapter.make_requests(&req, &ExtraRequestInfo::default());
+        assert!(!errors.is_empty(), "should produce an error for invalid placement id");
+        assert!(requests.is_empty(), "should produce no requests for invalid placement id");
+    }
+
+    // ── Smaato ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_smaato_banner_request() {
+        // Standard banner imp → should produce exactly one request.
+        let adapter = crate::adapters2::smaato::SmaatoAdapter::new(
+            "https://prebid.smaato.net/oapi/prebid".to_string(),
+        );
+
+        let imp = openrtb::Imp {
+            id: "imp1".to_string(),
+            banner: Some(Banner {
+                format: Some(vec![make_format(300, 250)]),
+                ..Default::default()
+            }),
+            ext: Some(serde_json::json!({
+                "bidder": {
+                    "publisherId": "pub123",
+                    "adspaceId": "ads456"
+                }
+            })),
+            ..Default::default()
+        };
+
+        let req = openrtb::BidRequest {
+            id: "smaato-req".to_string(),
+            imp: vec![imp],
+            site: Some(openrtb::Site {
+                page: Some("https://example.com".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let (requests, errors) = adapter.make_requests(&req, &ExtraRequestInfo::default());
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+        assert_eq!(requests.len(), 1, "smaato banner should produce exactly one request");
+        let rd = &requests[0];
+        assert_eq!(rd.method, "POST");
+        assert_eq!(rd.uri, "https://prebid.smaato.net/oapi/prebid");
+        assert!(!rd.body.is_empty());
+    }
+
+    #[test]
+    fn test_smaato_missing_publisher_id_produces_error() {
+        let adapter = crate::adapters2::smaato::SmaatoAdapter::new(
+            "https://prebid.smaato.net/oapi/prebid".to_string(),
+        );
+
+        let imp = openrtb::Imp {
+            id: "imp1".to_string(),
+            banner: Some(Banner::default()),
+            // No publisherId in bidder ext
+            ext: Some(serde_json::json!({"bidder": {"adspaceId": "ads456"}})),
+            ..Default::default()
+        };
+
+        let req = openrtb::BidRequest {
+            id: "smaato-no-pub".to_string(),
+            imp: vec![imp],
+            ..Default::default()
+        };
+
+        let (requests, errors) = adapter.make_requests(&req, &ExtraRequestInfo::default());
+        assert!(
+            !errors.is_empty(),
+            "should produce an error when publisherId is missing"
+        );
+        assert!(
+            requests.is_empty(),
+            "should produce no requests when publisherId is missing"
+        );
+    }
+
+    // ── BidderError helpers ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_bidder_error_bad_input_message() {
+        let e = BidderError::bad_input("something wrong");
+        assert!(e.to_string().contains("something wrong"));
+        assert!(e.is_fatal());
+    }
+
+    #[test]
+    fn test_bidder_error_bad_server_response_not_fatal() {
+        let e = BidderError::bad_server_response("server exploded");
+        assert!(e.to_string().contains("server exploded"));
+        assert!(!e.is_fatal());
+    }
+
+    #[test]
+    fn test_bidder_error_timeout_not_fatal() {
+        let e = BidderError::Timeout;
+        assert!(!e.is_fatal());
+    }
+
+    // ── RequestData helpers ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_request_data_new_sets_method_and_uri() {
+        let rd = RequestData::new("GET", "http://example.com/test", vec![]);
+        assert_eq!(rd.method, "GET");
+        assert_eq!(rd.uri, "http://example.com/test");
+        assert!(rd.body.is_empty());
+        assert!(rd.imp_ids.is_empty());
+    }
+
+    #[test]
+    fn test_request_data_set_header_overwrites() {
+        let mut rd = RequestData::new_post("http://example.com", vec![]);
+        rd.set_header("Content-Type", "text/plain");
+        assert_eq!(
+            rd.headers.get("Content-Type").map(String::as_str),
+            Some("text/plain")
+        );
+    }
+
+    // ── get_bid_type_from_mtype edge cases ───────────────────────────────────
+
+    #[test]
+    fn test_get_bid_type_from_mtype_all_values() {
+        use openrtb_ext::BidType;
+        assert_eq!(get_bid_type_from_mtype(1), BidType::Banner);
+        assert_eq!(get_bid_type_from_mtype(2), BidType::Video);
+        assert_eq!(get_bid_type_from_mtype(3), BidType::Audio);
+        assert_eq!(get_bid_type_from_mtype(4), BidType::Native);
+        // Unknown mtype defaults to Banner
+        assert_eq!(get_bid_type_from_mtype(5), BidType::Banner);
+        assert_eq!(get_bid_type_from_mtype(-1), BidType::Banner);
+        assert_eq!(get_bid_type_from_mtype(100), BidType::Banner);
+    }
+
+    #[test]
+    fn test_check_response_status_all_cases() {
+        assert!(check_response_status(200).is_ok());
+        assert!(check_response_status(204).is_err());
+        assert!(check_response_status(400).is_err());
+        assert!(check_response_status(404).is_err());
+        assert!(check_response_status(500).is_err());
+        assert!(check_response_status(503).is_err());
+    }
 }

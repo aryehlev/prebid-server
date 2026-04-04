@@ -1273,6 +1273,242 @@ impl Exchange {
             }
         }
 
+        // --- Category mapping (hb_pb_cat_dur) ---
+        // When req.ext.prebid.targeting.includebrandcategory is set, generate the
+        // `hb_pb_cat_dur` targeting key for video bids in the format:
+        //   {price_bucket}_{category}_{duration}s
+        // Category comes from bid.cat[0] (if present), else "uncategorized".
+        // Duration comes from bid.ext.prebid.video.duration.
+        let include_brand_category: Option<openrtb_ext::ExtIncludeBrandCategory> = bid_request
+            .ext
+            .as_ref()
+            .and_then(|e| e.get("prebid"))
+            .and_then(|p| p.get("targeting"))
+            .and_then(|t| t.get("includebrandcategory"))
+            .and_then(|v| serde_json::from_value(v.clone()).ok());
+
+        if include_brand_category.is_some() {
+            for (bidder_name, typed_bids) in &bidder_results {
+                for typed_bid in typed_bids {
+                    // Only apply to video bids.
+                    if !matches!(typed_bid.bid_type, openrtb_ext::BidType::Video) {
+                        continue;
+                    }
+
+                    // Get duration from bid.ext.prebid.video.duration.
+                    let duration_opt: Option<i32> = typed_bid
+                        .bid
+                        .ext
+                        .as_ref()
+                        .and_then(|e| e.get("prebid"))
+                        .and_then(|p| p.get("video"))
+                        .and_then(|v| v.get("duration"))
+                        .and_then(|d| d.as_i64())
+                        .map(|d| d as i32);
+
+                    let duration = match duration_opt {
+                        Some(d) if d > 0 => d,
+                        _ => continue, // skip bids without a valid duration
+                    };
+
+                    // Category from bid.cat[0] if present, else "uncategorized".
+                    let category = typed_bid
+                        .bid
+                        .cat
+                        .as_ref()
+                        .and_then(|cats| cats.first())
+                        .map(|s| s.as_str())
+                        .unwrap_or("uncategorized");
+
+                    let price_bucket = price_granularity_bucket(typed_bid.bid.price, pg_ref);
+                    let cat_dur = format!("{}_{}_{}", price_bucket, category, duration);
+
+                    let keys = targeting.entry(typed_bid.bid.impid.clone()).or_default();
+                    // Per-bidder key.
+                    keys.insert(format!("hb_pb_cat_dur_{}", bidder_name), cat_dur.clone());
+                    // Winner key (set once — first bidder wins; can be overridden by higher price logic if needed).
+                    keys.entry("hb_pb_cat_dur".to_string()).or_insert(cat_dur);
+                }
+            }
+        }
+
+        // --- Deal tier / deal targeting ---
+        // For bids that carry a deal ID, set the `hb_deal` targeting key.
+        // Also validate against imp.pmp.deals[].ext.prebid.dealTier.minDealTier when present.
+        //
+        // Build imp_id -> deal_id -> DealTier map from imp.pmp.deals[].ext.prebid.dealTier.
+        let mut imp_deal_tiers: HashMap<String, HashMap<String, openrtb_ext::DealTier>> =
+            HashMap::new();
+        for imp in &bid_request.imp {
+            if let Some(pmp) = &imp.pmp {
+                for deal in &pmp.deals {
+                    let tier: Option<openrtb_ext::DealTier> = deal
+                        .ext
+                        .as_ref()
+                        .and_then(|e| e.get("prebid"))
+                        .and_then(|p| p.get("dealTier"))
+                        .and_then(|v| serde_json::from_value(v.clone()).ok());
+                    if let Some(t) = tier {
+                        imp_deal_tiers
+                            .entry(imp.id.clone())
+                            .or_default()
+                            .insert(deal.id.clone(), t);
+                    }
+                }
+            }
+        }
+
+        for (bidder_name, typed_bids) in &bidder_results {
+            for typed_bid in typed_bids {
+                let deal_id = match &typed_bid.bid.dealid {
+                    Some(d) if !d.is_empty() => d.clone(),
+                    _ => continue,
+                };
+
+                let keys = targeting.entry(typed_bid.bid.impid.clone()).or_default();
+                // Per-bidder deal key.
+                keys.insert(format!("hb_deal_{}", bidder_name), deal_id.clone());
+                // Winner deal key (first encountered wins).
+                keys.entry("hb_deal".to_string()).or_insert(deal_id.clone());
+
+                // Validate deal tier if configured.
+                if let Some(deal_map) = imp_deal_tiers.get(&typed_bid.bid.impid) {
+                    if let Some(tier) = deal_map.get(&deal_id) {
+                        let min_tier = tier.min_deal_tier.unwrap_or(0);
+                        let prefix = tier.prefix.as_deref().unwrap_or("");
+                        if !prefix.is_empty() && min_tier > 0 {
+                            // Read deal priority from bid.ext.prebid.dealpriority.
+                            let deal_priority: i32 = typed_bid
+                                .bid
+                                .ext
+                                .as_ref()
+                                .and_then(|e| e.get("prebid"))
+                                .and_then(|p| p.get("dealpriority"))
+                                .and_then(|v| v.as_i64())
+                                .map(|v| v as i32)
+                                .unwrap_or(0);
+
+                            if deal_priority >= min_tier {
+                                // Replace the hb_pb_cat_dur price bucket prefix with deal tier prefix.
+                                let tier_prefix = format!("{}{}_ ", prefix, deal_priority);
+                                let cat_dur_key = format!("hb_pb_cat_dur_{}", bidder_name);
+                                if let Some(existing) = keys.get(&cat_dur_key).cloned() {
+                                    // Replace the price-bucket portion (first segment before '_').
+                                    if let Some(rest) = existing.find('_').map(|i| &existing[i + 1..]) {
+                                        let updated = format!("{}{}_{}", prefix, deal_priority, rest);
+                                        keys.insert(cat_dur_key, updated);
+                                    }
+                                }
+                                tracing::debug!(
+                                    bidder = %bidder_name,
+                                    bid_id = %typed_bid.bid.id,
+                                    deal_id = %deal_id,
+                                    deal_priority,
+                                    min_tier,
+                                    "deal tier satisfied"
+                                );
+                                // Suppress unused variable warning.
+                                let _ = tier_prefix;
+                            } else {
+                                tracing::debug!(
+                                    bidder = %bidder_name,
+                                    bid_id = %typed_bid.bid.id,
+                                    deal_id = %deal_id,
+                                    deal_priority,
+                                    min_tier,
+                                    "bid deal priority below minimum tier"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- Extended bid adjustment rules ---
+        // Parse req.ext.prebid.bidadjustments (new format) if present.
+        // Rules are applied with specificity: bidder+deal_id > bidder+* > *+*
+        // (Currently parsed and stored; application mirrors the flat factor path above.)
+        let bid_adjustment_rules: Option<openrtb_ext::BidAdjustmentRule> = bid_request
+            .ext
+            .as_ref()
+            .and_then(|e| e.get("prebid"))
+            .and_then(|p| p.get("bidadjustments"))
+            .and_then(|v| serde_json::from_value(v.clone()).ok());
+
+        if let Some(rules) = bid_adjustment_rules {
+            if let Some(bidders_map) = rules.bidders {
+                for (bidder_name, typed_bids) in &mut bidder_results {
+                    // Look up rules for this bidder, then fall back to "*".
+                    let bidder_rules = bidders_map
+                        .get(bidder_name.as_str())
+                        .or_else(|| bidders_map.get("*"));
+
+                    let bidder_rules = match bidder_rules {
+                        Some(r) => r,
+                        None => continue,
+                    };
+
+                    for typed_bid in typed_bids.iter_mut() {
+                        let deal_id = typed_bid.bid.dealid.as_deref().unwrap_or("*");
+
+                        // Most specific: this deal id; fallback to wildcard "*".
+                        let adjustments = bidder_rules
+                            .get(deal_id)
+                            .or_else(|| bidder_rules.get("*"));
+
+                        let adjustments = match adjustments {
+                            Some(a) => a,
+                            None => continue,
+                        };
+
+                        // Apply the first matching adjustment.
+                        for adj in adjustments {
+                            match adj.adj_type.as_str() {
+                                "multiplier" => {
+                                    typed_bid.bid.price *= adj.value;
+                                    tracing::debug!(
+                                        bidder = %bidder_name,
+                                        bid_id = %typed_bid.bid.id,
+                                        factor = adj.value,
+                                        "applied bid adjustment multiplier"
+                                    );
+                                    break;
+                                }
+                                "static" => {
+                                    typed_bid.bid.price = adj.value;
+                                    tracing::debug!(
+                                        bidder = %bidder_name,
+                                        bid_id = %typed_bid.bid.id,
+                                        price = adj.value,
+                                        "applied bid adjustment static price"
+                                    );
+                                    break;
+                                }
+                                "cpm" => {
+                                    // For CPM type: add the value to the existing price.
+                                    typed_bid.bid.price += adj.value;
+                                    tracing::debug!(
+                                        bidder = %bidder_name,
+                                        bid_id = %typed_bid.bid.id,
+                                        delta = adj.value,
+                                        "applied bid adjustment cpm delta"
+                                    );
+                                    break;
+                                }
+                                other => {
+                                    tracing::warn!(
+                                        adj_type = %other,
+                                        "unknown bid adjustment type; skipping"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Assemble seat bids from collected results, resolving ${AUCTION_PRICE} macros.
         let mut seat_bids: Vec<openrtb::SeatBid> = Vec::new();
         for (bidder_name, typed_bids) in bidder_results {

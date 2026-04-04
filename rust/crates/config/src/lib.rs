@@ -422,3 +422,159 @@ impl Configuration {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_config_values() {
+        // Configuration::load() (no file, no env) returns correct default values.
+        // We clear any conflicting env vars that may be set by parallel tests.
+        let cfg = Configuration::load(None).expect("should load default config");
+        // Host/port defaults from set_default
+        assert_eq!(cfg.host, "0.0.0.0");
+        assert_eq!(cfg.port, 8000);
+        assert_eq!(cfg.admin_port, 6060);
+        // Auction timeout defaults
+        assert_eq!(cfg.auction_timeouts.default, 1000);
+        assert_eq!(cfg.auction_timeouts.max, 5000);
+        // GDPR default
+        assert_eq!(cfg.gdpr.default_value, "1");
+        assert!(!cfg.gdpr.enabled);
+        // Max request size default (1.5 MB)
+        assert_eq!(cfg.max_request_size, 1_572_864);
+    }
+
+    #[test]
+    fn test_default_adapter_config_struct() {
+        // AdapterConfig::default() uses derive(Default); `enabled` starts as false
+        // because `default_true` is only applied during deserialization.
+        // We verify the struct fields are accessible and have their zero values.
+        let ac = AdapterConfig::default();
+        assert!(ac.endpoint.is_empty());
+        assert!(ac.extra_info.is_none());
+        assert!(ac.timeout_ms.is_none());
+    }
+
+    #[test]
+    fn test_default_gdpr_config() {
+        // GDPRConfig has a custom Default impl.
+        let gdpr = GDPRConfig::default();
+        assert!(!gdpr.enabled);
+        assert_eq!(gdpr.default_value, "1");
+        assert!(!gdpr.enforce_vendor_list);
+        assert!(gdpr.eea_countries.is_empty());
+    }
+
+    #[test]
+    fn test_default_ccpa_config_via_load() {
+        // When loaded from config (no env vars), ccpa.enforce should be true (set_default + serde).
+        // Use Configuration::load to test the actual runtime default.
+        let cfg = Configuration::load(None).expect("should load default config");
+        assert!(cfg.ccpa_enforce, "ccpa_enforce should default to true via config loading");
+    }
+
+    #[test]
+    fn test_env_override_port() {
+        // Store old value so we can restore it after the test.
+        let old = std::env::var("PBS_PORT").ok();
+        std::env::set_var("PBS_PORT", "9090");
+
+        let mut cfg = Configuration::default();
+        cfg.apply_env_overrides();
+        assert_eq!(cfg.port, 9090);
+
+        // Restore
+        match old {
+            Some(v) => std::env::set_var("PBS_PORT", v),
+            None => std::env::remove_var("PBS_PORT"),
+        }
+    }
+
+    #[test]
+    fn test_env_override_host() {
+        let old = std::env::var("PBS_HOST").ok();
+        std::env::set_var("PBS_HOST", "127.0.0.1");
+
+        let mut cfg = Configuration::default();
+        cfg.apply_env_overrides();
+        assert_eq!(cfg.host, "127.0.0.1");
+
+        match old {
+            Some(v) => std::env::set_var("PBS_HOST", v),
+            None => std::env::remove_var("PBS_HOST"),
+        }
+    }
+
+    #[test]
+    fn test_env_override_gdpr_enabled() {
+        let old = std::env::var("PBS_GDPR_ENABLED").ok();
+        std::env::set_var("PBS_GDPR_ENABLED", "true");
+
+        let mut cfg = Configuration::default();
+        cfg.apply_env_overrides();
+        assert!(cfg.gdpr_enabled);
+
+        match old {
+            Some(v) => std::env::set_var("PBS_GDPR_ENABLED", v),
+            None => std::env::remove_var("PBS_GDPR_ENABLED"),
+        }
+    }
+
+    #[test]
+    fn test_env_override_ccpa_enforce_false() {
+        let old = std::env::var("PBS_CCPA_ENFORCE").ok();
+        std::env::set_var("PBS_CCPA_ENFORCE", "false");
+
+        let mut cfg = Configuration::default();
+        cfg.apply_env_overrides();
+        assert!(!cfg.ccpa_enforce);
+
+        match old {
+            Some(v) => std::env::set_var("PBS_CCPA_ENFORCE", v),
+            None => std::env::remove_var("PBS_CCPA_ENFORCE"),
+        }
+    }
+
+    #[test]
+    fn test_env_override_max_request_size() {
+        let old = std::env::var("PBS_MAX_REQUEST_SIZE").ok();
+        std::env::set_var("PBS_MAX_REQUEST_SIZE", "2048");
+
+        let mut cfg = Configuration::default();
+        cfg.apply_env_overrides();
+        assert_eq!(cfg.max_request_size, 2048);
+
+        match old {
+            Some(v) => std::env::set_var("PBS_MAX_REQUEST_SIZE", v),
+            None => std::env::remove_var("PBS_MAX_REQUEST_SIZE"),
+        }
+    }
+
+    #[test]
+    fn test_currency_config_default_fetch_url() {
+        let cur = CurrencyConfig::default();
+        assert!(cur.fetch_url.contains("jsdelivr.net"), "fetch_url should point to CDN");
+        assert_eq!(cur.fetch_interval_seconds, 1800);
+    }
+
+    #[test]
+    fn test_schema_node_serialization() {
+        let node = SchainNode {
+            asi: "prebid.org".to_string(),
+            sid: "12345".to_string(),
+            hp: 1,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&node).unwrap();
+        assert!(json.contains("prebid.org"));
+        assert!(json.contains("12345"));
+    }
+
+    #[test]
+    fn test_configuration_aliases_default_empty() {
+        let cfg = Configuration::default();
+        assert!(cfg.aliases.is_empty());
+    }
+}

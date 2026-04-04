@@ -875,3 +875,379 @@ async fn test_tmax_timeout_produces_timed_out_bidder() {
         "appnexus should be in timed_out_bidders"
     );
 }
+
+// ── Test 13: debug mode — test=1 populates response.ext.debug.httpcalls ──────────────────────
+
+#[tokio::test]
+async fn test_debug_mode_includes_http_calls() {
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::matchers::method;
+
+    let mock_server = MockServer::start().await;
+    let body = serde_json::json!({"id":"r","seatbid":[{"bid":[{"id":"b1","impid":"imp1","price":1.0,"adm":"<ad/>"}]}]});
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&body))
+        .mount(&mock_server)
+        .await;
+
+    let exchange = make_exchange_with_bidder(mock_server.uri());
+
+    // Set test=1 to trigger debug mode.
+    let mut req = make_simple_request();
+    req.test = Some(1);
+
+    let result = exchange.hold_auction(AuctionRequest {
+        bid_request: req, account: None, user_syncs: None,
+        start_time: std::time::Instant::now(), currency_rates: None,
+    }).await.unwrap();
+
+    // response.ext.debug.httpcalls should be populated
+    let debug = result.bid_response.ext
+        .as_ref()
+        .and_then(|e| e.get("debug"))
+        .expect("response.ext.debug should be present when test=1");
+
+    let httpcalls = debug.get("httpcalls")
+        .expect("debug.httpcalls should be present");
+
+    // Should have an "appnexus" entry with at least one call
+    let appnexus_calls = httpcalls.get("appnexus")
+        .expect("debug.httpcalls.appnexus should be present");
+    assert!(
+        appnexus_calls.as_array().map(|a| !a.is_empty()).unwrap_or(false),
+        "httpcalls.appnexus should contain at least one call"
+    );
+}
+
+// ── Test 14: debug mode — test=0 does NOT populate response.ext.debug ────────────────────────
+
+#[tokio::test]
+async fn test_no_debug_mode_when_test_is_zero() {
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::matchers::method;
+
+    let mock_server = MockServer::start().await;
+    let body = serde_json::json!({"id":"r","seatbid":[{"bid":[{"id":"b1","impid":"imp1","price":1.0,"adm":"<ad/>"}]}]});
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&body))
+        .mount(&mock_server)
+        .await;
+
+    let exchange = make_exchange_with_bidder(mock_server.uri());
+
+    // test field absent (default) — no debug block expected
+    let result = exchange.hold_auction(AuctionRequest {
+        bid_request: make_simple_request(), account: None, user_syncs: None,
+        start_time: std::time::Instant::now(), currency_rates: None,
+    }).await.unwrap();
+
+    let has_debug = result.bid_response.ext
+        .as_ref()
+        .and_then(|e| e.get("debug"))
+        .is_some();
+    assert!(!has_debug, "debug block should NOT be present when test != 1");
+}
+
+// ── Test 15: CCPA opt-out — us_privacy "1YYY" skips bidder with SeatNonBid code 51 ────────────
+
+#[tokio::test]
+async fn test_ccpa_enforcement_blocks_bidder() {
+    let mut adapters = HashMap::new();
+    adapters.insert("appnexus".to_string(), AdaptedBidder {
+        bidder: Arc::new(HttpMockBidder { uri: "http://unused".to_string() }),
+        http_client: reqwest::Client::new(),
+        endpoint: String::new(),
+        endpoint_compression: None,
+    });
+    let exchange = Exchange::new(adapters);
+
+    let mut req = make_simple_request();
+    // "1YYY" → index 2 == 'Y' → opted out of sale
+    req.regs = Some(openrtb::Regs {
+        us_privacy: Some("1YYY".to_string()),
+        ..Default::default()
+    });
+
+    let result = exchange.hold_auction(AuctionRequest {
+        bid_request: req, account: None, user_syncs: None,
+        start_time: std::time::Instant::now(), currency_rates: None,
+    }).await.unwrap();
+
+    assert!(result.bid_response.seatbid.is_empty(), "CCPA opt-out should block all bids");
+    assert_eq!(result.seat_non_bids.len(), 1);
+    assert_eq!(result.seat_non_bids[0].seat, "appnexus");
+    assert_eq!(result.seat_non_bids[0].nonbid[0].statuscode, 51,
+        "CCPA opt-out should produce status code 51");
+}
+
+// ── Test 16: CCPA no opt-out — us_privacy "1NNN" does NOT block bidder ──────────────────────
+
+#[tokio::test]
+async fn test_ccpa_no_opt_out_does_not_block() {
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::matchers::method;
+
+    let mock_server = MockServer::start().await;
+    let body = serde_json::json!({"id":"r","seatbid":[{"bid":[{"id":"b1","impid":"imp1","price":1.0,"adm":"<ad/>"}]}]});
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&body))
+        .mount(&mock_server)
+        .await;
+
+    let exchange = make_exchange_with_bidder(mock_server.uri());
+
+    let mut req = make_simple_request();
+    // "1NNN" → index 2 == 'N' → NOT opted out
+    req.regs = Some(openrtb::Regs {
+        us_privacy: Some("1NNN".to_string()),
+        ..Default::default()
+    });
+
+    let result = exchange.hold_auction(AuctionRequest {
+        bid_request: req, account: None, user_syncs: None,
+        start_time: std::time::Instant::now(), currency_rates: None,
+    }).await.unwrap();
+
+    assert_eq!(result.bid_response.seatbid.len(), 1, "bid should be returned when CCPA not opted out");
+}
+
+// ── Test 17: multi-bid allows multiple bids per imp ─────────────────────────────────────────────
+
+/// A bidder that returns three different bids for the same imp.
+struct MultiBidMockBidder;
+
+impl pbs_adapters::Bidder for MultiBidMockBidder {
+    fn make_requests(
+        &self,
+        request: &openrtb::BidRequest,
+        _: &pbs_adapters::ExtraRequestInfo,
+    ) -> (Vec<pbs_adapters::RequestData>, Vec<pbs_adapters::BidderError>) {
+        let body = serde_json::to_vec(request).unwrap();
+        (vec![pbs_adapters::RequestData::new_post("http://mock", body)], vec![])
+    }
+
+    fn make_bids(
+        &self,
+        _: &openrtb::BidRequest,
+        _: &pbs_adapters::RequestData,
+        _: &pbs_adapters::ResponseData,
+    ) -> Result<pbs_adapters::BidderResponse, Vec<pbs_adapters::BidderError>> {
+        let mut resp = pbs_adapters::BidderResponse::new();
+        for i in 1u8..=3 {
+            let bid = openrtb::Bid {
+                id: format!("bid{}", i),
+                impid: "imp1".to_string(),
+                price: i as f64,
+                adm: Some(format!("<ad{i}/>")),
+                ..Default::default()
+            };
+            resp.bids.push(pbs_adapters::TypedBid::new(bid, openrtb_ext::BidType::Banner));
+        }
+        Ok(resp)
+    }
+}
+
+#[tokio::test]
+async fn test_multi_bid_allows_multiple_per_imp() {
+    let mut adapters = HashMap::new();
+    adapters.insert("appnexus".to_string(), AdaptedBidder {
+        bidder: Arc::new(MultiBidMockBidder),
+        http_client: reqwest::Client::new(),
+        endpoint: "http://mock".to_string(),
+        endpoint_compression: None,
+    });
+    let exchange = Exchange::new(adapters);
+
+    let mut req = make_simple_request();
+    // Allow up to 3 bids from appnexus per imp
+    req.ext = Some(serde_json::json!({
+        "prebid": {
+            "multibid": [{"bidder": "appnexus", "maxBids": 3}]
+        }
+    }));
+
+    let result = exchange.hold_auction(AuctionRequest {
+        bid_request: req, account: None, user_syncs: None,
+        start_time: std::time::Instant::now(), currency_rates: None,
+    }).await.unwrap();
+
+    assert_eq!(result.bid_response.seatbid.len(), 1);
+    let bid_count = result.bid_response.seatbid[0].bid.len();
+    assert_eq!(bid_count, 3, "multi-bid should allow all 3 bids; got {bid_count}");
+}
+
+// ── Test 18: default multi-bid (1) keeps only the highest-priced bid per imp ─────────────────
+
+#[tokio::test]
+async fn test_default_single_bid_keeps_highest_price() {
+    let mut adapters = HashMap::new();
+    adapters.insert("appnexus".to_string(), AdaptedBidder {
+        bidder: Arc::new(MultiBidMockBidder),
+        http_client: reqwest::Client::new(),
+        endpoint: "http://mock".to_string(),
+        endpoint_compression: None,
+    });
+    let exchange = Exchange::new(adapters);
+
+    // No multibid config → default 1 bid per imp
+    let result = exchange.hold_auction(AuctionRequest {
+        bid_request: make_simple_request(), account: None, user_syncs: None,
+        start_time: std::time::Instant::now(), currency_rates: None,
+    }).await.unwrap();
+
+    assert_eq!(result.bid_response.seatbid.len(), 1);
+    let bids = &result.bid_response.seatbid[0].bid;
+    assert_eq!(bids.len(), 1, "default 1-bid mode should keep only one bid");
+    assert!(
+        (bids[0].price - 3.0).abs() < 1e-9,
+        "should keep the highest-priced bid (3.0), got {}",
+        bids[0].price
+    );
+}
+
+// ── Test 19: bid adjustment applied before floor — adjusted bid below floor is filtered ────────
+
+#[tokio::test]
+async fn test_bid_adjustment_applied_before_floor() {
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::matchers::method;
+
+    let mock_server = MockServer::start().await;
+    // Raw bid price = 5.0; adjustment factor 0.8 → adjusted = 4.0; floor = 4.5 → rejected
+    let body = serde_json::json!({"id":"r","seatbid":[{"bid":[{"id":"b1","impid":"imp1","price":5.0,"adm":"<ad/>"}]}]});
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&body))
+        .mount(&mock_server)
+        .await;
+
+    let exchange = make_exchange_with_bidder(mock_server.uri());
+
+    let mut req = make_simple_request();
+    req.imp[0].bidfloor = Some(4.5); // floor is 4.5
+    req.ext = Some(serde_json::json!({
+        "prebid": {
+            "bidadjustmentfactors": {"appnexus": 0.8}
+        }
+    }));
+
+    let result = exchange.hold_auction(AuctionRequest {
+        bid_request: req, account: None, user_syncs: None,
+        start_time: std::time::Instant::now(), currency_rates: None,
+    }).await.unwrap();
+
+    // Adjusted price 4.0 < floor 4.5 → bid should be filtered out
+    assert!(
+        result.bid_response.seatbid.is_empty(),
+        "bid adjusted below floor should be filtered; seatbids: {:?}",
+        result.bid_response.seatbid
+    );
+    // SeatNonBid with code 300 (below floor) should be emitted
+    assert_eq!(result.seat_non_bids.len(), 1);
+    assert_eq!(result.seat_non_bids[0].nonbid[0].statuscode, 300);
+}
+
+// ── Test 20: price macro ${AUCTION_PRICE} resolved in nurl ──────────────────────────────────
+
+#[tokio::test]
+async fn test_price_macro_resolved_in_nurl() {
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::matchers::method;
+
+    let mock_server = MockServer::start().await;
+    let body = serde_json::json!({
+        "id": "r",
+        "seatbid": [{"bid": [{
+            "id": "b1",
+            "impid": "imp1",
+            "price": 1.23,
+            "nurl": "http://track.com?price=${AUCTION_PRICE}"
+        }]}]
+    });
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&body))
+        .mount(&mock_server)
+        .await;
+
+    let exchange = make_exchange_with_bidder(mock_server.uri());
+
+    let result = exchange.hold_auction(AuctionRequest {
+        bid_request: make_simple_request(), account: None, user_syncs: None,
+        start_time: std::time::Instant::now(), currency_rates: None,
+    }).await.unwrap();
+
+    let nurl = result.bid_response.seatbid[0].bid[0].nurl.as_deref().unwrap_or("");
+    assert_eq!(
+        nurl, "http://track.com?price=1.2300",
+        "nurl AUCTION_PRICE macro should be resolved to 4-decimal price, got: {nurl}"
+    );
+}
+
+// ── Test 21: price macro ${AUCTION_PRICE} resolved in adm ───────────────────────────────────
+
+#[tokio::test]
+async fn test_price_macro_resolved_in_adm() {
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::matchers::method;
+
+    let mock_server = MockServer::start().await;
+    let body = serde_json::json!({
+        "id": "r",
+        "seatbid": [{"bid": [{
+            "id": "b1",
+            "impid": "imp1",
+            "price": 2.5,
+            "adm": "<creative>price=${AUCTION_PRICE}</creative>"
+        }]}]
+    });
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&body))
+        .mount(&mock_server)
+        .await;
+
+    let exchange = make_exchange_with_bidder(mock_server.uri());
+
+    let result = exchange.hold_auction(AuctionRequest {
+        bid_request: make_simple_request(), account: None, user_syncs: None,
+        start_time: std::time::Instant::now(), currency_rates: None,
+    }).await.unwrap();
+
+    let adm = result.bid_response.seatbid[0].bid[0].adm.as_deref().unwrap_or("");
+    assert_eq!(
+        adm, "<creative>price=2.5000</creative>",
+        "adm AUCTION_PRICE macro should be resolved, got: {adm}"
+    );
+}
+
+// ── Test 22: multi-bid maxBids=2 keeps top 2 bids of 3 ─────────────────────────────────────
+
+#[tokio::test]
+async fn test_multi_bid_max_two_keeps_top_two() {
+    let mut adapters = HashMap::new();
+    adapters.insert("appnexus".to_string(), AdaptedBidder {
+        bidder: Arc::new(MultiBidMockBidder),
+        http_client: reqwest::Client::new(),
+        endpoint: "http://mock".to_string(),
+        endpoint_compression: None,
+    });
+    let exchange = Exchange::new(adapters);
+
+    let mut req = make_simple_request();
+    req.ext = Some(serde_json::json!({
+        "prebid": {
+            "multibid": [{"bidder": "appnexus", "maxBids": 2}]
+        }
+    }));
+
+    let result = exchange.hold_auction(AuctionRequest {
+        bid_request: req, account: None, user_syncs: None,
+        start_time: std::time::Instant::now(), currency_rates: None,
+    }).await.unwrap();
+
+    assert_eq!(result.bid_response.seatbid.len(), 1);
+    let bids = &result.bid_response.seatbid[0].bid;
+    assert_eq!(bids.len(), 2, "maxBids=2 should keep exactly 2 bids; got {}", bids.len());
+    // Should be the two highest prices (2.0 and 3.0)
+    let prices: Vec<f64> = bids.iter().map(|b| b.price).collect();
+    assert!(prices.contains(&3.0), "should contain price 3.0");
+    assert!(prices.contains(&2.0), "should contain price 2.0");
+}
