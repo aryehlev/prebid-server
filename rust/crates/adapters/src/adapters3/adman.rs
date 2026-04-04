@@ -37,9 +37,10 @@ impl Bidder for AdmanAdapter {
 
         // One request per imp (same pattern as Sonobi/Adman Go impl)
         for imp in &request.imp {
+            // Go unmarshals ExtImpAdman{TagID string `json:"TagID"`} from imp.ext.bidder
             let tag_id = imp.ext.as_ref()
                 .and_then(|e| e.get("bidder"))
-                .and_then(|b| b.get("tagId").or_else(|| b.get("tag_id")))
+                .and_then(|b| b.get("TagID"))
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
 

@@ -21,6 +21,8 @@ impl Bidder for ClydoAdapter {
 
         let mut base_headers = HashMap::new();
         base_headers.insert("Content-Type".to_string(), "application/json; charset=utf-8".to_string());
+        base_headers.insert("Accept".to_string(), "application/json".to_string());
+        base_headers.insert("X-OpenRTB-Version".to_string(), "2.5".to_string());
         if let Some(ipv6) = &device.ipv6 { if !ipv6.is_empty() { base_headers.insert("X-Forwarded-For".to_string(), ipv6.clone()); } }
         if let Some(ip) = &device.ip { if !ip.is_empty() { base_headers.insert("X-Forwarded-For".to_string(), ip.clone()); } }
         if let Some(ua) = &device.ua { if !ua.is_empty() { base_headers.insert("User-Agent".to_string(), ua.clone()); } }
@@ -77,13 +79,19 @@ impl Bidder for ClydoAdapter {
             if !cur.is_empty() { result.currency = cur.clone(); }
         }
 
-        // Build bid type map from imps
+        // Build bid type map from imps; reject duplicate imp IDs and imps with no known media type
         let mut bid_type_map: HashMap<String, BidType> = HashMap::new();
         for imp in &internal.imp {
+            if bid_type_map.contains_key(&imp.id) {
+                return Err(vec![BidderError::BadInput("Duplicate impression ID found".to_string())]);
+            }
             let t = if imp.audio.is_some() { BidType::Audio }
                 else if imp.video.is_some() { BidType::Video }
                 else if imp.native.is_some() { BidType::Native }
-                else { BidType::Banner };
+                else if imp.banner.is_some() { BidType::Banner }
+                else {
+                    return Err(vec![BidderError::BadInput("Failed to get media type".to_string())]);
+                };
             bid_type_map.insert(imp.id.clone(), t);
         }
 

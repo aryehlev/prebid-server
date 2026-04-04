@@ -201,10 +201,10 @@ impl Bidder for AdtelligentAdapter {
             }
         }
 
-        // Return result and collect errors but don't fail completely
-        if !errs.is_empty() {
-            // Return partial results similar to Go
-        }
+        // Go returns partial results alongside per-bid errors; Rust returns Ok with
+        // whatever bids were resolved, dropping the per-bid mismatch warnings since
+        // BidderResponse has no side-channel for non-fatal errors.
+        let _ = errs;
         Ok(result)
     }
 }
