@@ -283,13 +283,13 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     gen!("dianomi");
     reg!("displayio", crate::adapters14::DisplayioAdapter::new(ep("displayio")));
     gen!("edge226");
-    gen!("exco");
+    reg!("exco", crate::adapters14::ExcoAdapter::new(ep("exco")));
     gen!("feedad");
     gen!("flatads");
     reg!("impactify", crate::adapters14::ImpactifyAdapter::new(ep("impactify")));
-    gen!("intenze");
+    reg!("intenze", crate::adapters14::IntenzeAdapter::new(ep("intenze")));
     gen!("interactiveoffers");
-    gen!("iqx");
+    reg!("iqx", crate::adapters14::IqxAdapter::new(ep("iqx")));
     gen!("iqzone");
     gen!("kiviads");
     reg!("krushmedia", crate::adapters14::KrushmediaAdapter::new(ep("krushmedia")));
@@ -312,7 +312,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     gen!("pwbid");
     gen!("qt");
     gen!("readpeak");
-    gen!("rediads");
+    reg!("rediads", crate::adapters14::RediadsAdapter::new(ep("rediads")));
     reg!("relevantdigital", crate::adapters14::RelevantdigitalAdapter::new(ep("relevantdigital")));
     gen!("rise");
     reg!("showheroes", crate::adapters14::ShowheroesAdapter::new(ep("showheroes")));
@@ -348,7 +348,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     gen!("vox");
     gen!("vrtcal");
     reg!("vungle", crate::adapters14::VungleAdapter::new(ep("vungle")));
-    gen!("xeworks");
+    reg!("xeworks", crate::adapters14::XeworksAdapter::new(ep("xeworks")));
     gen!("yahoo_ads");
     reg!("yeahmobi", crate::adapters14::YeahmobiAdapter::new(ep("yeahmobi")));
     reg!("yieldmo", crate::adapters14::YieldmoAdapter::new(ep("yieldmo")));
