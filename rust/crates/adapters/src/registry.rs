@@ -275,17 +275,17 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     gen!("across33");      // duplicate handled above as "33across"
     gen!("coinzilla");
     gen!("concert");
-    gen!("copper6ssp");
+    reg!("copper6ssp", crate::adapters14::Copper6sspAdapter::new(ep("copper6ssp")));
     reg!("cpmstar", crate::adapters14::CpmstarAdapter::new(ep("cpmstar")));
     gen!("cwire");
     gen!("decenterads");
     gen!("definemedia");
-    gen!("dianomi");
+    reg!("dianomi", crate::adapters14::DianomiAdapter::new(ep("dianomi")));
     reg!("displayio", crate::adapters14::DisplayioAdapter::new(ep("displayio")));
     gen!("edge226");
     reg!("exco", crate::adapters14::ExcoAdapter::new(ep("exco")));
     gen!("feedad");
-    gen!("flatads");
+    reg!("flatads", crate::adapters14::FlatadsAdapter::new(ep("flatads")));
     reg!("impactify", crate::adapters14::ImpactifyAdapter::new(ep("impactify")));
     reg!("intenze", crate::adapters14::IntenzeAdapter::new(ep("intenze")));
     gen!("interactiveoffers");
@@ -302,7 +302,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     reg!("melozen", crate::adapters14::MelozenAdapter::new(ep("melozen")));
     reg!("metax", crate::adapters14::MetaxAdapter::new(ep("metax")));
     gen!("mgid_x");
-    gen!("mobfoxpb");
+    reg!("mobfoxpb", crate::adapters14::MobfoxpbAdapter::new(ep("mobfoxpb")));
     reg!("mobilefuse", crate::adapters14::MobilefuseAdapter::new(ep("mobilefuse")));
     gen!("mobkoi");
     reg!("motorik", crate::adapters14::MotorikAdapter::new(ep("motorik")));
@@ -311,7 +311,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     reg!("pubrise", crate::adapters14::PubriseAdapter::new(ep("pubrise")));
     gen!("pwbid");
     gen!("qt");
-    gen!("readpeak");
+    reg!("readpeak", crate::adapters14::ReadpeakAdapter::new(ep("readpeak")));
     reg!("rediads", crate::adapters14::RediadsAdapter::new(ep("rediads")));
     reg!("relevantdigital", crate::adapters14::RelevantdigitalAdapter::new(ep("relevantdigital")));
     gen!("rise");
