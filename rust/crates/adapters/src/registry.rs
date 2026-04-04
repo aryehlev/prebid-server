@@ -274,7 +274,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     // adapters14/ — remaining generic pass-throughs
     gen!("across33");      // duplicate handled above as "33across"
     gen!("coinzilla");
-    gen!("concert");
+    reg!("concert", crate::adapters14::ConcertAdapter::new(ep("concert")));
     reg!("copper6ssp", crate::adapters14::Copper6sspAdapter::new(ep("copper6ssp")));
     reg!("cpmstar", crate::adapters14::CpmstarAdapter::new(ep("cpmstar")));
     gen!("cwire");
@@ -290,10 +290,10 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     reg!("intenze", crate::adapters14::IntenzeAdapter::new(ep("intenze")));
     gen!("interactiveoffers");
     reg!("iqx", crate::adapters14::IqxAdapter::new(ep("iqx")));
-    gen!("iqzone");
+    reg!("iqzone", crate::adapters14::IqzoneAdapter::new(ep("iqzone")));
     reg!("kiviads", crate::adapters14::KiviadsAdapter::new(ep("kiviads")));
     reg!("krushmedia", crate::adapters14::KrushmediaAdapter::new(ep("krushmedia")));
-    gen!("kueezrtb");
+    reg!("kueezrtb", crate::adapters14::KueezrtbAdapter::new(ep("kueezrtb")));
     gen!("lemmadigital");
     gen!("limelight_digital");
     gen!("lm_kiviads");
@@ -323,7 +323,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     reg!("smartyads", crate::adapters14::SmartyadsAdapter::new(ep("smartyads")));
     gen!("smilewanted");
     reg!("smoot", crate::adapters14::SmootAdapter::new(ep("smoot")));
-    gen!("smrtconnect");
+    reg!("smrtconnect", crate::adapters14::SmrtconnectAdapter::new(ep("smrtconnect")));
     gen!("sovrn_xsp");
     reg!("sparteo", crate::adapters14::SparteoAdapter::new(ep("sparteo")));
     gen!("sspbc");
@@ -334,7 +334,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     reg!("theadx", crate::adapters14::TheadxAdapter::new(ep("theadx")));
     reg!("thetradedesk", crate::adapters14::ThetradedeskAdapter::new(ep("thetradedesk")));
     gen!("tpmn");
-    gen!("tradplus");
+    reg!("tradplus", crate::adapters14::TradplusAdapter::new(ep("tradplus")));
     reg!("trafficgate", crate::adapters14::TrafficgateAdapter::new(ep("trafficgate")));
     gen!("trustedstack");
     reg!("trustx", crate::adapters14::TrustxAdapter::new(ep("trustx")));
@@ -355,7 +355,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     reg!("yieldone", crate::adapters14::YieldoneAdapter::new(ep("yieldone")));
     gen!("zentotem");
     reg!("zeroclickfraud", crate::adapters14::ZeroclickfraudAdapter::new(ep("zeroclickfraud")));
-    gen!("zeta_global_ssp");
+    reg!("zeta_global_ssp", crate::adapters14::ZetaGlobalSspAdapter::new(ep("zeta_global_ssp")));
     reg!("zmaticoo", crate::adapters14::ZmaticooAdapter::new(ep("zmaticoo")));
 
     // Additional missing bidders (aliases and generics)
