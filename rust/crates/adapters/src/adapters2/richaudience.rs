@@ -69,11 +69,15 @@ impl Bidder for RichaudienceAdapter {
                 .and_then(|b| b.get("test"))
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
+            // The Go struct uses json:"bidfloorcur" (lowercase), match that key
             let bid_floor_cur = bidder_ext.as_ref()
-                .and_then(|b| b.get("bidFloorCur"))
+                .and_then(|b| b.get("bidfloorcur"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
+
+            // Capture the original tagid before overwriting with pid (Go sets keywords from original tagid)
+            let original_tagid = imp.tagid.clone().unwrap_or_default();
 
             if !pid.is_empty() {
                 imp.tagid = Some(pid.clone());
@@ -111,13 +115,12 @@ impl Bidder for RichaudienceAdapter {
 
             let mut req = request.clone();
 
-            // Set site/app keywords to tagid
-            let tag_for_kw = imp.tagid.clone().unwrap_or_default();
+            // Set site/app keywords from original tagid (before pid overwrite), matching Go behavior
             if let Some(site) = req.site.as_mut() {
-                site.keywords = Some(format!("tagid={}", tag_for_kw));
+                site.keywords = Some(format!("tagid={}", original_tagid));
             }
             if let Some(app) = req.app.as_mut() {
-                app.keywords = Some(format!("tagid={}", tag_for_kw));
+                app.keywords = Some(format!("tagid={}", original_tagid));
             }
 
             if test_mode {

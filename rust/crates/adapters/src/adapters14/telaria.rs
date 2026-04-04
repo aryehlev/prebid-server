@@ -89,17 +89,23 @@ impl Bidder for TelariaAdapter {
             req_copy.ext = serde_json::to_value(TelariaBidExt { extra: Some(extra.clone()) }).ok();
         }
 
-        // Set publisher.ID to seatCode
+        // Set publisher.ID to seatCode, mirroring Go's PopulatePublisherId:
+        // site takes precedence; when site is set, app is cleared (and vice versa).
         let seat_code = telaria_ext.seat_code.clone();
-        if let Some(site) = &mut req_copy.site {
-            let mut publisher = site.publisher.clone().unwrap_or_default();
-            publisher.id = Some(seat_code.clone());
-            site.publisher = Some(publisher);
+        if req_copy.site.is_some() {
+            if let Some(site) = req_copy.site.as_mut() {
+                let mut publisher = site.publisher.clone().unwrap_or_default();
+                publisher.id = Some(seat_code.clone());
+                site.publisher = Some(publisher);
+            }
             req_copy.app = None;
-        } else if let Some(app) = &mut req_copy.app {
-            let mut publisher = app.publisher.clone().unwrap_or_default();
-            publisher.id = Some(seat_code.clone());
-            app.publisher = Some(publisher);
+        } else if req_copy.app.is_some() {
+            if let Some(app) = req_copy.app.as_mut() {
+                let mut publisher = app.publisher.clone().unwrap_or_default();
+                publisher.id = Some(seat_code.clone());
+                app.publisher = Some(publisher);
+            }
+            req_copy.site = None;
         }
 
         let mut headers = HashMap::new();
