@@ -257,12 +257,24 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     reg!("seeding_alliance", crate::adapters13::SeedingAllianceAdapter::new(ep("seeding_alliance")));
     reg!("seedtag", crate::adapters13::SeedtagAdapter::new(ep("seedtag")));
 
-    // adapters14/ — use gen! for bulk, reg! where struct names known
+    // adapters14/ — real implementations
+    reg!("connatix", crate::adapters14::ConnatixAdapter::new(ep("connatix")));
+    reg!("contxtful", crate::adapters14::ContxtfulAdapter::new(ep("contxtful")));
+    reg!("flipp", crate::adapters14::FlippAdapter::new(ep("flipp")));
+    reg!("invibes", crate::adapters14::InvibesAdapter::new(ep("invibes")));
+    reg!("missena", crate::adapters14::MissenaAdapter::new(ep("missena")));
+    reg!("msft", crate::adapters14::MsftAdapter::new(ep("msft")));
+    reg!("nativery", crate::adapters14::NativeryAdapter::new(ep("nativery")));
+    reg!("nextmillennium", crate::adapters14::NextmillenniumAdapter::new(ep("nextmillennium")));
+    reg!("resetdigital", crate::adapters14::ResetdigitalAdapter::new(ep("resetdigital")));
+    reg!("silverpush", crate::adapters14::SilverpushAdapter::new(ep("silverpush")));
+    reg!("telaria", crate::adapters14::TelariaAdapter::new(ep("telaria")));
+    reg!("unicorn", crate::adapters14::UnicornAdapter::new(ep("unicorn")));
+    reg!("yieldlab", crate::adapters14::YieldlabAdapter::new(ep("yieldlab")));
+    // adapters14/ — remaining generic pass-throughs
     gen!("across33");      // duplicate handled above as "33across"
     gen!("coinzilla");
     gen!("concert");
-    gen!("connatix");
-    gen!("contxtful");
     gen!("copper6ssp");
     gen!("cpmstar");
     gen!("cwire");
@@ -274,11 +286,9 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     gen!("exco");
     gen!("feedad");
     gen!("flatads");
-    gen!("flipp");
     gen!("impactify");
     gen!("intenze");
     gen!("interactiveoffers");
-    gen!("invibes");
     gen!("iqx");
     gen!("iqzone");
     gen!("kiviads");
@@ -292,14 +302,10 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     gen!("melozen");
     gen!("metax");
     gen!("mgid_x");
-    gen!("missena");
     gen!("mobfoxpb");
     gen!("mobilefuse");
     gen!("mobkoi");
     gen!("motorik");
-    gen!("msft");
-    gen!("nativery");
-    gen!("nextmillennium");
     gen!("nexx360");
     gen!("pubnative");
     gen!("pubrise");
@@ -308,11 +314,9 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     gen!("readpeak");
     gen!("rediads");
     gen!("relevantdigital");
-    gen!("resetdigital");
     gen!("rise");
     gen!("showheroes");
     gen!("silvermob");
-    gen!("silverpush");
     gen!("smarthub");
     gen!("smartrtb");
     gen!("smartx");
@@ -326,7 +330,6 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     gen!("startio");
     gen!("stroeer_core");
     gen!("tappx");
-    gen!("telaria");
     gen!("teqblaze");
     gen!("theadx");
     gen!("thetradedesk");
@@ -337,7 +340,6 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     gen!("trustx");
     gen!("ucfunnel");
     gen!("undertone");
-    gen!("unicorn");
     gen!("videobyte");
     gen!("videoheroes");
     gen!("vidoomy");
@@ -349,7 +351,6 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     gen!("xeworks");
     gen!("yahoo_ads");
     gen!("yeahmobi");
-    gen!("yieldlab");
     gen!("yieldmo");
     gen!("yieldone");
     gen!("zentotem");
