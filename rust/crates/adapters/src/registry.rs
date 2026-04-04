@@ -278,8 +278,8 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     reg!("copper6ssp", crate::adapters14::Copper6sspAdapter::new(ep("copper6ssp")));
     reg!("cpmstar", crate::adapters14::CpmstarAdapter::new(ep("cpmstar")));
     gen!("cwire");
-    gen!("decenterads");
-    gen!("definemedia");
+    reg!("decenterads", crate::adapters14::DecenteradsAdapter::new(ep("decenterads")));
+    reg!("definemedia", crate::adapters14::DefinemediaAdapter::new(ep("definemedia")));
     reg!("dianomi", crate::adapters14::DianomiAdapter::new(ep("dianomi")));
     reg!("displayio", crate::adapters14::DisplayioAdapter::new(ep("displayio")));
     reg!("edge226", crate::adapters14::Edge226Adapter::new(ep("edge226")));
@@ -288,13 +288,13 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     reg!("flatads", crate::adapters14::FlatadsAdapter::new(ep("flatads")));
     reg!("impactify", crate::adapters14::ImpactifyAdapter::new(ep("impactify")));
     reg!("intenze", crate::adapters14::IntenzeAdapter::new(ep("intenze")));
-    gen!("interactiveoffers");
+    reg!("interactiveoffers", crate::adapters14::InteractiveoffersAdapter::new(ep("interactiveoffers")));
     reg!("iqx", crate::adapters14::IqxAdapter::new(ep("iqx")));
     reg!("iqzone", crate::adapters14::IqzoneAdapter::new(ep("iqzone")));
     reg!("kiviads", crate::adapters14::KiviadsAdapter::new(ep("kiviads")));
     reg!("krushmedia", crate::adapters14::KrushmediaAdapter::new(ep("krushmedia")));
     reg!("kueezrtb", crate::adapters14::KueezrtbAdapter::new(ep("kueezrtb")));
-    gen!("lemmadigital");
+    reg!("lemmadigital", crate::adapters14::LemmadigitalAdapter::new(ep("lemmadigital")));
     reg!("limelight_digital", crate::adapters14::LimelightDigitalAdapter::new(ep("limelight_digital")));
     gen!("lm_kiviads");
     reg!("logan", crate::adapters14::LoganAdapter::new(ep("logan")));
@@ -346,7 +346,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     reg!("visiblemeasures", crate::adapters14::VisiblemeasuresAdapter::new(ep("visiblemeasures")));
     reg!("visx", crate::adapters14::VisxAdapter::new(ep("visx")));
     gen!("vox");
-    gen!("vrtcal");
+    reg!("vrtcal", crate::adapters14::VrtcalAdapter::new(ep("vrtcal")));
     reg!("vungle", crate::adapters14::VungleAdapter::new(ep("vungle")));
     reg!("xeworks", crate::adapters14::XeworksAdapter::new(ep("xeworks")));
     reg!("yahoo_ads", crate::adapters14::YahooAdsAdapter::new(ep("yahoo_ads")));
