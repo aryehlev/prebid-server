@@ -88,6 +88,256 @@ fn fix_native(mut req: Value) -> Value {
     req
 }
 
+// ─── keyword enrichment types ───────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+struct KeywordSegment {
+    name: String,
+    value: String,
+}
+
+/// publisher key → list of publisher items
+type KeywordsPublisher = HashMap<String, Vec<KeywordsPublisherItem>>;
+
+#[derive(Debug, Clone)]
+struct KeywordsPublisherItem {
+    name: String,
+    segments: Vec<KeywordSegment>,
+}
+
+/// section ("site"|"user") → KeywordsPublisher
+type Keywords = HashMap<String, KeywordsPublisher>;
+
+/// Convert a KeywordsPublisherItem to a serde_json::Value suitable for Grid's wire format.
+fn publisher_item_to_value(item: &KeywordsPublisherItem) -> Value {
+    let segments: Vec<Value> = item.segments.iter().map(|s| {
+        serde_json::json!({"name": s.name, "value": s.value})
+    }).collect();
+    serde_json::json!({"name": item.name, "segments": segments})
+}
+
+/// Convert a Keywords map to a serde_json::Value object.
+fn keywords_to_value(keywords: &Keywords) -> Value {
+    let mut obj = serde_json::Map::new();
+    for (section, publisher_map) in keywords {
+        let mut pub_obj = serde_json::Map::new();
+        for (pub_key, items) in publisher_map {
+            let items_val: Vec<Value> = items.iter().map(publisher_item_to_value).collect();
+            pub_obj.insert(pub_key.clone(), Value::Array(items_val));
+        }
+        obj.insert(section.clone(), Value::Object(pub_obj));
+    }
+    Value::Object(obj)
+}
+
+fn parse_ext_to_map(ext: &Value) -> serde_json::Map<String, Value> {
+    if let Value::Object(m) = ext {
+        m.clone()
+    } else {
+        serde_json::Map::new()
+    }
+}
+
+fn extract_keywords_map(ext_map: &serde_json::Map<String, Value>) -> serde_json::Map<String, Value> {
+    ext_map.get("keywords")
+        .and_then(|v| if let Value::Object(m) = v { Some(m.clone()) } else { None })
+        .unwrap_or_default()
+}
+
+fn extract_bidder_keywords_map(ext_map: &serde_json::Map<String, Value>) -> serde_json::Map<String, Value> {
+    ext_map.get("bidder")
+        .and_then(|v| if let Value::Object(m) = v { Some(m) } else { None })
+        .map(|bidder_map| extract_keywords_map(bidder_map))
+        .unwrap_or_default()
+}
+
+/// Parse a `segments` array from a publisher item map.
+fn parse_segments_from_item(item_map: &serde_json::Map<String, Value>) -> Vec<KeywordSegment> {
+    let mut segments = Vec::new();
+
+    // First pass: extract explicit {name, value} objects from "segments" array
+    if let Some(Value::Array(segs)) = item_map.get("segments") {
+        for seg in segs {
+            if let Value::Object(seg_map) = seg {
+                let name = seg_map.get("name").and_then(|v| v.as_str());
+                let value = seg_map.get("value").and_then(|v| v.as_str());
+                if let (Some(n), Some(v)) = (name, value) {
+                    segments.push(KeywordSegment { name: n.to_string(), value: v.to_string() });
+                }
+            }
+        }
+    }
+
+    // Second pass: for each key in the item map (sorted), treat string-array values as segments
+    let mut keys: Vec<&str> = item_map.keys().map(|k| k.as_str()).collect();
+    keys.sort();
+    for key in keys {
+        if let Some(Value::Array(vals)) = item_map.get(key) {
+            for v in vals {
+                if let Some(s) = v.as_str() {
+                    segments.push(KeywordSegment { name: key.to_string(), value: s.to_string() });
+                }
+            }
+        }
+    }
+
+    segments
+}
+
+fn parse_keywords_from_section(section: &serde_json::Map<String, Value>) -> KeywordsPublisher {
+    let mut publisher_map: KeywordsPublisher = HashMap::new();
+    for (pub_key, pub_val) in section {
+        if let Value::Array(items) = pub_val {
+            for item_val in items {
+                if let Value::Object(item_map) = item_val {
+                    let name = match item_map.get("name").and_then(|v| v.as_str()) {
+                        Some(n) => n.to_string(),
+                        None => continue,
+                    };
+                    let segments = parse_segments_from_item(item_map);
+                    if !segments.is_empty() {
+                        publisher_map.entry(pub_key.clone())
+                            .or_default()
+                            .push(KeywordsPublisherItem { name, segments });
+                    }
+                }
+            }
+        }
+    }
+    publisher_map
+}
+
+fn parse_keywords_from_map(ext_keywords: &serde_json::Map<String, Value>) -> Keywords {
+    let mut keywords: Keywords = HashMap::new();
+    for (k, v) in ext_keywords {
+        if k != "site" && k != "user" {
+            continue;
+        }
+        if let Value::Object(section) = v {
+            let pub_map = parse_keywords_from_section(section);
+            keywords.insert(k.clone(), pub_map);
+        }
+    }
+    keywords
+}
+
+/// Parse comma-separated openrtb keywords string into a Keywords structure.
+fn parse_keywords_from_openrtb(keywords_str: &str, section: &str) -> Keywords {
+    if keywords_str.is_empty() {
+        return HashMap::new();
+    }
+    let segments: Vec<KeywordSegment> = keywords_str
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .map(|v| KeywordSegment { name: "keywords".to_string(), value: v.to_string() })
+        .collect();
+    if segments.is_empty() {
+        return HashMap::new();
+    }
+    let item = KeywordsPublisherItem { name: "keywords".to_string(), segments };
+    let mut pub_map: KeywordsPublisher = HashMap::new();
+    pub_map.insert("ortb2".to_string(), vec![item]);
+    let mut kw: Keywords = HashMap::new();
+    kw.insert(section.to_string(), pub_map);
+    kw
+}
+
+/// Merge keywords from b into a. b items are prepended (match Go: `append(publisherValues, a[key][publisherKey]...)`).
+fn merge_keywords(a: &mut Keywords, b: Keywords) {
+    for (section, pub_map) in b {
+        let section_entry = a.entry(section).or_default();
+        for (pub_key, mut pub_values) in pub_map {
+            let existing = section_entry.entry(pub_key).or_default();
+            // Go does: a[key][publisherKey] = append(publisherValues, a[key][publisherKey]...)
+            // i.e., new values (from b) come first
+            pub_values.extend(existing.drain(..));
+            *existing = pub_values;
+        }
+    }
+}
+
+/// Build consolidated keywords request ext, merging from:
+/// - request.ext.keywords
+/// - request.imp[0].ext.bidder.keywords
+/// - request.user.keywords (comma-separated)
+/// - request.site.keywords (comma-separated)
+fn build_consolidated_keywords_req_ext(
+    user_keywords: &str,
+    site_keywords: &str,
+    first_imp_ext: Option<&Value>,
+    request_ext: Option<&Value>,
+) -> Result<Option<Value>, BidderError> {
+    let request_ext_val = request_ext.cloned().unwrap_or(Value::Object(serde_json::Map::new()));
+    let first_imp_ext_val = first_imp_ext.cloned().unwrap_or(Value::Object(serde_json::Map::new()));
+
+    let mut request_ext_map = parse_ext_to_map(&request_ext_val);
+    let first_imp_ext_map = parse_ext_to_map(&first_imp_ext_val);
+
+    let request_ext_keywords_map = extract_keywords_map(&request_ext_map);
+    let first_imp_ext_keywords_map = extract_bidder_keywords_map(&first_imp_ext_map);
+
+    // Parse and merge keywords
+    let mut keywords = parse_keywords_from_map(&request_ext_keywords_map); // request.ext.keywords
+    merge_keywords(&mut keywords, parse_keywords_from_map(&first_imp_ext_keywords_map)); // imp[0].ext.bidder.keywords
+    merge_keywords(&mut keywords, parse_keywords_from_openrtb(user_keywords, "user")); // request.user.keywords
+    merge_keywords(&mut keywords, parse_keywords_from_openrtb(site_keywords, "site")); // request.site.keywords
+
+    // Build updated keywords map to write back into request.ext
+    let mut updated_keywords_map: serde_json::Map<String, Value> = request_ext_keywords_map;
+
+    if let Some(site_kw) = keywords.get("site") {
+        if !site_kw.is_empty() {
+            let site_val = keywords_to_value(&{
+                let mut m = Keywords::new();
+                m.insert("site".to_string(), site_kw.clone());
+                m
+            });
+            // Extract the "site" value
+            if let Value::Object(ref obj) = site_val {
+                if let Some(sv) = obj.get("site") {
+                    updated_keywords_map.insert("site".to_string(), sv.clone());
+                }
+            }
+        } else {
+            updated_keywords_map.remove("site");
+        }
+    } else {
+        updated_keywords_map.remove("site");
+    }
+
+    if let Some(user_kw) = keywords.get("user") {
+        if !user_kw.is_empty() {
+            let user_val = keywords_to_value(&{
+                let mut m = Keywords::new();
+                m.insert("user".to_string(), user_kw.clone());
+                m
+            });
+            if let Value::Object(ref obj) = user_val {
+                if let Some(uv) = obj.get("user") {
+                    updated_keywords_map.insert("user".to_string(), uv.clone());
+                }
+            }
+        } else {
+            updated_keywords_map.remove("user");
+        }
+    } else {
+        updated_keywords_map.remove("user");
+    }
+
+    // Reconcile keywords with request.ext
+    if !updated_keywords_map.is_empty() {
+        request_ext_map.insert("keywords".to_string(), Value::Object(updated_keywords_map));
+    } else {
+        request_ext_map.remove("keywords");
+    }
+
+    if request_ext_map.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(Value::Object(request_ext_map)))
+    }
+}
+
 impl Bidder for GridAdapter {
     fn make_requests(
         &self,
@@ -138,6 +388,30 @@ impl Bidder for GridAdapter {
 
         let mut grid_request = request.clone();
         grid_request.imp = valid_imps;
+
+        // setImpExtKeywords: enrich request.ext with consolidated keywords from
+        // request.ext.keywords, imp[0].ext.bidder.keywords, user.keywords, site.keywords
+        let user_keywords = grid_request.user.as_ref()
+            .and_then(|u| u.keywords.as_deref())
+            .unwrap_or("");
+        let site_keywords = grid_request.site.as_ref()
+            .and_then(|s| s.keywords.as_deref())
+            .unwrap_or("");
+        let first_imp_ext = grid_request.imp.first().and_then(|imp| imp.ext.as_ref());
+        let request_ext = grid_request.ext.as_ref();
+
+        match build_consolidated_keywords_req_ext(user_keywords, site_keywords, first_imp_ext, request_ext) {
+            Ok(Some(new_ext)) => {
+                grid_request.ext = Some(new_ext);
+            }
+            Ok(None) => {
+                grid_request.ext = None;
+            }
+            Err(e) => {
+                errs.push(e);
+                return (vec![], errs);
+            }
+        }
 
         // fixNative: for any imp with native.request, move the parsed content to native.request_native
         // This adapts from OpenRTB native request string to Grid's expected format.
