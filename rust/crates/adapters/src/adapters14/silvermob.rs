@@ -44,6 +44,7 @@ impl Bidder for SilvermobAdapter {
             headers.insert("X-Openrtb-Version".to_string(), "2.5".to_string());
             if let Some(device) = &request.device {
                 if let Some(ua) = &device.ua { if !ua.is_empty() { headers.insert("User-Agent".to_string(), ua.clone()); } }
+                if let Some(ipv6) = &device.ipv6 { if !ipv6.is_empty() { headers.insert("X-Forwarded-For".to_string(), ipv6.clone()); } }
                 if let Some(ip) = &device.ip { if !ip.is_empty() { headers.insert("X-Forwarded-For".to_string(), ip.clone()); } }
             }
             let imp_ids = vec![imp.id.clone()];
@@ -56,8 +57,11 @@ impl Bidder for SilvermobAdapter {
         if response.status_code == 204 { return Ok(BidderResponse::new()); }
         if let Err(e) = crate::check_response_status(response.status_code) { return Err(vec![e]); }
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
-            .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
-        let mut result = BidderResponse::with_capacity(5);
+            .map_err(|e| vec![BidderError::BadServerResponse(format!("Error unmarshaling server Response: {}", e))])?;
+        if bid_resp.seatbid.is_empty() {
+            return Err(vec![BidderError::BadServerResponse("Empty SeatBid array".to_string())]);
+        }
+        let mut result = BidderResponse::with_capacity(1);
         if let Some(cur) = &bid_resp.cur { if !cur.is_empty() { result.currency = cur.clone(); } }
         let mut errs = Vec::new();
         for sb in bid_resp.seatbid {

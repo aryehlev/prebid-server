@@ -297,7 +297,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     gen!("lemmadigital");
     gen!("limelight_digital");
     gen!("lm_kiviads");
-    gen!("logan");
+    reg!("logan", crate::adapters14::LoganAdapter::new(ep("logan")));
     gen!("mediasquare");
     gen!("melozen");
     gen!("metax");
@@ -308,7 +308,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     gen!("motorik");
     gen!("nexx360");
     gen!("pubnative");
-    gen!("pubrise");
+    reg!("pubrise", crate::adapters14::PubriseAdapter::new(ep("pubrise")));
     gen!("pwbid");
     gen!("qt");
     gen!("readpeak");

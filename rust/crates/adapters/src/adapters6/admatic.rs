@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_bid_type_from_imp, get_imp_ids};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
 use openrtb_ext::BidType;
 use serde::Deserialize;
 use serde_json::Value;
@@ -59,7 +59,23 @@ impl Bidder for AdmaticAdapter {
         if let Some(cur) = &bid_resp.cur { if !cur.is_empty() { result.currency = cur.clone(); } }
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
-                let bid_type = internal.imp.iter().find(|i| i.id == bid.impid).map(get_bid_type_from_imp).unwrap_or(BidType::Banner);
+                let imp = match internal.imp.iter().find(|i| i.id == bid.impid) {
+                    Some(i) => i,
+                    None => return Err(vec![BidderError::BadServerResponse(
+                        format!("The impression with ID {} is not present into the request", bid.impid)
+                    )]),
+                };
+                let bid_type = if imp.banner.is_some() {
+                    BidType::Banner
+                } else if imp.video.is_some() {
+                    BidType::Video
+                } else if imp.native.is_some() {
+                    BidType::Native
+                } else {
+                    return Err(vec![BidderError::BadServerResponse(
+                        format!("The impression with ID {} is not present into the request", bid.impid)
+                    )]);
+                };
                 result.bids.push(TypedBid::new(bid, bid_type));
             }
         }
