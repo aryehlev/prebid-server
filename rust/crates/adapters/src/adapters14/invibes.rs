@@ -139,7 +139,7 @@ fn make_subdomain(domain_id: i32) -> String {
 }
 
 impl Bidder for InvibesAdapter {
-    fn make_requests(&self, request: &openrtb::BidRequest, _: &ExtraRequestInfo) -> (Vec<RequestData>, Vec<BidderError>) {
+    fn make_requests(&self, request: &openrtb::BidRequest, info: &ExtraRequestInfo) -> (Vec<RequestData>, Vec<BidderError>) {
         let mut errs = Vec::new();
         let mut placement_ids: Vec<String> = Vec::new();
         let mut properties: HashMap<String, InvibesPlacementProperty> = HashMap::new();
@@ -195,6 +195,12 @@ impl Bidder for InvibesAdapter {
         }
 
         if placement_ids.is_empty() {
+            return (vec![], errs);
+        }
+
+        // Site is required
+        if request.site.is_none() {
+            errs.push(BidderError::BadInput("Site not specified".to_string()));
             return (vec![], errs);
         }
 
@@ -260,7 +266,7 @@ impl Bidder for InvibesAdapter {
             location: site_page.clone(),
             lid,
             kw: site_keywords,
-            is_amp: false,
+            is_amp: info.pbs_entry_point == "amp",
             width,
             height,
             gdpr_consent,

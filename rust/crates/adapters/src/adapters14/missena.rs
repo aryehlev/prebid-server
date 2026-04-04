@@ -22,6 +22,23 @@ struct ExtImpMissena {
     settings: Option<serde_json::Value>,
 }
 
+#[derive(Debug, Serialize, Clone, Default)]
+struct EidUid {
+    id: String,
+    #[serde(rename = "atype", skip_serializing_if = "Option::is_none")]
+    atype: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ext: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize, Clone, Default)]
+struct Eid {
+    source: String,
+    uids: Vec<EidUid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ext: Option<serde_json::Value>,
+}
+
 #[derive(Debug, Serialize, Default)]
 struct UserParams {
     #[serde(rename = "apiKey", skip_serializing_if = "String::is_empty")]
@@ -55,6 +72,8 @@ struct MissenaAdRequest {
     #[serde(skip_serializing_if = "is_zero_i64")]
     timeout: i64,
     params: UserParams,
+    #[serde(rename = "userEids", skip_serializing_if = "Vec::is_empty")]
+    user_eids: Vec<serde_json::Value>,
     ortb2: serde_json::Value,
     #[serde(skip_serializing_if = "String::is_empty")]
     version: String,
@@ -73,6 +92,19 @@ struct BidServerResponse {
     request_id: String,
     #[serde(default)]
     currency: String,
+}
+
+/// Parse "scheme://host" from a URL string, ignoring malformed URLs.
+fn parse_origin(page: &str) -> Option<String> {
+    // Find "://" to split scheme from rest
+    let sep = page.find("://")?;
+    let scheme = &page[..sep];
+    let rest = &page[sep + 3..];
+    // Host ends at '/', '?', '#', or end of string
+    let host_end = rest.find(|c| c == '/' || c == '?' || c == '#').unwrap_or(rest.len());
+    let host = &rest[..host_end];
+    if host.is_empty() { return None; }
+    Some(format!("{}://{}", scheme, host))
 }
 
 fn get_currency<'a>(currencies: &'a [String]) -> &'a str {
@@ -121,10 +153,20 @@ impl Bidder for MissenaAdapter {
             (0.0, String::new())
         };
 
+        // Extract EIDs from user.ext.eids (optional; ignored on error)
+        let user_eids: Vec<serde_json::Value> = request.user.as_ref()
+            .and_then(|u| u.ext.as_ref())
+            .and_then(|e| e.get("eids"))
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
         let ortb2_val = match serde_json::to_value(request) {
             Ok(v) => v,
             Err(e) => return (vec![], vec![BidderError::BadInput(e.to_string())]),
         };
+
+        let version = "prebid-server@unknown".to_string();
 
         let missena_request = MissenaAdRequest {
             adunit: imp.id.clone(),
@@ -142,8 +184,9 @@ impl Bidder for MissenaAdapter {
                 sample: missena_ext.sample,
                 settings: missena_ext.settings,
             },
+            user_eids,
             ortb2: ortb2_val,
-            version: String::new(),
+            version,
         };
 
         let body = match serde_json::to_vec(&missena_request) {
@@ -164,6 +207,10 @@ impl Bidder for MissenaAdapter {
             if let Some(page) = &site.page {
                 if !page.is_empty() {
                     headers.insert("Referer".to_string(), page.clone());
+                    // Derive Origin from scheme + host of page URL
+                    if let Some(origin) = parse_origin(page) {
+                        headers.insert("Origin".to_string(), origin);
+                    }
                 }
             }
         }
