@@ -286,7 +286,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     gen!("exco");
     gen!("feedad");
     gen!("flatads");
-    gen!("impactify");
+    reg!("impactify", crate::adapters14::ImpactifyAdapter::new(ep("impactify")));
     gen!("intenze");
     gen!("interactiveoffers");
     gen!("iqx");
@@ -299,13 +299,13 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     gen!("lm_kiviads");
     reg!("logan", crate::adapters14::LoganAdapter::new(ep("logan")));
     gen!("mediasquare");
-    gen!("melozen");
+    reg!("melozen", crate::adapters14::MelozenAdapter::new(ep("melozen")));
     reg!("metax", crate::adapters14::MetaxAdapter::new(ep("metax")));
     gen!("mgid_x");
     gen!("mobfoxpb");
     reg!("mobilefuse", crate::adapters14::MobilefuseAdapter::new(ep("mobilefuse")));
     gen!("mobkoi");
-    gen!("motorik");
+    reg!("motorik", crate::adapters14::MotorikAdapter::new(ep("motorik")));
     reg!("nexx360", crate::adapters14::Nexx360Adapter::new(ep("nexx360")));
     reg!("pubnative", crate::adapters14::PubnativeAdapter::new(ep("pubnative")));
     reg!("pubrise", crate::adapters14::PubriseAdapter::new(ep("pubrise")));
@@ -335,7 +335,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     reg!("thetradedesk", crate::adapters14::ThetradedeskAdapter::new(ep("thetradedesk")));
     gen!("tpmn");
     gen!("tradplus");
-    gen!("trafficgate");
+    reg!("trafficgate", crate::adapters14::TrafficgateAdapter::new(ep("trafficgate")));
     gen!("trustedstack");
     reg!("trustx", crate::adapters14::TrustxAdapter::new(ep("trustx")));
     gen!("ucfunnel");
