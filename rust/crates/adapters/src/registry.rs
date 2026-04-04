@@ -272,19 +272,19 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     reg!("unicorn", crate::adapters14::UnicornAdapter::new(ep("unicorn")));
     reg!("yieldlab", crate::adapters14::YieldlabAdapter::new(ep("yieldlab")));
     // adapters14/ — remaining generic pass-throughs
-    gen!("across33");      // duplicate handled above as "33across"
-    gen!("coinzilla");
+    reg!("across33", crate::adapters14::Across33Adapter::new(ep("across33")));      // duplicate handled above as "33across"
+    reg!("coinzilla", crate::adapters14::CoinzillaAdapter::new(ep("coinzilla")));
     reg!("concert", crate::adapters14::ConcertAdapter::new(ep("concert")));
     reg!("copper6ssp", crate::adapters14::Copper6sspAdapter::new(ep("copper6ssp")));
     reg!("cpmstar", crate::adapters14::CpmstarAdapter::new(ep("cpmstar")));
-    gen!("cwire");
+    reg!("cwire", crate::adapters14::CwireAdapter::new(ep("cwire")));
     reg!("decenterads", crate::adapters14::DecenteradsAdapter::new(ep("decenterads")));
     reg!("definemedia", crate::adapters14::DefinemediaAdapter::new(ep("definemedia")));
     reg!("dianomi", crate::adapters14::DianomiAdapter::new(ep("dianomi")));
     reg!("displayio", crate::adapters14::DisplayioAdapter::new(ep("displayio")));
     reg!("edge226", crate::adapters14::Edge226Adapter::new(ep("edge226")));
     reg!("exco", crate::adapters14::ExcoAdapter::new(ep("exco")));
-    gen!("feedad");
+    reg!("feedad", crate::adapters14::FeedadAdapter::new(ep("feedad")));
     reg!("flatads", crate::adapters14::FlatadsAdapter::new(ep("flatads")));
     reg!("impactify", crate::adapters14::ImpactifyAdapter::new(ep("impactify")));
     reg!("intenze", crate::adapters14::IntenzeAdapter::new(ep("intenze")));
@@ -296,7 +296,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     reg!("kueezrtb", crate::adapters14::KueezrtbAdapter::new(ep("kueezrtb")));
     reg!("lemmadigital", crate::adapters14::LemmadigitalAdapter::new(ep("lemmadigital")));
     reg!("limelight_digital", crate::adapters14::LimelightDigitalAdapter::new(ep("limelight_digital")));
-    gen!("lm_kiviads");
+    reg!("lm_kiviads", crate::adapters14::LmKiviadsAdapter::new(ep("lm_kiviads")));
     reg!("logan", crate::adapters14::LoganAdapter::new(ep("logan")));
     reg!("mediasquare", crate::adapters14::MediasquareAdapter::new(ep("mediasquare")));
     reg!("melozen", crate::adapters14::MelozenAdapter::new(ep("melozen")));
@@ -304,12 +304,12 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     reg!("mgid_x", crate::adapters14::MgidXAdapter::new(ep("mgid_x")));
     reg!("mobfoxpb", crate::adapters14::MobfoxpbAdapter::new(ep("mobfoxpb")));
     reg!("mobilefuse", crate::adapters14::MobilefuseAdapter::new(ep("mobilefuse")));
-    gen!("mobkoi");
+    reg!("mobkoi", crate::adapters14::MobkoiAdapter::new(ep("mobkoi")));
     reg!("motorik", crate::adapters14::MotorikAdapter::new(ep("motorik")));
     reg!("nexx360", crate::adapters14::Nexx360Adapter::new(ep("nexx360")));
     reg!("pubnative", crate::adapters14::PubnativeAdapter::new(ep("pubnative")));
     reg!("pubrise", crate::adapters14::PubriseAdapter::new(ep("pubrise")));
-    gen!("pwbid");
+    reg!("pwbid", crate::adapters14::PwbidAdapter::new(ep("pwbid")));
     reg!("qt", crate::adapters14::QtAdapter::new(ep("qt")));
     reg!("readpeak", crate::adapters14::ReadpeakAdapter::new(ep("readpeak")));
     reg!("rediads", crate::adapters14::RediadsAdapter::new(ep("rediads")));
@@ -319,16 +319,16 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     reg!("silvermob", crate::adapters14::SilvermobAdapter::new(ep("silvermob")));
     reg!("smarthub", crate::adapters14::SmarthubAdapter::new(ep("smarthub")));
     reg!("smartrtb", crate::adapters14::SmartrtbAdapter::new(ep("smartrtb")));
-    gen!("smartx");
+    reg!("smartx", crate::adapters14::SmartxAdapter::new(ep("smartx")));
     reg!("smartyads", crate::adapters14::SmartyadsAdapter::new(ep("smartyads")));
     reg!("smilewanted", crate::adapters14::SmilewantedAdapter::new(ep("smilewanted")));
     reg!("smoot", crate::adapters14::SmootAdapter::new(ep("smoot")));
     reg!("smrtconnect", crate::adapters14::SmrtconnectAdapter::new(ep("smrtconnect")));
     reg!("sovrn_xsp", crate::adapters14::SovrnXspAdapter::new(ep("sovrn_xsp")));
     reg!("sparteo", crate::adapters14::SparteoAdapter::new(ep("sparteo")));
-    gen!("sspbc");
+    reg!("sspbc", crate::adapters14::SspBcAdapter::new(ep("sspbc")));
     reg!("startio", crate::adapters14::StartioAdapter::new(ep("startio")));
-    gen!("stroeer_core");
+    reg!("stroeer_core", crate::adapters14::StroeerCoreAdapter::new(ep("stroeer_core")));
     reg!("tappx", crate::adapters14::TappxAdapter::new(ep("tappx")));
     reg!("teqblaze", crate::adapters14::TeqblazeAdapter::new(ep("teqblaze")));
     reg!("theadx", crate::adapters14::TheadxAdapter::new(ep("theadx")));
@@ -336,7 +336,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     reg!("tpmn", crate::adapters14::TpmnAdapter::new(ep("tpmn")));
     reg!("tradplus", crate::adapters14::TradplusAdapter::new(ep("tradplus")));
     reg!("trafficgate", crate::adapters14::TrafficgateAdapter::new(ep("trafficgate")));
-    gen!("trustedstack");
+    reg!("trustedstack", crate::adapters14::TrustedstackAdapter::new(ep("trustedstack")));
     reg!("trustx", crate::adapters14::TrustxAdapter::new(ep("trustx")));
     reg!("ucfunnel", crate::adapters14::UcfunnelAdapter::new(ep("ucfunnel")));
     reg!("undertone", crate::adapters14::UndertoneAdapter::new(ep("undertone")));
@@ -345,7 +345,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     reg!("vidoomy", crate::adapters14::VidoomyAdapter::new(ep("vidoomy")));
     reg!("visiblemeasures", crate::adapters14::VisiblemeasuresAdapter::new(ep("visiblemeasures")));
     reg!("visx", crate::adapters14::VisxAdapter::new(ep("visx")));
-    gen!("vox");
+    reg!("vox", crate::adapters14::VoxAdapter::new(ep("vox")));
     reg!("vrtcal", crate::adapters14::VrtcalAdapter::new(ep("vrtcal")));
     reg!("vungle", crate::adapters14::VungleAdapter::new(ep("vungle")));
     reg!("xeworks", crate::adapters14::XeworksAdapter::new(ep("xeworks")));
@@ -353,7 +353,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     reg!("yeahmobi", crate::adapters14::YeahmobiAdapter::new(ep("yeahmobi")));
     reg!("yieldmo", crate::adapters14::YieldmoAdapter::new(ep("yieldmo")));
     reg!("yieldone", crate::adapters14::YieldoneAdapter::new(ep("yieldone")));
-    gen!("zentotem");
+    reg!("zentotem", crate::adapters14::ZentotemAdapter::new(ep("zentotem")));
     reg!("zeroclickfraud", crate::adapters14::ZeroclickfraudAdapter::new(ep("zeroclickfraud")));
     reg!("zeta_global_ssp", crate::adapters14::ZetaGlobalSspAdapter::new(ep("zeta_global_ssp")));
     reg!("zmaticoo", crate::adapters14::ZmaticooAdapter::new(ep("zmaticoo")));
