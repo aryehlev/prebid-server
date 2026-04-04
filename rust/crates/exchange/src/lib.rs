@@ -527,6 +527,14 @@ fn validate_bids(bids: Vec<pbs_adapters::TypedBid>, imps: &[openrtb::Imp]) -> Ve
         .collect()
 }
 
+/// Trait for fetching stored auction responses by ID.
+///
+/// Implementors return a pre-built `BidResponse` JSON value for a given stored-response ID,
+/// or `None` if no stored response exists for that ID.
+pub trait StoredResponseFetcher: Send + Sync {
+    fn fetch(&self, id: &str) -> Option<&serde_json::Value>;
+}
+
 /// Exchange orchestrates the full auction: fan-out to bidders, collect results, build response.
 pub struct Exchange {
     pub adapters: HashMap<String, AdaptedBidder>,
@@ -534,6 +542,10 @@ pub struct Exchange {
     pub metrics: Option<Arc<dyn pbs_metrics::MetricsEngine>>,
     pub analytics: Option<Arc<dyn analytics::AnalyticsBackend>>,
     pub hook_plan: Option<Arc<hooks::HookExecutionPlan>>,
+    /// Optional stored auction response fetcher.  When set and a request contains
+    /// `req.ext.prebid.storedauctionresponse.id`, bidder calls are skipped and the
+    /// pre-built `BidResponse` stored under that ID is returned directly.
+    pub stored_responses: Option<Arc<dyn StoredResponseFetcher>>,
 }
 
 impl Exchange {
@@ -548,6 +560,7 @@ impl Exchange {
             metrics: None,
             analytics: None,
             hook_plan: None,
+            stored_responses: None,
         }
     }
 
@@ -584,6 +597,85 @@ impl Exchange {
         }
 
         let bid_request = &request.bid_request;
+
+        // ── Stored auction response short-circuit ─────────────────────────────
+        // If `req.ext.prebid.storedauctionresponse.id` is set, skip all bidder
+        // calls and return the pre-built BidResponse stored under that ID.
+        if let Some(stored_resp_id) = bid_request
+            .ext
+            .as_ref()
+            .and_then(|e| e.get("prebid"))
+            .and_then(|p| p.get("storedauctionresponse"))
+            .and_then(|s| s.get("id"))
+            .and_then(|v| v.as_str())
+        {
+            if let Some(stored_resp_fetcher) = &self.stored_responses {
+                if let Some(stored_json) = stored_resp_fetcher.fetch(stored_resp_id) {
+                    match serde_json::from_value::<openrtb::BidResponse>(stored_json.clone()) {
+                        Ok(mut bid_response) => {
+                            // Preserve the request ID in the response.
+                            if bid_response.id.is_empty() {
+                                bid_response.id = bid_request.id.clone();
+                            }
+                            // Build targeting from the stored response's seatbid entries.
+                            let mut targeting: HashMap<String, HashMap<String, String>> =
+                                HashMap::new();
+                            for seat_bid in &bid_response.seatbid {
+                                let bidder_name =
+                                    seat_bid.seat.as_deref().unwrap_or("unknown");
+                                for bid in &seat_bid.bid {
+                                    // Extract prebid targeting from bid.ext if present.
+                                    let ext_targeting: HashMap<String, String> = bid
+                                        .ext
+                                        .as_ref()
+                                        .and_then(|e| e.get("prebid"))
+                                        .and_then(|p| p.get("targeting"))
+                                        .and_then(|t| {
+                                            serde_json::from_value(t.clone()).ok()
+                                        })
+                                        .unwrap_or_default();
+
+                                    let keys =
+                                        targeting.entry(bid.impid.clone()).or_default();
+                                    // Merge ext targeting keys.
+                                    for (k, v) in ext_targeting {
+                                        keys.insert(k, v);
+                                    }
+                                    // Ensure basic winner keys are present.
+                                    keys.entry("hb_bidder".to_string())
+                                        .or_insert_with(|| bidder_name.to_string());
+                                    keys.entry("hb_pb".to_string()).or_insert_with(|| {
+                                        price_granularity_bucket(bid.price, None)
+                                    });
+                                }
+                            }
+                            tracing::debug!(
+                                id = stored_resp_id,
+                                "using stored auction response; skipping bidder calls"
+                            );
+                            return Ok(AuctionResponse {
+                                bid_response,
+                                seat_non_bids: vec![],
+                                targeting,
+                                timed_out_bidders: vec![],
+                            });
+                        }
+                        Err(e) => {
+                            return Err(anyhow::anyhow!(
+                                "failed to parse stored auction response '{}': {}",
+                                stored_resp_id,
+                                e
+                            ));
+                        }
+                    }
+                } else {
+                    return Err(anyhow::anyhow!(
+                        "stored auction response not found for id: {}",
+                        stored_resp_id
+                    ));
+                }
+            }
+        }
 
         // Validate impression count
         if bid_request.imp.is_empty() {

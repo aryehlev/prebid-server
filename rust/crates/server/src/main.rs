@@ -199,6 +199,9 @@ async fn main() -> anyhow::Result<()> {
     let stored_requests = Arc::new(
         pbs_endpoints::StoredRequestFetcher::from_directory(&stored_requests_dir)
     );
+    // Wire stored auction responses into the exchange so that requests with
+    // req.ext.prebid.storedauctionresponse.id skip bidder calls.
+    exchange.stored_responses = Some(stored_requests.clone() as Arc<dyn pbs_exchange::StoredResponseFetcher>);
 
     let state = Arc::new(pbs_endpoints::AppStateInner {
         exchange,
