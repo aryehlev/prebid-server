@@ -5,12 +5,13 @@ use openrtb_ext::BidType;
 pub struct AduptechAdapter { pub endpoint: String }
 impl AduptechAdapter { pub fn new(endpoint: String) -> Self { Self { endpoint } } }
 
+/// Maps OpenRTB mtype to BidType for aduptech.
+/// Only Banner (1) and Native (4) are supported; all others return an error.
 fn get_bid_type(mtype: Option<i32>) -> Result<BidType, BidderError> {
     match mtype {
         Some(4) => Ok(BidType::Native),
         Some(1) => Ok(BidType::Banner),
-        Some(2) => Ok(BidType::Video),
-        _ => Err(BidderError::BadServerResponse(format!("unknown mtype: {:?}", mtype))),
+        other => Err(BidderError::BadServerResponse(format!("Unknown markup type: {:?}", other.unwrap_or(0)))),
     }
 }
 

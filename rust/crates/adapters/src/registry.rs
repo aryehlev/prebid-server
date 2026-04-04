@@ -320,9 +320,9 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     reg!("smarthub", crate::adapters14::SmarthubAdapter::new(ep("smarthub")));
     reg!("smartrtb", crate::adapters14::SmartrtbAdapter::new(ep("smartrtb")));
     gen!("smartx");
-    gen!("smartyads");
+    reg!("smartyads", crate::adapters14::SmartyadsAdapter::new(ep("smartyads")));
     gen!("smilewanted");
-    gen!("smoot");
+    reg!("smoot", crate::adapters14::SmootAdapter::new(ep("smoot")));
     gen!("smrtconnect");
     gen!("sovrn_xsp");
     reg!("sparteo", crate::adapters14::SparteoAdapter::new(ep("sparteo")));

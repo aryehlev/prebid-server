@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_bid_type_from_mtype, get_imp_ids};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
+use openrtb_ext::BidType;
 use serde_json::json;
 
 pub struct SmootAdapter { pub endpoint: String }
@@ -45,18 +46,19 @@ impl Bidder for SmootAdapter {
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
         let mut result = BidderResponse::with_capacity(5);
         if let Some(cur) = &bid_resp.cur { if !cur.is_empty() { result.currency = cur.clone(); } }
-        let mut errs = Vec::new();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
-                let mtype = bid.mtype.unwrap_or(0);
-                if mtype == 0 {
-                    errs.push(BidderError::BadServerResponse(format!("could not define media type for impression: {}", bid.impid)));
-                    continue;
-                }
-                result.bids.push(TypedBid::new(bid, get_bid_type_from_mtype(mtype)));
+                let bid_type = match bid.mtype {
+                    Some(1) => BidType::Banner,
+                    Some(2) => BidType::Video,
+                    Some(4) => BidType::Native,
+                    _ => return Err(vec![BidderError::BadServerResponse(format!(
+                        "could not define media type for impression: {}", bid.impid
+                    ))]),
+                };
+                result.bids.push(TypedBid::new(bid, bid_type));
             }
         }
-        if !errs.is_empty() && result.bids.is_empty() { return Err(errs); }
         Ok(result)
     }
 }
