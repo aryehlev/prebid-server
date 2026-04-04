@@ -300,7 +300,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     reg!("logan", crate::adapters14::LoganAdapter::new(ep("logan")));
     gen!("mediasquare");
     gen!("melozen");
-    gen!("metax");
+    reg!("metax", crate::adapters14::MetaxAdapter::new(ep("metax")));
     gen!("mgid_x");
     gen!("mobfoxpb");
     reg!("mobilefuse", crate::adapters14::MobilefuseAdapter::new(ep("mobilefuse")));
@@ -339,7 +339,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     gen!("trustedstack");
     reg!("trustx", crate::adapters14::TrustxAdapter::new(ep("trustx")));
     gen!("ucfunnel");
-    gen!("undertone");
+    reg!("undertone", crate::adapters14::UndertoneAdapter::new(ep("undertone")));
     reg!("videobyte", crate::adapters14::VideobyteAdapter::new(ep("videobyte")));
     reg!("videoheroes", crate::adapters14::VideoHeroesAdapter::new(ep("videoheroes")));
     reg!("vidoomy", crate::adapters14::VidoomyAdapter::new(ep("vidoomy")));
@@ -350,11 +350,11 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     reg!("vungle", crate::adapters14::VungleAdapter::new(ep("vungle")));
     gen!("xeworks");
     gen!("yahoo_ads");
-    gen!("yeahmobi");
+    reg!("yeahmobi", crate::adapters14::YeahmobiAdapter::new(ep("yeahmobi")));
     gen!("yieldmo");
     gen!("yieldone");
     gen!("zentotem");
-    gen!("zeroclickfraud");
+    reg!("zeroclickfraud", crate::adapters14::ZeroclickfraudAdapter::new(ep("zeroclickfraud")));
     gen!("zeta_global_ssp");
     reg!("zmaticoo", crate::adapters14::ZmaticooAdapter::new(ep("zmaticoo")));
 
