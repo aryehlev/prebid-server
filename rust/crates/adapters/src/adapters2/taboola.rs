@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
 use openrtb_ext::BidType;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 pub struct TaboolaAdapter { pub endpoint: String }
 impl TaboolaAdapter {
@@ -12,16 +12,30 @@ impl TaboolaAdapter {
 struct ExtImpTaboola {
     #[serde(rename = "publisherId", default)]
     publisher_id: String,
+    #[serde(rename = "publisherDomain", default)]
+    publisher_domain: String,
     #[serde(rename = "tagId", default)]
     tag_id: String,
     #[serde(rename = "tagid", default)]
     tagid: String,
-    #[serde(rename = "bidFloor", default)]
+    /// bidFloor can appear as "bidFloor" or "bidfloor" in publisher ext
+    #[serde(rename = "bidFloor", alias = "bidfloor", default)]
     bid_floor: f64,
     #[serde(rename = "bcat", default)]
     bcat: Option<Vec<String>>,
     #[serde(rename = "badv", default)]
     badv: Option<Vec<String>>,
+    #[serde(rename = "pageType", default)]
+    page_type: String,
+    #[serde(rename = "position", default)]
+    position: Option<i32>,
+}
+
+/// Request-level ext for pageType, matching Go's RequestExt struct.
+#[derive(Debug, Serialize)]
+struct TaboolaRequestExt {
+    #[serde(rename = "pageType")]
+    page_type: String,
 }
 
 fn get_media_type(imp_id: &str, imps: &[openrtb::Imp]) -> Option<BidType> {
@@ -71,6 +85,13 @@ impl Bidder for TaboolaAdapter {
                 imp.bidfloor = Some(ext.bid_floor);
             }
 
+            // Set banner position if provided
+            if let Some(pos) = ext.position {
+                if let Some(banner) = imp.banner.as_mut() {
+                    banner.pos = Some(pos);
+                }
+            }
+
             taboola_ext = ext;
 
             if imp.banner.is_some() {
@@ -87,10 +108,20 @@ impl Bidder for TaboolaAdapter {
             ..Default::default()
         };
 
+        // evaluate_domain: use publisherDomain from ext, else fall back to site.domain
+        let publisher_domain = if !taboola_ext.publisher_domain.is_empty() {
+            taboola_ext.publisher_domain.clone()
+        } else {
+            request.site.as_ref().and_then(|s| s.domain.clone()).unwrap_or_default()
+        };
+
         if let Some(site) = req.site.as_mut() {
             if !publisher_id.is_empty() {
                 site.id = Some(publisher_id.clone());
                 site.name = Some(publisher_id.clone());
+            }
+            if !publisher_domain.is_empty() {
+                site.domain = Some(publisher_domain);
             }
             site.publisher = Some(publisher.clone());
         }
@@ -106,6 +137,14 @@ impl Bidder for TaboolaAdapter {
         }
         if let Some(badv) = taboola_ext.badv {
             req.badv = Some(badv);
+        }
+
+        // Set request.ext with pageType if present
+        if !taboola_ext.page_type.is_empty() {
+            match serde_json::to_value(&TaboolaRequestExt { page_type: taboola_ext.page_type.clone() }) {
+                Ok(v) => req.ext = Some(v),
+                Err(e) => errs.push(BidderError::BadInput(e.to_string())),
+            }
         }
 
         let mut requests = Vec::new();

@@ -38,6 +38,39 @@ fn get_native_adm(adm: &str) -> Result<String, BidderError> {
     }
 }
 
+/// Set publisher ext (with prebid.publisherId) in site or app, preserving existing publisher fields.
+/// Creates a site object if neither site nor app exists.
+fn set_publisher_id(req: &mut openrtb::BidRequest, pub_ext: serde_json::Value) {
+    let make_publisher = |existing: Option<&openrtb::Publisher>| -> openrtb::Publisher {
+        let mut p = existing.cloned().unwrap_or_default();
+        // Merge ext: preserve existing keys, add/overwrite "prebid"
+        if let Some(prebid) = pub_ext.get("prebid") {
+            let mut ext_obj = if let Some(serde_json::Value::Object(m)) = p.ext.take() {
+                m
+            } else {
+                serde_json::Map::new()
+            };
+            ext_obj.insert("prebid".to_string(), prebid.clone());
+            p.ext = Some(serde_json::Value::Object(ext_obj));
+        }
+        p
+    };
+
+    if let Some(site) = req.site.as_mut() {
+        let publisher = make_publisher(site.publisher.as_ref());
+        site.publisher = Some(publisher);
+    } else if let Some(app) = req.app.as_mut() {
+        let publisher = make_publisher(app.publisher.as_ref());
+        app.publisher = Some(publisher);
+    } else {
+        let publisher = make_publisher(None);
+        req.site = Some(openrtb::Site {
+            publisher: Some(publisher),
+            ..Default::default()
+        });
+    }
+}
+
 impl Bidder for RtbhouseAdapter {
     fn make_requests(
         &self,
@@ -50,10 +83,10 @@ impl Bidder for RtbhouseAdapter {
         let mut publisher_id = String::new();
 
         for imp in &request.imp {
-            // Extract publisherId from bidder ext
+            // Extract publisherId and optional bidFloor from bidder ext
+            let bidder_ext = imp.ext.as_ref().and_then(|e| e.get("bidder")).cloned();
             if publisher_id.is_empty() {
-                if let Some(pid) = imp.ext.as_ref()
-                    .and_then(|e| e.get("bidder"))
+                if let Some(pid) = bidder_ext.as_ref()
                     .and_then(|b| b.get("publisherId"))
                     .and_then(|v| v.as_str())
                 {
@@ -64,6 +97,19 @@ impl Bidder for RtbhouseAdapter {
             }
 
             let mut imp = imp.clone();
+
+            // Apply bidFloor from bidder ext when imp has no floor set
+            if imp.bidfloor.is_none() || imp.bidfloor == Some(0.0) {
+                if let Some(ext_floor) = bidder_ext.as_ref()
+                    .and_then(|b| b.get("bidfloor"))
+                    .and_then(|v| v.as_f64())
+                {
+                    if ext_floor > 0.0 {
+                        imp.bidfloor = Some(ext_floor);
+                        imp.bidfloorcur = Some(BIDDER_CURRENCY.to_string());
+                    }
+                }
+            }
 
             // Clear PAAPI/auction environment signals from imp.ext
             if let Some(ext) = imp.ext.as_mut() {
@@ -81,25 +127,12 @@ impl Bidder for RtbhouseAdapter {
             req_copy.imp.push(imp);
         }
 
-        // Set publisher ID in site/app publisher ext
+        // Set publisher ID in site/app publisher.ext.prebid.publisherId
         if !publisher_id.is_empty() {
             let pub_ext = serde_json::json!({
                 "prebid": { "publisherId": publisher_id }
             });
-            let publisher = openrtb::Publisher {
-                ext: Some(pub_ext),
-                ..Default::default()
-            };
-            if let Some(site) = req_copy.site.as_mut() {
-                site.publisher = Some(publisher);
-            } else if let Some(app) = req_copy.app.as_mut() {
-                app.publisher = Some(publisher);
-            } else {
-                req_copy.site = Some(openrtb::Site {
-                    publisher: Some(publisher),
-                    ..Default::default()
-                });
-            }
+            set_publisher_id(&mut req_copy, pub_ext);
         }
 
         let body = match serde_json::to_vec(&req_copy) {
@@ -161,11 +194,8 @@ impl Bidder for RtbhouseAdapter {
                     *adm = adm.replace("${AUCTION_PRICE}", &price_str);
                 }
 
-                // Get mtype from bid.ext
-                let mtype = bid.ext.as_ref()
-                    .and_then(|e| e.get("mtype"))
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
+                // Get mtype directly from bid.mtype field (OpenRTB 2.6)
+                let mtype = bid.mtype.unwrap_or(0) as u64;
 
                 let bid_type = match get_bid_type_from_mtype(mtype) {
                     Ok(t) => t,

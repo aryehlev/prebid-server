@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid};
-use openrtb_ext::BidType;
+use openrtb_ext::{BidType, ExtBidPrebidMeta, ExtBidPrebidVideo};
 use serde::{Deserialize, Serialize};
 
 pub struct InsticatorAdapter { pub endpoint: String }
@@ -218,9 +218,56 @@ impl Bidder for InsticatorAdapter {
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
                 let bid_type = get_media_type_for_bid(bid.mtype);
-                result.bids.push(TypedBid::new(bid, bid_type));
+                let bid_meta = get_bid_meta(&bid, bid_type.clone());
+                let bid_video = get_bid_video(&bid, bid_type.clone());
+                let mut typed = TypedBid::new(bid, bid_type);
+                typed.bid_meta = Some(bid_meta);
+                typed.bid_video = bid_video;
+                result.bids.push(typed);
             }
         }
         Ok(result)
     }
+}
+
+/// getBidMeta extracts metadata from the bid for brand safety and reporting.
+fn get_bid_meta(bid: &openrtb::Bid, bid_type: BidType) -> ExtBidPrebidMeta {
+    let mut meta = ExtBidPrebidMeta {
+        media_type: Some(bid_type.to_string()),
+        ..Default::default()
+    };
+
+    if let Some(adomain) = &bid.adomain {
+        if !adomain.is_empty() {
+            meta.advertiser_domains = Some(adomain.clone());
+        }
+    }
+
+    if let Some(cat) = &bid.cat {
+        if !cat.is_empty() {
+            meta.primary_category_id = Some(cat[0].clone());
+            if cat.len() > 1 {
+                meta.secondary_category_ids = Some(cat[1..].to_vec());
+            }
+        }
+    }
+
+    meta
+}
+
+/// getBidVideo extracts video-specific metadata from the bid.
+fn get_bid_video(bid: &openrtb::Bid, bid_type: BidType) -> Option<ExtBidPrebidVideo> {
+    if bid_type != BidType::Video {
+        return None;
+    }
+
+    let primary_category = bid.cat.as_deref()
+        .and_then(|c| c.first())
+        .cloned()
+        .unwrap_or_default();
+    // Note: Rust openrtb::Bid does not expose a `dur` field; default to 0.
+    Some(ExtBidPrebidVideo {
+        duration: 0,
+        primary_category,
+    })
 }
