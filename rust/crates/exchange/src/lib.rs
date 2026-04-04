@@ -12,6 +12,7 @@ pub mod floors;
 pub mod gdpr;
 pub mod hooks;
 pub mod macros;
+pub mod privacy;
 pub mod usersync;
 pub mod validation;
 
@@ -777,28 +778,8 @@ impl Exchange {
             .and_then(|t| t.get("pricegranularity"))
             .and_then(|pg| PriceGranularity::from_json(pg));
 
-        // Check GDPR: if regs.ext.gdpr == 1 and no user.ext.consent, warn (checked per bidder below)
-        let gdpr_applies = bid_request.regs
-            .as_ref()
-            .and_then(|r| r.ext.as_ref())
-            .and_then(|e| e.get("gdpr"))
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0) == 1;
-
-        // Check CCPA: us_privacy string index 2 == 'Y' means user has opted out of sale.
-        let ccpa_opt_out = bid_request.regs
-            .as_ref()
-            .and_then(|r| r.us_privacy.as_deref())
-            .map(|s| s.chars().nth(2) == Some('Y'))
-            .unwrap_or(false);
-
-        let user_consent: Option<String> = bid_request.user
-            .as_ref()
-            .and_then(|u| u.ext.as_ref())
-            .and_then(|e| e.get("consent"))
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string());
+        // Extract unified privacy config (GDPR, CCPA, COPPA, LMT) from the request.
+        let privacy_config = privacy::extract_privacy_config(bid_request);
 
         // Determine which bidders are active for this request by inspecting imp.ext.
         // This includes both canonical adapter names and configured alias names.
@@ -874,38 +855,20 @@ impl Exchange {
         let mut collected_non_bids: Vec<SeatNonBid> = Vec::new();
 
         for bidder_name in active_bidders {
-            // GDPR enforcement: skip bidder if GDPR applies and consent is missing/invalid
-            if gdpr::should_block_bidder_gdpr(gdpr_applies, user_consent.as_deref(), &bidder_name) {
-                tracing::warn!(
-                    bidder = %bidder_name,
-                    "skipping bidder due to GDPR: gdpr=1 but no user.ext.consent string present"
-                );
-                // Record a SeatNonBid with reason code 50 (privacy) for each impression.
+            // Unified privacy enforcement: COPPA, LMT, CCPA, GDPR.
+            let privacy_check = privacy::check_privacy_for_bidder(&privacy_config, &bidder_name);
+            if privacy_check != privacy::PrivacyResult::Allow {
+                let (status_code, reason) = match privacy_check {
+                    privacy::PrivacyResult::BlockGdpr  => (50, "GDPR: no valid consent string"),
+                    privacy::PrivacyResult::BlockCcpa  => (51, "CCPA: us_privacy opt-out"),
+                    privacy::PrivacyResult::BlockCoppa => (52, "COPPA: child-directed flag"),
+                    privacy::PrivacyResult::BlockLmt   => (53, "LMT: limit ad tracking"),
+                    privacy::PrivacyResult::Allow      => unreachable!(),
+                };
+                tracing::warn!(bidder = %bidder_name, "skipping bidder due to privacy: {}", reason);
                 let non_bids: Vec<NonBid> = bid_request.imp.iter().map(|imp| NonBid {
                     impid: imp.id.clone(),
-                    statuscode: 50,
-                    ext: None,
-                }).collect();
-                if !non_bids.is_empty() {
-                    collected_non_bids.push(SeatNonBid {
-                        seat: bidder_name.clone(),
-                        nonbid: non_bids,
-                        ext: None,
-                    });
-                }
-                continue;
-            }
-
-            // CCPA enforcement: skip all bidders when user has opted out of sale.
-            if ccpa_opt_out {
-                tracing::warn!(
-                    bidder = %bidder_name,
-                    "skipping bidder due to CCPA opt-out (us_privacy index 2 == 'Y')"
-                );
-                // Record a SeatNonBid with reason code 51 (CCPA) for each impression.
-                let non_bids: Vec<NonBid> = bid_request.imp.iter().map(|imp| NonBid {
-                    impid: imp.id.clone(),
-                    statuscode: 51,
+                    statuscode: status_code,
                     ext: None,
                 }).collect();
                 if !non_bids.is_empty() {
@@ -949,6 +912,8 @@ impl Exchange {
                     .unwrap_or(bid_request)
                     .clone();
                 apply_fpd_for_bidder(&mut req, &bidder_name);
+                // COPPA sanitization: strip user/device identifiers for child-directed requests.
+                privacy::sanitize_request_for_coppa(&mut req);
                 let extra = extra_info.clone();
                 // Spawn task using the alias name so the SeatBid carries the alias.
                 let seat_name = bidder_name.clone();
