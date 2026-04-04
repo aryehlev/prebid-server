@@ -317,22 +317,27 @@ pub async fn auction_handler(
         }
     }
 
+    let handler_start = std::time::Instant::now();
     let auction_req = pbs_exchange::AuctionRequest {
         bid_request,
         account: None,
         user_syncs: None,
-        start_time: std::time::Instant::now(),
+        start_time: handler_start,
         currency_rates: None,
     };
 
     match state.exchange.hold_auction(auction_req).await {
         Ok(auction_response) => {
+            let duration_ms = handler_start.elapsed().as_millis() as u64;
             state.metrics.record_request("openrtb2", pbs_metrics::RequestStatus::Ok);
+            state.metrics.record_http_request("openrtb2", 200, duration_ms);
             (StatusCode::OK, Json(auction_response.bid_response)).into_response()
         }
         Err(e) => {
+            let duration_ms = handler_start.elapsed().as_millis() as u64;
             tracing::error!("Auction error: {}", e);
             state.metrics.record_request("openrtb2", pbs_metrics::RequestStatus::BadServerResponse);
+            state.metrics.record_http_request("openrtb2", 500, duration_ms);
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
     }
@@ -399,22 +404,27 @@ pub async fn auction_get_handler(
         }
     }
 
+    let handler_start = std::time::Instant::now();
     let auction_req = pbs_exchange::AuctionRequest {
         bid_request,
         account: None,
         user_syncs: None,
-        start_time: std::time::Instant::now(),
+        start_time: handler_start,
         currency_rates: None,
     };
 
     match state.exchange.hold_auction(auction_req).await {
         Ok(auction_response) => {
+            let duration_ms = handler_start.elapsed().as_millis() as u64;
             state.metrics.record_request("openrtb2", pbs_metrics::RequestStatus::Ok);
+            state.metrics.record_http_request("openrtb2", 200, duration_ms);
             (StatusCode::OK, Json(auction_response.bid_response)).into_response()
         }
         Err(e) => {
+            let duration_ms = handler_start.elapsed().as_millis() as u64;
             tracing::error!("Auction error: {}", e);
             state.metrics.record_request("openrtb2", pbs_metrics::RequestStatus::BadServerResponse);
+            state.metrics.record_http_request("openrtb2", 500, duration_ms);
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
     }
@@ -691,18 +701,21 @@ pub async fn amp_handler(
     }
 
     // ── 4. Run the auction ────────────────────────────────────────────────────
+    let handler_start = std::time::Instant::now();
     let auction_req = pbs_exchange::AuctionRequest {
         bid_request,
         account: None,
         user_syncs: None,
-        start_time: std::time::Instant::now(),
+        start_time: handler_start,
         currency_rates: None,
     };
 
     let auction_response = match state.exchange.hold_auction(auction_req).await {
         Ok(r) => r,
         Err(e) => {
+            let duration_ms = handler_start.elapsed().as_millis() as u64;
             tracing::error!(tag_id = %tag_id, "AMP auction error: {}", e);
+            state.metrics.record_http_request("amp", 500, duration_ms);
             let response = serde_json::json!({
                 "targeting": {},
                 "errors": {
@@ -727,9 +740,9 @@ pub async fn amp_handler(
         }
     }
 
-    state
-        .metrics
-        .record_request("amp", pbs_metrics::RequestStatus::Ok);
+    let duration_ms = handler_start.elapsed().as_millis() as u64;
+    state.metrics.record_request("amp", pbs_metrics::RequestStatus::Ok);
+    state.metrics.record_http_request("amp", 200, duration_ms);
 
     let response = serde_json::json!({ "targeting": flat_targeting });
     (StatusCode::OK, Json(response)).into_response()

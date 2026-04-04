@@ -1097,7 +1097,7 @@ impl Exchange {
                                             pbs_adapters::BidderError::BadServerResponse(_) => "bad_server_response",
                                             _ => "unknown",
                                         };
-                                        m.record_bid_count(&bidder_result.bidder_name, err_type);
+                                        m.record_bidder_error(&bidder_result.bidder_name, err_type);
                                     }
                                 }
                                 bidder_errors
@@ -1261,6 +1261,11 @@ impl Exchange {
         //     "dsa": { ... }                              // passthrough, omitted when absent
         //   }
         let elapsed_ms = request.start_time.elapsed().as_millis() as u64;
+
+        // Record total auction duration.
+        if let Some(m) = &self.metrics {
+            m.record_auction_duration("openrtb2", elapsed_ms);
+        }
 
         let mut prebid_obj = serde_json::json!({
             "timing": { "respondedMs": elapsed_ms }
