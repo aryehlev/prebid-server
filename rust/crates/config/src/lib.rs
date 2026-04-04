@@ -82,6 +82,14 @@ pub struct Configuration {
     /// Allows synthetic bidder names that route to an existing adapter.
     #[serde(default)]
     pub aliases: HashMap<String, String>,
+    #[serde(default)]
+    pub http_client: HTTPClientConfig,
+    #[serde(default)]
+    pub user_sync: UserSyncConfig,
+    #[serde(default)]
+    pub analytics: AnalyticsConfig,
+    #[serde(default)]
+    pub price_floors: PriceFloorsConfig,
 }
 
 fn default_host() -> String {
@@ -346,6 +354,79 @@ fn default_currency_fetch_url() -> String {
 
 fn default_currency_fetch_interval_seconds() -> u64 {
     1800
+}
+
+/// HTTP client configuration
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct HTTPClientConfig {
+    pub max_connections_per_host: u32,
+    pub max_idle_connections: u32,
+    pub idle_connection_timeout_seconds: u64,
+    pub request_timeout_milliseconds: u64,
+}
+
+impl Default for HTTPClientConfig {
+    fn default() -> Self {
+        Self {
+            max_connections_per_host: 50,
+            max_idle_connections: 50,
+            idle_connection_timeout_seconds: 60,
+            request_timeout_milliseconds: 5000,
+        }
+    }
+}
+
+/// User sync configuration
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct UserSyncConfig {
+    pub timeout_ms: u64,
+    pub redirect_url: String,
+    pub external_url: String,
+    pub cookie_name: String,
+    #[serde(rename = "coopSync")]
+    pub coop_sync: bool,
+    pub default_sync_types: Vec<String>,
+}
+
+/// Analytics configuration
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct AnalyticsConfig {
+    pub file: FileAnalyticsConfig,
+    pub pubstack: PubstackAnalyticsConfig,
+}
+
+/// File-based analytics configuration
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct FileAnalyticsConfig {
+    pub filename: String,
+    pub enabled: bool,
+}
+
+/// Pubstack analytics configuration
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct PubstackAnalyticsConfig {
+    pub endpoint: String,
+    pub scope_id: String,
+    pub enabled: bool,
+}
+
+/// Price floors configuration
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct PriceFloorsConfig {
+    pub enabled: bool,
+    pub enforce_floors_rate: f64,
+    pub adjust_for_bid_adjustment: bool,
+    pub enforce_deal_floors: bool,
+    pub fetch: FloorFetchConfig,
+}
+
+/// Floor fetch configuration
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct FloorFetchConfig {
+    pub enabled: bool,
+    pub url: String,
+    pub max_rules: u32,
+    pub max_file_size_kb: u32,
 }
 
 impl Configuration {
