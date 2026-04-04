@@ -276,7 +276,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     gen!("coinzilla");
     gen!("concert");
     gen!("copper6ssp");
-    gen!("cpmstar");
+    reg!("cpmstar", crate::adapters14::CpmstarAdapter::new(ep("cpmstar")));
     gen!("cwire");
     gen!("decenterads");
     gen!("definemedia");
@@ -303,10 +303,10 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     gen!("metax");
     gen!("mgid_x");
     gen!("mobfoxpb");
-    gen!("mobilefuse");
+    reg!("mobilefuse", crate::adapters14::MobilefuseAdapter::new(ep("mobilefuse")));
     gen!("mobkoi");
     gen!("motorik");
-    gen!("nexx360");
+    reg!("nexx360", crate::adapters14::Nexx360Adapter::new(ep("nexx360")));
     gen!("pubnative");
     reg!("pubrise", crate::adapters14::PubriseAdapter::new(ep("pubrise")));
     gen!("pwbid");
@@ -329,7 +329,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     gen!("sspbc");
     gen!("startio");
     gen!("stroeer_core");
-    gen!("tappx");
+    reg!("tappx", crate::adapters14::TappxAdapter::new(ep("tappx")));
     gen!("teqblaze");
     gen!("theadx");
     reg!("thetradedesk", crate::adapters14::ThetradedeskAdapter::new(ep("thetradedesk")));
