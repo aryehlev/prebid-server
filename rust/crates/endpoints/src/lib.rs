@@ -4,6 +4,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
+use pbs_exchange::usersync::{PrebidCookie, Syncer, SyncType};
 use pbs_metrics::MetricsEngine as _;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
@@ -137,6 +138,27 @@ impl UserSyncCookie {
         }
         hdr
     }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Cookie helper
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Extract a named cookie value from the `Cookie` request header.
+/// Returns `None` if the header is missing or the named cookie is not found.
+fn extract_cookie_value(headers: &HeaderMap, cookie_name: &str) -> Option<String> {
+    let name = if cookie_name.is_empty() { DEFAULT_COOKIE_NAME } else { cookie_name };
+    let cookie_hdr = headers.get(COOKIE)?;
+    let cookie_str = cookie_hdr.to_str().ok()?;
+    for pair in cookie_str.split(';') {
+        let pair = pair.trim();
+        if let Some((k, v)) = pair.split_once('=') {
+            if k.trim() == name {
+                return Some(v.trim().to_string());
+            }
+        }
+    }
+    None
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -865,18 +887,34 @@ pub async fn set_uid_handler(
 
     tracing::debug!("setuid: bidder={} uid={:?}", bidder, params.uid);
 
-    // Parse existing cookie
+    // Parse existing cookie using PrebidCookie from exchange usersync module
+    let raw_cookie_val = extract_cookie_value(&headers, &state.host_cookie.cookie_name);
+    let mut prebid_cookie = raw_cookie_val
+        .as_deref()
+        .map(PrebidCookie::from_cookie)
+        .unwrap_or_default();
+
+    // Also parse via UserSyncCookie for Set-Cookie building (TTL-aware)
     let mut cookie = UserSyncCookie::from_request(&headers, &state.host_cookie.cookie_name);
 
-    // Set (or clear) the UID for this bidder
+    // Set (or clear) the UID for this bidder in both cookie representations
     if let Some(uid) = &params.uid {
         if uid.is_empty() {
             // Empty uid means opt-out / remove
             cookie.uids.remove(&bidder);
+            prebid_cookie.uids.remove(&bidder);
         } else {
             cookie.set_uid(&bidder, uid.clone());
+            prebid_cookie.set_uid(bidder.clone(), uid.clone());
         }
     }
+
+    tracing::debug!(
+        "setuid: gdpr={:?} gdpr_consent={:?} prebid_cookie_uids={}",
+        params.gdpr,
+        params.gdpr_consent,
+        prebid_cookie.uids.len()
+    );
 
     // Build Set-Cookie header
     let set_cookie_val = cookie.build_set_cookie_header(
@@ -993,6 +1031,14 @@ pub async fn cookie_sync_handler(
     headers: HeaderMap,
     Json(body): Json<CookieSyncRequest>,
 ) -> Json<CookieSyncResponse> {
+    // Parse cookie using PrebidCookie from exchange usersync module
+    let raw_cookie_val = extract_cookie_value(&headers, &state.host_cookie.cookie_name);
+    let prebid_cookie = raw_cookie_val
+        .as_deref()
+        .map(PrebidCookie::from_cookie)
+        .unwrap_or_default();
+
+    // Also use UserSyncCookie for TTL-aware UID validity checks
     let cookie = UserSyncCookie::from_request(&headers, &state.host_cookie.cookie_name);
     let has_cookie = !cookie.uids.is_empty();
 
@@ -1027,8 +1073,9 @@ pub async fn cookie_sync_handler(
     };
 
     for bidder in &candidates {
-        // Already synced — include in status but don't count against limit.
-        if cookie.has_valid_uid(bidder) {
+        // Already synced — check both TTL-aware cookie and PrebidCookie
+        let has_uid_via_prebid = prebid_cookie.get_uid(bidder).is_some();
+        if cookie.has_valid_uid(bidder) || has_uid_via_prebid {
             bidder_status.push(serde_json::json!({
                 "bidder": bidder,
                 "no_cookie": false,
@@ -1042,15 +1089,28 @@ pub async fn cookie_sync_handler(
             break;
         }
 
-        // Look up sync URL and apply GDPR params.
-        if let Some((sync_type, url_template)) = bidder_sync_url(bidder) {
-            let url = build_sync_url(url_template, gdpr, gdpr_consent.as_deref());
+        // Use Syncer from exchange usersync module for URL generation when available,
+        // falling back to the static bidder_sync_url map.
+        if let Some((sync_type_str, url_template)) = bidder_sync_url(bidder) {
+            let sync_type = if sync_type_str == "iframe" { SyncType::Iframe } else { SyncType::Redirect };
+            let syncer = Syncer {
+                bidder: bidder.clone(),
+                iframe_url: if sync_type_str == "iframe" { Some(url_template.to_string()) } else { None },
+                redirect_url: if sync_type_str != "iframe" { Some(url_template.to_string()) } else { None },
+            };
+            let gdpr_val = gdpr.unwrap_or(0);
+            let consent_val = gdpr_consent.as_deref().unwrap_or("");
+            let url = syncer
+                .get_sync_url(&sync_type, gdpr_val, consent_val)
+                .unwrap_or_else(|| {
+                    build_sync_url(url_template, gdpr, gdpr_consent.as_deref())
+                });
             bidder_status.push(serde_json::json!({
                 "bidder": bidder,
                 "no_cookie": true,
                 "usersync": {
                     "url": url,
-                    "type": sync_type
+                    "type": sync_type_str
                 }
             }));
             new_sync_count += 1;

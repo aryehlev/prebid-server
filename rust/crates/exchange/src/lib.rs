@@ -11,6 +11,7 @@ pub mod currency;
 pub mod floors;
 pub mod gdpr;
 pub mod hooks;
+pub mod usersync;
 
 #[cfg(test)]
 mod tests;
