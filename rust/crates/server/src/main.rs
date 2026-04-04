@@ -13,6 +13,75 @@ use tower_http::{
 };
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+fn load_bidder_sync_info(static_dir: &str) -> std::collections::HashMap<String, pbs_endpoints::BidderSyncInfo> {
+    let mut map = std::collections::HashMap::new();
+    let dir = format!("{}/bidder-info", static_dir);
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::warn!("Could not read bidder-info dir {}: {}", dir, e);
+            return map;
+        }
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("yaml") { continue; }
+        let name = match path.file_stem().and_then(|s| s.to_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        // Parse the userSync section: look for redirect/iframe url lines
+        // YAML structure under userSync:
+        //   userSync:
+        //     redirect:
+        //       url: "..."
+        //     iframe:
+        //       url: "..."
+        let mut in_user_sync = false;
+        let mut in_redirect = false;
+        let mut in_iframe = false;
+        let mut redirect_url: Option<String> = None;
+        let mut iframe_url: Option<String> = None;
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') { continue; }
+            // Track section depth by leading spaces
+            let indent = line.len() - line.trim_start().len();
+            if indent == 0 {
+                in_user_sync = trimmed.starts_with("userSync:") || trimmed == "userSync:";
+                in_redirect = false;
+                in_iframe = false;
+            } else if in_user_sync && indent >= 2 {
+                if trimmed.starts_with("redirect:") || trimmed == "redirect:" {
+                    in_redirect = true;
+                    in_iframe = false;
+                } else if trimmed.starts_with("iframe:") || trimmed == "iframe:" {
+                    in_iframe = true;
+                    in_redirect = false;
+                } else if trimmed.starts_with("url:") && indent >= 4 {
+                    let url_val = trimmed["url:".len()..].trim().trim_matches('"').to_string();
+                    if !url_val.is_empty() {
+                        if in_redirect && redirect_url.is_none() {
+                            redirect_url = Some(url_val);
+                        } else if in_iframe && iframe_url.is_none() {
+                            iframe_url = Some(url_val);
+                        }
+                    }
+                }
+            }
+        }
+        if redirect_url.is_some() || iframe_url.is_some() {
+            map.insert(name, pbs_endpoints::BidderSyncInfo { iframe_url, redirect_url });
+        }
+    }
+    tracing::info!("Loaded usersync info for {} bidders", map.len());
+    map
+}
+
 fn load_bidder_info(static_dir: &str) -> std::collections::HashMap<String, serde_json::Value> {
     let mut map = std::collections::HashMap::new();
     let dir = format!("{}/bidder-info", static_dir);
@@ -140,7 +209,7 @@ async fn main() -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    tracing::info!("Starting prebid-server (Rust port)");
+    println!("Prebid Server starting...");
 
     // Load configuration (YAML file optional; env vars always applied on top).
     let config_file = std::env::var("PBS_CONFIG_FILE").ok();
@@ -165,7 +234,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let raw_adapters = pbs_adapters::registry::build_adapter_map();
-    tracing::info!("Registered {} bidder adapters", raw_adapters.len());
+    let adapter_count = raw_adapters.len();
     let http_client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
@@ -223,12 +292,17 @@ async fn main() -> anyhow::Result<()> {
     // req.ext.prebid.storedauctionresponse.id skip bidder calls.
     exchange.stored_responses = Some(stored_requests.clone() as Arc<dyn pbs_exchange::StoredResponseFetcher>);
 
+    let bidder_info = load_bidder_info(&static_dir);
+    let bidder_sync_info = load_bidder_sync_info(&static_dir);
+    let sync_info_count = bidder_sync_info.len();
+
     let state = Arc::new(pbs_endpoints::AppStateInner {
         exchange,
         version: env!("CARGO_PKG_VERSION").to_string(),
         revision: std::env::var("PBS_REVISION").unwrap_or_else(|_| "unknown".to_string()),
-        bidder_info: load_bidder_info(&static_dir),
+        bidder_info,
         bidder_params: load_bidder_params(&static_dir),
+        bidder_sync_info,
         host_cookie: pbs_endpoints::HostCookieConfig::default(),
         status_response: None,
         stored_requests,
@@ -268,6 +342,11 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or(cfg.port);
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
+    println!("  - Adapters registered: {}", adapter_count);
+    println!("  - Bidder sync info loaded: {} bidders", sync_info_count);
+    println!("  - GDPR enabled: {}", cfg.gdpr_enabled);
+    println!("  - Max request size: {}", cfg.max_request_size);
+    println!("  - Listening on: {}", addr);
     tracing::info!("Listening on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;

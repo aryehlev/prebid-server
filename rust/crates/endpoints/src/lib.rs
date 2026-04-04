@@ -13,6 +13,13 @@ use std::{collections::HashMap, sync::Arc};
 pub mod stored_requests;
 pub use stored_requests::StoredRequestFetcher;
 
+/// Sync URL info loaded from a bidder's YAML userSync section.
+#[derive(Debug, Clone, Default)]
+pub struct BidderSyncInfo {
+    pub iframe_url: Option<String>,
+    pub redirect_url: Option<String>,
+}
+
 /// Shared application state threaded through axum handlers.
 pub type AppState = Arc<AppStateInner>;
 
@@ -24,6 +31,8 @@ pub struct AppStateInner {
     pub bidder_info: HashMap<String, serde_json::Value>,
     /// Bidder params JSON schemas: bidder name -> schema JSON
     pub bidder_params: HashMap<String, serde_json::Value>,
+    /// Bidder usersync info loaded from YAML: bidder name -> sync URLs
+    pub bidder_sync_info: HashMap<String, BidderSyncInfo>,
     /// Host cookie config
     pub host_cookie: HostCookieConfig,
     /// Status response override
@@ -1045,16 +1054,27 @@ pub async fn cookie_sync_handler(
     let mut bidder_status: Vec<serde_json::Value> = Vec::new();
     let mut new_sync_count: usize = 0;
 
-    // Build the candidate list, validating names against known bidders when explicitly requested.
+    // Build the candidate list: bidders with sync info loaded from YAML take priority,
+    // supplemented by the static KNOWN_SYNC_BIDDERS list.
     let all_known: std::collections::HashSet<&str> = KNOWN_SYNC_BIDDERS.iter().copied().collect();
 
     let candidates: Vec<String> = if requested.is_empty() {
-        KNOWN_SYNC_BIDDERS.iter().map(|s| s.to_string()).collect()
+        // All bidders that have usersync configured (from YAML) plus the static list
+        let mut all: Vec<String> = state.bidder_sync_info.keys().cloned().collect();
+        for b in KNOWN_SYNC_BIDDERS {
+            if !state.bidder_sync_info.contains_key(*b) {
+                all.push(b.to_string());
+            }
+        }
+        all
     } else {
         let mut valid = Vec::new();
         for name in &requested {
             let key = name.as_str();
-            if all_known.contains(key) || state.bidder_info.contains_key(key) {
+            if state.bidder_sync_info.contains_key(key)
+                || all_known.contains(key)
+                || state.bidder_info.contains_key(key)
+            {
                 valid.push(name.clone());
             } else {
                 tracing::warn!("cookie_sync: unknown bidder '{}' requested; skipping", name);
@@ -1080,21 +1100,33 @@ pub async fn cookie_sync_handler(
             break;
         }
 
-        // Use Syncer from exchange usersync module for URL generation when available,
-        // falling back to the static bidder_sync_url map.
-        if let Some((sync_type_str, url_template)) = bidder_sync_url(bidder) {
+        // Prefer sync info loaded from YAML, fall back to static map.
+        let resolved = if let Some(sync_info) = state.bidder_sync_info.get(bidder.as_str()) {
+            // Determine type: prefer redirect over iframe if both present
+            if let Some(url) = sync_info.redirect_url.as_deref() {
+                Some(("redirect", url.to_string()))
+            } else if let Some(url) = sync_info.iframe_url.as_deref() {
+                Some(("iframe", url.to_string()))
+            } else {
+                None
+            }
+        } else {
+            bidder_sync_url(bidder).map(|(t, u)| (t, u.to_string()))
+        };
+
+        if let Some((sync_type_str, url_template)) = resolved {
             let sync_type = if sync_type_str == "iframe" { SyncType::Iframe } else { SyncType::Redirect };
             let syncer = Syncer {
                 bidder: bidder.clone(),
-                iframe_url: if sync_type_str == "iframe" { Some(url_template.to_string()) } else { None },
-                redirect_url: if sync_type_str != "iframe" { Some(url_template.to_string()) } else { None },
+                iframe_url: if sync_type_str == "iframe" { Some(url_template.clone()) } else { None },
+                redirect_url: if sync_type_str != "iframe" { Some(url_template.clone()) } else { None },
             };
             let gdpr_val = gdpr.unwrap_or(0);
             let consent_val = gdpr_consent.as_deref().unwrap_or("");
             let url = syncer
                 .get_sync_url(&sync_type, gdpr_val, consent_val)
                 .unwrap_or_else(|| {
-                    build_sync_url(url_template, gdpr, gdpr_consent.as_deref())
+                    build_sync_url(&url_template, gdpr, gdpr_consent.as_deref())
                 });
             bidder_status.push(serde_json::json!({
                 "bidder": bidder,

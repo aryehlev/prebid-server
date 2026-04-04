@@ -90,6 +90,8 @@ pub struct Configuration {
     pub analytics: AnalyticsConfig,
     #[serde(default)]
     pub price_floors: PriceFloorsConfig,
+    #[serde(default)]
+    pub lmt: LmtConfig,
 }
 
 fn default_host() -> String {
@@ -408,6 +410,12 @@ pub struct PubstackAnalyticsConfig {
     pub endpoint: String,
     pub scope_id: String,
     pub enabled: bool,
+}
+
+/// Limit Ad Tracking (LMT) configuration
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct LmtConfig {
+    pub enforce: bool,
 }
 
 /// Price floors configuration
