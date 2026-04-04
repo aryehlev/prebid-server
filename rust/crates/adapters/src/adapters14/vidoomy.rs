@@ -57,8 +57,8 @@ fn change_request_for_bid_service(imp: &mut openrtb::Imp) -> Result<(), BidderEr
             return Err(BidderError::BadInput(format!("no sizes provided for Banner {:?}", banner.format)));
         }
         let first = &formats.unwrap()[0];
-        banner.w = Some(first.w);
-        banner.h = Some(first.h);
+        banner.w = first.w;
+        banner.h = first.h;
     }
     Ok(())
 }
