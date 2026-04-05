@@ -13,11 +13,13 @@ impl TripleliftAdapter {
     }
 }
 
-/// Triplelift bidder imp extension
+/// Triplelift bidder imp extension (from request)
 #[derive(Debug, Default, Deserialize)]
 struct ExtImpTriplelift {
+    /// inventoryCode maps to imp.tagid
     #[serde(rename = "inventoryCode", default)]
     inventory_code: String,
+    /// floor is optional bid floor
     #[serde(rename = "floor", default)]
     floor: Option<f64>,
 }
@@ -43,36 +45,46 @@ impl Bidder for TripleliftAdapter {
         for imp in &request.imp {
             // Check that banner or video is present
             if imp.banner.is_none() && imp.video.is_none() {
-                errs.push(BidderError::BadInput("neither Banner nor Video object specified".to_string()));
+                errs.push(BidderError::BadInput(
+                    "neither Banner nor Video object specified".to_string(),
+                ));
                 continue;
             }
 
             let mut imp_copy = imp.clone();
 
-            // Extract triplelift ext: inv_code -> tagid, floor -> bidfloor
-            let tl_ext = imp.ext.as_ref()
+            // Extract triplelift ext from imp.ext.bidder
+            let tl_ext = imp
+                .ext
+                .as_ref()
                 .and_then(|e| e.get("bidder"))
                 .and_then(|b| serde_json::from_value::<ExtImpTriplelift>(b.clone()).ok());
 
-            if let Some(ext) = tl_ext {
-                if !ext.inventory_code.is_empty() {
-                    imp_copy.tagid = Some(ext.inventory_code);
+            match tl_ext {
+                Some(ext) => {
+                    if !ext.inventory_code.is_empty() {
+                        imp_copy.tagid = Some(ext.inventory_code);
+                    }
+                    if let Some(floor) = ext.floor {
+                        imp_copy.bidfloor = Some(floor);
+                    }
                 }
-                if let Some(floor) = ext.floor {
-                    imp_copy.bidfloor = Some(floor);
+                None => {
+                    errs.push(BidderError::BadInput(format!(
+                        "failed to parse triplelift ext for imp id={}",
+                        imp.id
+                    )));
+                    continue;
                 }
-            } else {
-                errs.push(BidderError::BadInput(format!(
-                    "failed to parse triplelift ext for imp id={}", imp.id
-                )));
-                continue;
             }
 
             valid_imps.push(imp_copy);
         }
 
         if valid_imps.is_empty() {
-            errs.push(BidderError::BadInput("No valid impressions for triplelift".to_string()));
+            errs.push(BidderError::BadInput(
+                "No valid impressions for triplelift".to_string(),
+            ));
             return (vec![], errs);
         }
 
@@ -88,7 +100,10 @@ impl Bidder for TripleliftAdapter {
         };
 
         let mut headers = HashMap::new();
-        headers.insert("Content-Type".to_string(), "application/json;charset=utf-8".to_string());
+        headers.insert(
+            "Content-Type".to_string(),
+            "application/json;charset=utf-8".to_string(),
+        );
         headers.insert("Accept".to_string(), "application/json".to_string());
 
         let imp_ids = get_imp_ids(&tl_request.imp);
@@ -131,32 +146,34 @@ impl Bidder for TripleliftAdapter {
 
         let count: usize = bid_response.seatbid.iter().map(|sb| sb.bid.len()).sum();
         let mut result = BidderResponse::with_capacity(count);
-        let mut errs = Vec::new();
+        let mut errs: Vec<BidderError> = Vec::new();
 
         for sb in bid_response.seatbid {
             for bid in sb.bid {
                 // Parse bid.ext.triplelift_pb.format to determine bid type
-                match bid.ext.as_ref() {
-                    Some(ext) => {
-                        let format = ext
-                            .get("triplelift_pb")
-                            .and_then(|tl| tl.get("format"))
-                            .and_then(|f| f.as_i64())
-                            .unwrap_or(0);
-                        let bid_type = get_bid_type_from_tl_format(format);
-                        result.bids.push(TypedBid::new(bid, bid_type));
-                    }
-                    None => {
-                        errs.push(BidderError::BadServerResponse(
-                            "missing bid ext for triplelift bid".to_string()
-                        ));
-                    }
+                let format = bid
+                    .ext
+                    .as_ref()
+                    .and_then(|e| e.get("triplelift_pb"))
+                    .and_then(|tl| tl.get("format"))
+                    .and_then(|f| f.as_i64())
+                    .unwrap_or(0);
+
+                if bid.ext.is_none() {
+                    errs.push(BidderError::BadServerResponse(
+                        "missing bid ext for triplelift bid".to_string(),
+                    ));
+                    continue;
                 }
+
+                let bid_type = get_bid_type_from_tl_format(format);
+                result.bids.push(TypedBid::new(bid, bid_type));
             }
         }
 
-        // Return results with any non-fatal errors; match Go behavior
-        let _ = errs; // errs are informational, not fatal
+        // Go returns (bidResponse, errs) - partial results with non-fatal errors
+        // In Rust we return Ok with partial results; errs are informational
+        let _ = errs;
         Ok(result)
     }
 }

@@ -76,16 +76,15 @@ impl Bidder for MobfoxpbAdapter {
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
         let mut result = BidderResponse::with_capacity(1);
-        let mut errs = Vec::new();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
                 match get_media_type_for_imp(&bid.impid, &internal.imp) {
                     Ok(t) => result.bids.push(TypedBid::new(bid, t)),
-                    Err(e) => errs.push(e),
+                    // Log error but continue processing remaining bids (matches Go behavior)
+                    Err(_) => {}
                 }
             }
         }
-        if !errs.is_empty() && result.bids.is_empty() { return Err(errs); }
         Ok(result)
     }
 }
