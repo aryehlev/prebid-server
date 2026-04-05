@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_bid_type_from_mtype};
-use openrtb_ext::ExtBidPrebidVideo;
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid};
+use openrtb_ext::{BidType, ExtBidPrebidVideo};
 
 pub struct MetaxAdapter { pub endpoint: String }
 impl MetaxAdapter {
@@ -14,6 +14,33 @@ fn assign_banner_size(banner: &mut openrtb::Banner) {
             banner.h = Some(fmt.h.unwrap_or(0));
         }
     }
+}
+
+/// Determine bid type from bid.mtype, matching Go getBidType logic.
+/// Returns error for unknown/unsupported mtype (matching Go behavior).
+fn get_bid_type(mtype: i32) -> Result<BidType, BidderError> {
+    match mtype {
+        1 => Ok(BidType::Banner),  // MarkupBanner
+        2 => Ok(BidType::Video),   // MarkupVideo
+        3 => Ok(BidType::Audio),   // MarkupAudio
+        4 => Ok(BidType::Native),  // MarkupNative
+        _ => Err(BidderError::BadServerResponse(format!("Unsupported MType {}", mtype))),
+    }
+}
+
+/// Build ExtBidPrebidVideo for a bid, reading category and duration.
+/// Go uses bid.Cat[0] and bid.Dur; since Rust openrtb Bid has no `dur` field,
+/// we read duration from bid.ext.dur if available.
+fn get_bid_video(bid: &openrtb::Bid) -> Option<ExtBidPrebidVideo> {
+    let primary_category = bid.cat.as_deref()
+        .and_then(|c| c.first())
+        .cloned()
+        .unwrap_or_default();
+    let duration = bid.ext.as_ref()
+        .and_then(|e| e.get("dur"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0) as i32;
+    Some(ExtBidPrebidVideo { primary_category, duration })
 }
 
 impl Bidder for MetaxAdapter {
@@ -57,29 +84,25 @@ impl Bidder for MetaxAdapter {
         if let Err(e) = crate::check_response_status(response.status_code) { return Err(vec![e]); }
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
+
+        // Additional no-content check (matching Go behavior)
         if bid_resp.seatbid.is_empty() || bid_resp.seatbid[0].bid.is_empty() {
             return Ok(BidderResponse::new());
         }
+
         let cap = bid_resp.seatbid[0].bid.len();
         let mut result = BidderResponse::with_capacity(cap);
         if let Some(cur) = &bid_resp.cur { if !cur.is_empty() { result.currency = cur.clone(); } }
+
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
                 let mtype = bid.mtype.unwrap_or(0);
-                if mtype == 0 {
-                    return Err(vec![BidderError::BadServerResponse(format!("Unsupported MType {}", mtype))]);
-                }
-                let bid_type = get_bid_type_from_mtype(mtype);
-                let primary_category = bid.cat.as_deref().and_then(|c| c.first()).cloned().unwrap_or_default();
-                let duration = bid.ext.as_ref()
-                    .and_then(|e| e.get("dur"))
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0) as i32;
-                let bid_video = if duration > 0 || !primary_category.is_empty() {
-                    Some(ExtBidPrebidVideo { primary_category, duration })
-                } else {
-                    None
+                // Error on unsupported mtype (matching Go: return nil, []error{err})
+                let bid_type = match get_bid_type(mtype) {
+                    Ok(t) => t,
+                    Err(e) => return Err(vec![e]),
                 };
+                let bid_video = get_bid_video(&bid);
                 let mut typed_bid = TypedBid::new(bid, bid_type);
                 typed_bid.bid_video = bid_video;
                 result.bids.push(typed_bid);

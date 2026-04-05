@@ -11,7 +11,7 @@ fn get_bid_type(mtype: Option<i32>) -> Result<BidType, BidderError> {
     match mtype {
         Some(4) => Ok(BidType::Native),
         Some(1) => Ok(BidType::Banner),
-        other => Err(BidderError::BadServerResponse(format!("Unknown markup type: {:?}", other.unwrap_or(0)))),
+        other => Err(BidderError::BadServerResponse(format!("Unknown markup type: {}", other.unwrap_or(0)))),
     }
 }
 
