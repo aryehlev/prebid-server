@@ -23,6 +23,9 @@ pbs-currency = { path = "../currency" }
 flate2 = { workspace = true }
 chrono = { workspace = true }
 base64 = { workspace = true }
+rand = { workspace = true }
+regex = { workspace = true }
+moka = { workspace = true }
 
 [dev-dependencies]
 wiremock = "0.6.5"
