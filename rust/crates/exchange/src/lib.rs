@@ -544,7 +544,7 @@ pub struct Exchange {
     pub http_client: reqwest::Client,
     pub metrics: Option<Arc<dyn pbs_metrics::MetricsEngine>>,
     pub analytics: Option<Arc<dyn analytics::AnalyticsBackend>>,
-    pub hook_plan: Option<Arc<hooks::HookExecutionPlan>>,
+    pub hook_executor: Option<Arc<hooks::HookExecutor>>,
     /// Optional stored auction response fetcher.  When set and a request contains
     /// `req.ext.prebid.storedauctionresponse.id`, bidder calls are skipped and the
     /// pre-built `BidResponse` stored under that ID is returned directly.
@@ -568,7 +568,7 @@ impl Exchange {
             http_client,
             metrics: None,
             analytics: None,
-            hook_plan: None,
+            hook_executor: None,
             stored_responses: None,
             aliases: HashMap::new(),
             schain_node: None,
@@ -603,14 +603,15 @@ impl Exchange {
             return Err(anyhow::anyhow!("invalid request: {}", msgs.join("; ")));
         }
 
-        // Execute EntrypointRequest hooks before any processing.
-        if let Some(plan) = &self.hook_plan {
+        // Execute EntrypointRaw hooks before any processing.
+        if let Some(executor) = &self.hook_executor {
             let payload = serde_json::to_value(&request.bid_request)
                 .unwrap_or(serde_json::Value::Null);
-            if let hooks::HookOutcome::Reject { reason } =
-                plan.execute_stage(&hooks::HookStage::EntrypointRequest, &payload)
+            if let Err(reject) = executor
+                .execute_stage(hooks::Stage::EntrypointRaw, payload)
+                .await
             {
-                return Err(anyhow::anyhow!("request rejected by hook: {}", reason));
+                return Err(anyhow::anyhow!("request rejected by hook: {}", reject));
             }
         }
 
@@ -1153,16 +1154,17 @@ impl Exchange {
         }
 
         // Execute AllProcessedBidResponses hooks after collecting all bidder responses.
-        if let Some(plan) = &self.hook_plan {
+        if let Some(executor) = &self.hook_executor {
             let payload = serde_json::json!({
                 "bidder_count": bidder_results.len(),
                 "timed_out_bidders": timed_out_bidders,
             });
-            // Rejection at this stage is logged as a warning; auction continues.
-            if let hooks::HookOutcome::Reject { reason } =
-                plan.execute_stage(&hooks::HookStage::AllProcessedBidResponses, &payload)
+            // Rejection at this stage is not supported; errors are logged as warnings.
+            if let Err(reject) = executor
+                .execute_stage(hooks::Stage::AllProcessedBidResponses, payload)
+                .await
             {
-                tracing::warn!("AllProcessedBidResponses hook rejected: {}", reason);
+                tracing::warn!("AllProcessedBidResponses hook rejected: {}", reject);
             }
         }
 
