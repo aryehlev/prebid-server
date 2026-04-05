@@ -146,7 +146,8 @@ impl Bidder for KidozAdapter {
             }
         }
 
-        if !errs.is_empty() && result.bids.is_empty() {
+        // Return partial bids; only return Err if there are no bids at all (match Go behavior).
+        if result.bids.is_empty() && !errs.is_empty() {
             return Err(errs);
         }
         Ok(result)

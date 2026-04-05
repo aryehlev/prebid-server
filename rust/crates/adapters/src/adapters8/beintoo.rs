@@ -56,7 +56,7 @@ impl Bidder for BeintooAdapter {
 
             let beintoo_ext: ExtImpBeintoo = match serde_json::from_value(bidder_ext.bidder) {
                 Ok(v) => v,
-                Err(e) => return (vec![], vec![BidderError::BadInput(format!("ignoring imp id={}, invalid ImpExt", imp.id))]),
+                Err(_) => return (vec![], vec![BidderError::BadInput(format!("ignoring imp id={}, invalid ImpExt", imp.id))]),
             };
 
             // Validate tagid is numeric non-zero
@@ -108,7 +108,7 @@ impl Bidder for BeintooAdapter {
 
         let body = match serde_json::to_vec(&req_copy) {
             Ok(b) => b,
-            Err(e) => return (vec![], vec![BidderError::BadInput("Error in packaging request to JSON".to_string())]),
+            Err(_) => return (vec![], vec![BidderError::BadInput("Error in packaging request to JSON".to_string())]),
         };
 
         let mut headers = HashMap::new();
