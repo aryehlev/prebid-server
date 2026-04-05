@@ -36,7 +36,10 @@ struct AmxBidExt {
     creative_type: Option<i32>,
     #[serde(rename = "ds")]
     demand_source: Option<String>,
+    /// bidder_code corresponds to Go's bc field; used to set seat on the bid
+    /// (TypedBid does not currently have a seat field in the Rust port)
     #[serde(rename = "bc")]
+    #[allow(dead_code)]
     bidder_code: Option<String>,
 }
 

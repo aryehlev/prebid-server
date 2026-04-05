@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
-use openrtb_ext::BidType;
+use openrtb_ext::{BidType, ExtBidPrebidVideo};
 use serde::Deserialize;
 
 pub struct AvocetAdapter {
@@ -93,8 +93,14 @@ impl Bidder for AvocetAdapter {
                 };
 
                 let bid_type = get_bid_type(&bid, &avocet_ext.avocet);
-                let mut typed_bid = TypedBid::new(bid, bid_type);
+                let mut typed_bid = TypedBid::new(bid, bid_type.clone());
                 typed_bid.deal_priority = avocet_ext.avocet.deal_priority;
+                if bid_type == BidType::Video {
+                    typed_bid.bid_video = Some(ExtBidPrebidVideo {
+                        duration: avocet_ext.avocet.duration,
+                        primary_category: String::new(),
+                    });
+                }
                 result.bids.push(typed_bid);
             }
         }

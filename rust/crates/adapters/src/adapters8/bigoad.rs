@@ -100,10 +100,12 @@ impl Bidder for BigoadAdapter {
         let mut result = BidderResponse::with_capacity(sb.bid.len());
         let mut errs = Vec::new();
 
-        let first_imp = internal.imp.first();
+        let first_imp = match internal.imp.first() {
+            Some(imp) => imp,
+            None => return Ok(result),
+        };
         for bid in &sb.bid {
-            let imp = first_imp.unwrap_or_else(|| &internal.imp[0]);
-            match get_bid_type(imp, bid) {
+            match get_bid_type(first_imp, bid) {
                 Ok(bt) => result.bids.push(TypedBid::new(bid.clone(), bt)),
                 Err(e) => errs.push(e),
             }
