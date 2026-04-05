@@ -1428,6 +1428,7 @@ mod tests {
             max_request_size: 0,
             gdpr_enabled: false,
             accounts: std::collections::HashMap::new(),
+            bidder_sync_info: std::collections::HashMap::new(),
         })
     }
 

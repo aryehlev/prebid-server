@@ -25,7 +25,7 @@ struct BidderRequest {
     placement_code: String,
     #[serde(rename = "auctionId")]
     auction_id: String,
-    #[serde(rename = "bidType")]
+    #[serde(rename = "type")]
     bid_type: String,
     #[serde(rename = "adUnitCode")]
     ad_unit_code: String,
@@ -58,7 +58,7 @@ struct AdqueryResponse {
 
 #[derive(Deserialize)]
 struct ResponseData2 {
-    #[serde(rename = "reqId", default)]
+    #[serde(rename = "requestId", default)]
     req_id: String,
     #[serde(rename = "cpm", default)]
     cpm: String,
@@ -66,11 +66,11 @@ struct ResponseData2 {
     currency: String,
     #[serde(rename = "tag", default)]
     tag: String,
-    #[serde(rename = "adQLib", default)]
+    #[serde(rename = "adqLib", default)]
     ad_q_lib: String,
-    #[serde(rename = "aDomains", default)]
+    #[serde(rename = "adDomains", default)]
     a_domains: Vec<String>,
-    #[serde(rename = "crId", default)]
+    #[serde(rename = "creationId", default)]
     cr_id: u64,
     #[serde(rename = "mediaType")]
     media_type: MediaType,
