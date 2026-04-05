@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
 use openrtb_ext::BidType;
+use serde_json::Value;
 
 pub struct AdmixerAdapter {
     pub endpoint: String,
@@ -29,6 +30,59 @@ fn get_media_type_for_imp(imp_id: &str, imps: &[openrtb::Imp]) -> BidType {
     BidType::Banner
 }
 
+/// Preprocesses an imp: validates zoneId, sets tagid, applies custom bid floor,
+/// and rewrites ext to only contain customParams (if present).
+/// Go ext fields: "zone" for ZoneId, "customFloor" for CustomBidFloor, "customParams" for CustomParams.
+fn preprocess_imp(imp: &openrtb::Imp) -> Result<openrtb::Imp, BidderError> {
+    let bidder_ext = imp.ext.as_ref()
+        .and_then(|e| e.get("bidder"))
+        .ok_or_else(|| BidderError::BadInput("Wrong Admixer bidder ext".to_string()))?;
+
+    let zone_id = bidder_ext
+        .get("zone")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    if zone_id.is_empty() {
+        return Err(BidderError::BadInput("Wrong Admixer bidder ext".to_string()));
+    }
+
+    // ZoneId must be UUID/GUID: 32-36 characters
+    if zone_id.len() < 32 || zone_id.len() > 36 {
+        return Err(BidderError::BadInput("ZoneId must be UUID/GUID".to_string()));
+    }
+
+    let custom_bid_floor = bidder_ext
+        .get("customFloor")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+
+    let custom_params = bidder_ext
+        .get("customParams")
+        .cloned();
+
+    let mut imp_copy = imp.clone();
+    imp_copy.tagid = Some(zone_id);
+
+    // Apply custom bid floor only if imp has no floor set
+    if imp_copy.bidfloor.unwrap_or(0.0) == 0.0 && custom_bid_floor > 0.0 {
+        imp_copy.bidfloor = Some(custom_bid_floor);
+    }
+
+    // Rewrite ext: null if no customParams, otherwise {"customParams": ...}
+    imp_copy.ext = match custom_params {
+        Some(params) if !params.is_null() => {
+            let mut obj = serde_json::Map::new();
+            obj.insert("customParams".to_string(), params);
+            Some(Value::Object(obj))
+        }
+        _ => None,
+    };
+
+    Ok(imp_copy)
+}
+
 impl Bidder for AdmixerAdapter {
     fn make_requests(
         &self,
@@ -43,38 +97,9 @@ impl Bidder for AdmixerAdapter {
         let mut valid_imps: Vec<openrtb::Imp> = Vec::new();
 
         for imp in &request.imp {
-            let zone_id = imp.ext.as_ref()
-                .and_then(|e| e.get("bidder"))
-                .and_then(|b| b.get("zoneId").or_else(|| b.get("zone_id")))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-
-            match zone_id {
-                Some(ref z) if z.len() >= 32 && z.len() <= 36 => {
-                    let mut imp_copy = imp.clone();
-                    imp_copy.tagid = Some(z.clone());
-
-                    // Apply custom bid floor from ext if imp has no floor
-                    let custom_floor = imp.ext.as_ref()
-                        .and_then(|e| e.get("bidder"))
-                        .and_then(|b| b.get("customBidFloor"))
-                        .and_then(|v| v.as_f64());
-                    if imp_copy.bidfloor.unwrap_or(0.0) == 0.0 {
-                        if let Some(floor) = custom_floor {
-                            if floor > 0.0 {
-                                imp_copy.bidfloor = Some(floor);
-                            }
-                        }
-                    }
-                    imp_copy.ext = None;
-                    valid_imps.push(imp_copy);
-                }
-                Some(ref z) if z.len() < 32 || z.len() > 36 => {
-                    errs.push(BidderError::BadInput("ZoneId must be UUID/GUID".to_string()));
-                }
-                _ => {
-                    errs.push(BidderError::BadInput("Wrong Admixer bidder ext".to_string()));
-                }
+            match preprocess_imp(imp) {
+                Ok(processed) => valid_imps.push(processed),
+                Err(e) => errs.push(e),
             }
         }
 
@@ -137,6 +162,7 @@ impl Bidder for AdmixerAdapter {
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
 
+        // Additional no-content check: no seatbids or no bids in first seatbid
         if bid_resp.seatbid.is_empty() || bid_resp.seatbid[0].bid.is_empty() {
             return Ok(BidderResponse::new());
         }

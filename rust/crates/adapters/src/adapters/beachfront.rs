@@ -353,10 +353,10 @@ impl Bidder for BeachfrontAdapter {
             // Default video dimensions if unset
             if let Some(video) = &mut video_imp.video {
                 if video.w.unwrap_or(0) == 0 {
-                    video.w = Some(DEFAULT_VIDEO_WIDTH);
+                    video.w = Some(DEFAULT_VIDEO_WIDTH as i32);
                 }
                 if video.h.unwrap_or(0) == 0 {
-                    video.h = Some(DEFAULT_VIDEO_HEIGHT);
+                    video.h = Some(DEFAULT_VIDEO_HEIGHT as i32);
                 }
             }
 
@@ -502,8 +502,8 @@ impl Bidder for BeachfrontAdapter {
                         price: slot.price,
                         crid: Some(slot.crid),
                         adm: Some(slot.adm),
-                        w: Some(slot.w as i64),
-                        h: Some(slot.h as i64),
+                        w: Some(slot.w as i32),
+                        h: Some(slot.h as i32),
                         ..Default::default()
                     };
                     result.bids.push(TypedBid::new(bid, BidType::Banner));

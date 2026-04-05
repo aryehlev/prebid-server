@@ -126,6 +126,7 @@ impl Bidder for BetweenAdapter {
             if let Some(ua) = &device.ua { if !ua.is_empty() { headers.insert("User-Agent".to_string(), ua.clone()); } }
             if let Some(ip) = &device.ip { if !ip.is_empty() { headers.insert("X-Forwarded-For".to_string(), ip.clone()); } }
             if let Some(lang) = &device.language { if !lang.is_empty() { headers.insert("Accept-Language".to_string(), lang.clone()); } }
+            if let Some(dnt) = device.dnt { headers.insert("DNT".to_string(), dnt.to_string()); }
         }
         if let Some(site) = &request.site {
             if let Some(page) = &site.page { if !page.is_empty() { headers.insert("Referer".to_string(), page.clone()); } }

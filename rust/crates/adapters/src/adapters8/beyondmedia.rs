@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_bid_type_from_imp, get_imp_ids};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
 use openrtb_ext::BidType;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -36,6 +36,17 @@ struct ReqBodyExtBidder {
 #[derive(Serialize)]
 struct ReqBodyExt {
     bidder: ReqBodyExtBidder,
+}
+
+fn get_media_type_for_imp(imp_id: &str, imps: &[openrtb::Imp]) -> Result<BidType, BidderError> {
+    for imp in imps {
+        if imp.id == imp_id {
+            if imp.banner.is_some() { return Ok(BidType::Banner); }
+            if imp.video.is_some()  { return Ok(BidType::Video);  }
+            if imp.native.is_some() { return Ok(BidType::Native); }
+        }
+    }
+    Err(BidderError::BadInput(format!("Failed to find impression \"{}\"", imp_id)))
 }
 
 impl Bidder for BeyondmediaAdapter {
@@ -112,11 +123,10 @@ impl Bidder for BeyondmediaAdapter {
         }
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
-                let bid_type = internal.imp.iter()
-                    .find(|i| i.id == bid.impid)
-                    .map(get_bid_type_from_imp)
-                    .unwrap_or(BidType::Banner);
-                result.bids.push(TypedBid::new(bid, bid_type));
+                match get_media_type_for_imp(&bid.impid, &internal.imp) {
+                    Ok(bid_type) => result.bids.push(TypedBid::new(bid, bid_type)),
+                    Err(e) => return Err(vec![e]),
+                }
             }
         }
         Ok(result)
