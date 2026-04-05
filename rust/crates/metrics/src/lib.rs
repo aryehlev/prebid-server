@@ -290,6 +290,14 @@ pub struct PrometheusMetrics {
     // -- gauges (retained for completeness) --
     active_bidders: GaugeVec,
 
+    // -- bidder-level (exchange compat) --
+    bidder_requests_total: IntCounterVec,
+    bidder_response_time_ms: HistogramVec,
+    bids_total: IntCounterVec,
+    bidder_errors_total: IntCounterVec,
+    auction_duration_ms: HistogramVec,
+    http_request_duration_ms: HistogramVec,
+
     // -- connections (legacy, kept for backward compat) --
     connections_accepted: prometheus::IntCounter,
     connections_closed: prometheus::IntCounter,
@@ -414,6 +422,59 @@ impl PrometheusMetrics {
             &["bidder"],
         )?;
 
+        // -- bidder-level (exchange compat) --------------------------------------
+
+        let bidder_requests_total = IntCounterVec::new(
+            Opts::new(
+                "bidder_requests_total",
+                "Total number of requests to each bidder",
+            )
+            .namespace(namespace),
+            &["bidder"],
+        )?;
+
+        let bidder_response_time_ms = HistogramVec::new(
+            HistogramOpts::new(
+                "bidder_response_time_ms",
+                "Bidder response time in milliseconds",
+            )
+            .namespace(namespace)
+            .buckets(ADAPTER_DURATION_BUCKETS.to_vec()),
+            &["bidder", "status"],
+        )?;
+
+        let bids_total = IntCounterVec::new(
+            Opts::new("bids_total", "Total number of bids by bidder and type")
+                .namespace(namespace),
+            &["bidder", "type"],
+        )?;
+
+        let bidder_errors_total = IntCounterVec::new(
+            Opts::new("bidder_errors_total", "Total bidder errors by type")
+                .namespace(namespace),
+            &["bidder", "err_type"],
+        )?;
+
+        let auction_duration_ms = HistogramVec::new(
+            HistogramOpts::new(
+                "auction_duration_ms",
+                "Total auction duration in milliseconds",
+            )
+            .namespace(namespace)
+            .buckets(REQUEST_DURATION_BUCKETS.to_vec()),
+            &["request_type"],
+        )?;
+
+        let http_request_duration_ms = HistogramVec::new(
+            HistogramOpts::new(
+                "http_request_duration_ms",
+                "HTTP request duration by endpoint and status code",
+            )
+            .namespace(namespace)
+            .buckets(REQUEST_DURATION_BUCKETS.to_vec()),
+            &["request_type", "status_code"],
+        )?;
+
         // -- connections (legacy) ------------------------------------------------
 
         let connections_accepted = prometheus::IntCounter::with_opts(
@@ -444,6 +505,12 @@ impl PrometheusMetrics {
         registry.register(Box::new(stored_request_hit_total.clone()))?;
         registry.register(Box::new(stored_request_miss_total.clone()))?;
         registry.register(Box::new(active_bidders.clone()))?;
+        registry.register(Box::new(bidder_requests_total.clone()))?;
+        registry.register(Box::new(bidder_response_time_ms.clone()))?;
+        registry.register(Box::new(bids_total.clone()))?;
+        registry.register(Box::new(bidder_errors_total.clone()))?;
+        registry.register(Box::new(auction_duration_ms.clone()))?;
+        registry.register(Box::new(http_request_duration_ms.clone()))?;
         registry.register(Box::new(connections_accepted.clone()))?;
         registry.register(Box::new(connections_closed.clone()))?;
 
@@ -462,6 +529,12 @@ impl PrometheusMetrics {
             stored_request_hit_total,
             stored_request_miss_total,
             active_bidders,
+            bidder_requests_total,
+            bidder_response_time_ms,
+            bids_total,
+            bidder_errors_total,
+            auction_duration_ms,
+            http_request_duration_ms,
             connections_accepted,
             connections_closed,
         })
@@ -591,6 +664,57 @@ impl MetricsEngine for PrometheusMetrics {
         } else {
             self.stored_request_miss_total.inc();
         }
+    }
+
+    // -- exchange-compat overrides --
+
+    fn record_request_by_type(&self, request_type: &str, status: RequestStatus) {
+        self.requests_total
+            .with_label_values(&[request_type, status.as_str()])
+            .inc();
+    }
+
+    fn record_bidder_request(&self, bidder: &str) {
+        self.bidder_requests_total
+            .with_label_values(&[bidder])
+            .inc();
+    }
+
+    fn record_bidder_response(&self, bidder: &str, status: BidderStatus, duration_ms: u64) {
+        let status_str = match status {
+            BidderStatus::Got => "got_bids",
+            BidderStatus::NoBid => "no_bid",
+            BidderStatus::TimedOut => "timed_out",
+            BidderStatus::Error => "error",
+        };
+        self.bidder_response_time_ms
+            .with_label_values(&[bidder, status_str])
+            .observe(duration_ms as f64);
+    }
+
+    fn record_bid_count(&self, bidder: &str, bid_type: &str) {
+        self.bids_total
+            .with_label_values(&[bidder, bid_type])
+            .inc();
+    }
+
+    fn record_bidder_error(&self, bidder: &str, error_type: &str) {
+        self.bidder_errors_total
+            .with_label_values(&[bidder, error_type])
+            .inc();
+    }
+
+    fn record_auction_duration(&self, request_type: &str, duration_ms: u64) {
+        self.auction_duration_ms
+            .with_label_values(&[request_type])
+            .observe(duration_ms as f64);
+    }
+
+    fn record_http_request(&self, request_type: &str, status_code: u16, duration_ms: u64) {
+        let status_str = status_code.to_string();
+        self.http_request_duration_ms
+            .with_label_values(&[request_type, &status_str])
+            .observe(duration_ms as f64);
     }
 
     fn to_text(&self) -> String {
