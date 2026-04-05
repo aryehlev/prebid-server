@@ -208,23 +208,22 @@ fn render_banner_adm(adm: &str, curls: &[String]) -> String {
             }
         }).collect();
         clicks.push_str(&format!(
-            "fetch(decodeURIComponent('{}' .replace(/\\+/g, ' ')), {{cache: 'no-cache'}});",
+            "fetch(decodeURIComponent('{}'.replace(/\\+/g, ' ')), {{cache: 'no-cache'}});",
             encoded
         ));
     }
     format!(r#"<div style="cursor:pointer" onclick="{}">{}</div>"#, clicks, adm)
 }
 
-/// For native: extract the inner object if the adm wraps it in a "native" key.
+/// For native: extract the inner "native" field from the ad markup.
+/// Go's extractAdmNative unmarshals the markup, extracts native.Native, and re-marshals it.
 fn render_native_adm(adm: &str) -> Result<String, BidderError> {
     let parsed: Value = serde_json::from_str(adm)
-        .map_err(|_| BidderError::BadServerResponse("Invalid native adm.".to_string()))?;
-    if let Some(native_val) = parsed.get("native") {
-        serde_json::to_string(native_val)
-            .map_err(|_| BidderError::BadServerResponse("Failed to serialize native adm.".to_string()))
-    } else {
-        Ok(adm.to_string())
-    }
+        .map_err(|_| BidderError::BadServerResponse(format!("Invalid ad markup {}.", adm)))?;
+    let native_val = parsed.get("native")
+        .ok_or_else(|| BidderError::BadServerResponse(format!("Invalid ad markup {}.", adm)))?;
+    serde_json::to_string(native_val)
+        .map_err(|_| BidderError::BadServerResponse(format!("Invalid ad markup {}.", adm)))
 }
 
 impl Bidder for SmaatoAdapter {

@@ -2,6 +2,12 @@ use std::collections::HashMap;
 use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
 use openrtb_ext::BidType;
 
+const MF_SUFFIX: &str = "__mf";
+const MF_SUFFIX_BANNER: &str = "b__mf";
+const MF_SUFFIX_VIDEO: &str = "v__mf";
+const MF_SUFFIX_AUDIO: &str = "a__mf";
+const MF_SUFFIX_NATIVE: &str = "n__mf";
+
 pub struct AdkernelAdapter {
     pub endpoint: String,
 }
@@ -12,7 +18,7 @@ impl AdkernelAdapter {
     }
 }
 
-fn get_bid_type_from_mtype(mtype: u32) -> Result<BidType, BidderError> {
+fn get_bid_type_from_mtype(mtype: i32) -> Result<BidType, BidderError> {
     match mtype {
         1 => Ok(BidType::Banner),
         2 => Ok(BidType::Video),
@@ -22,6 +28,54 @@ fn get_bid_type_from_mtype(mtype: u32) -> Result<BidType, BidderError> {
             "Unsupported MType {}", other
         ))),
     }
+}
+
+/// Returns true if the impression has more than one format (banner, video, audio, native).
+fn is_multi_format_imp(imp: &openrtb::Imp) -> bool {
+    let mut count = 0;
+    if imp.banner.is_some() { count += 1; }
+    if imp.video.is_some() { count += 1; }
+    if imp.audio.is_some() { count += 1; }
+    if imp.native.is_some() { count += 1; }
+    count > 1
+}
+
+/// Split a multi-format impression into separate single-format impressions, each with a suffix on the ID.
+fn split_multi_format_imp(imp: &openrtb::Imp) -> Vec<openrtb::Imp> {
+    let mut split = Vec::with_capacity(4);
+    if imp.banner.is_some() {
+        let mut c = imp.clone();
+        c.video = None;
+        c.native = None;
+        c.audio = None;
+        c.id = format!("{}{}", imp.id, MF_SUFFIX_BANNER);
+        split.push(c);
+    }
+    if imp.video.is_some() {
+        let mut c = imp.clone();
+        c.banner = None;
+        c.native = None;
+        c.audio = None;
+        c.id = format!("{}{}", imp.id, MF_SUFFIX_VIDEO);
+        split.push(c);
+    }
+    if imp.native.is_some() {
+        let mut c = imp.clone();
+        c.banner = None;
+        c.video = None;
+        c.audio = None;
+        c.id = format!("{}{}", imp.id, MF_SUFFIX_NATIVE);
+        split.push(c);
+    }
+    if imp.audio.is_some() {
+        let mut c = imp.clone();
+        c.banner = None;
+        c.video = None;
+        c.native = None;
+        c.id = format!("{}{}", imp.id, MF_SUFFIX_AUDIO);
+        split.push(c);
+    }
+    split
 }
 
 impl Bidder for AdkernelAdapter {
@@ -36,8 +90,9 @@ impl Bidder for AdkernelAdapter {
 
         let mut errs = Vec::new();
 
-        // Group imps by zone_id from ext.bidder.zoneId
-        let mut zone_to_imps: std::collections::HashMap<i64, Vec<openrtb::Imp>> = std::collections::HashMap::new();
+        // Validate impressions and extract zone_id; group by (zone_id) key
+        // zone_id is required to be >= 1
+        let mut zone_to_imps: HashMap<i64, Vec<openrtb::Imp>> = HashMap::new();
 
         for imp in &request.imp {
             let zone_id = imp.ext.as_ref()
@@ -55,7 +110,15 @@ impl Bidder for AdkernelAdapter {
 
             let mut imp_copy = imp.clone();
             imp_copy.ext = None;
-            zone_to_imps.entry(zone_id).or_default().push(imp_copy);
+
+            // Split multi-format impressions into individual ones
+            let imps_to_add = if is_multi_format_imp(&imp_copy) {
+                split_multi_format_imp(&imp_copy)
+            } else {
+                vec![imp_copy]
+            };
+
+            zone_to_imps.entry(zone_id).or_default().extend(imps_to_add);
         }
 
         if zone_to_imps.is_empty() {
@@ -70,7 +133,7 @@ impl Bidder for AdkernelAdapter {
         let mut requests = Vec::new();
         for (zone_id, imps) in zone_to_imps {
             let mut req = request.clone();
-            // Clear publisher info per Go impl
+            // Clear publisher info per Go implementation
             if let Some(site) = req.site.as_mut() {
                 site.publisher = None;
             }
@@ -110,8 +173,11 @@ impl Bidder for AdkernelAdapter {
         if response.status_code == 204 {
             return Ok(BidderResponse::new());
         }
-        if let Err(e) = crate::check_response_status(response.status_code) {
-            return Err(vec![e]);
+        // Go uses BadServerResponse for all non-200/204 status codes
+        if response.status_code != 200 {
+            return Err(vec![BidderError::BadServerResponse(format!(
+                "Unexpected http status code: {}", response.status_code
+            ))]);
         }
 
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
@@ -133,14 +199,14 @@ impl Bidder for AdkernelAdapter {
         }
 
         for mut bid in seat_bid.bid.clone() {
-            // Strip multi-format suffix from impid if present
-            const MF_SUFFIX: &str = "__mf";
+            // Strip multi-format suffix from impid if present (e.g. "imp1b__mf" → "imp1")
             if bid.impid.ends_with(MF_SUFFIX) {
+                // Remove the format-char prefix too: len - len("__mf") - 1
                 let new_len = bid.impid.len() - MF_SUFFIX.len() - 1;
                 bid.impid = bid.impid[..new_len].to_string();
             }
 
-            let mtype = bid.mtype.unwrap_or(0) as u32;
+            let mtype = bid.mtype.unwrap_or(0);
             let bid_type = get_bid_type_from_mtype(mtype)
                 .map_err(|e| vec![e])?;
             result.bids.push(TypedBid::new(bid, bid_type));
