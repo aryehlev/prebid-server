@@ -32,12 +32,11 @@ struct ExtImpBidmachine {
 fn get_media_type_for_imp(imp_id: &str, imps: &[openrtb::Imp]) -> Option<BidType> {
     for imp in imps {
         if imp.id == imp_id {
-            if imp.banner.is_some() || imp.video.is_none() {
-                return Some(BidType::Banner);
-            }
-            if imp.video.is_some() {
+            // Default is banner; only switch to video if banner is nil and video is present
+            if imp.banner.is_none() && imp.video.is_some() {
                 return Some(BidType::Video);
             }
+            return Some(BidType::Banner);
         }
     }
     None
@@ -57,13 +56,22 @@ impl Bidder for BidmachineAdapter {
             // Validate banner dimensions
             if let Some(banner) = &imp.banner {
                 if banner.w.is_none() && banner.h.is_none() {
-                    let formats = banner.format.as_deref().unwrap_or(&[]);
-                    if formats.is_empty() {
-                        errs.push(BidderError::BadInput(format!(
-                            "Impression with id: {} has following error: Banner width and height is not provided and banner format array is empty. At least one is required",
-                            imp.id
-                        )));
-                        continue;
+                    match &banner.format {
+                        None => {
+                            errs.push(BidderError::BadInput(format!(
+                                "Impression with id: {} has following error: Banner width and height is not provided and banner format is missing. At least one is required",
+                                imp.id
+                            )));
+                            continue;
+                        }
+                        Some(formats) if formats.is_empty() => {
+                            errs.push(BidderError::BadInput(format!(
+                                "Impression with id: {} has following error: Banner width and height is not provided and banner format array is empty. At least one is required",
+                                imp.id
+                            )));
+                            continue;
+                        }
+                        _ => {}
                     }
                 }
             }
