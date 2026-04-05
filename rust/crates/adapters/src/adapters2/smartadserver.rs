@@ -48,7 +48,7 @@ struct ExtImpSmartadserver {
     a_domain: Vec<String>,
 }
 
-fn get_bid_type_from_mtype(mtype: u32) -> BidType {
+fn get_bid_type_from_mtype(mtype: i32) -> BidType {
     // openrtb mtype: 1=Banner, 2=Video, 3=Audio, 4=Native
     match mtype {
         2 => BidType::Video,

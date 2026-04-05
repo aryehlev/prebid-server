@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
 use openrtb_ext::BidType;
 use serde::Deserialize;
+use serde_json::Value;
 
 pub struct EplanningAdapter {
     pub endpoint: String,
@@ -223,6 +224,87 @@ fn percent_encode(s: &str) -> String {
     result
 }
 
+/// Supply chain structures for the schain query parameter
+#[derive(Debug, Deserialize, Default)]
+struct EpSupplyChain {
+    #[serde(default)]
+    ver: String,
+    #[serde(default)]
+    complete: i32,
+    #[serde(default)]
+    nodes: Vec<EpSupplyChainNode>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct EpSupplyChainNode {
+    #[serde(default)]
+    asi: String,
+    #[serde(default)]
+    sid: String,
+    hp: Option<i8>,
+    #[serde(default)]
+    rid: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    domain: String,
+    ext: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EpExtRequestPrebidSchain {
+    #[serde(default)]
+    schain: EpSupplyChain,
+}
+
+/// Build schain string using percent-encoding (spaces → %20, matching Go's url.QueryEscape + replace).
+fn make_schain_string(schain: &EpSupplyChain) -> String {
+    if schain.nodes.is_empty() {
+        return String::new();
+    }
+    let prefix = format!("{},{}", schain.ver, schain.complete);
+    let mut sb = prefix;
+    for node in &schain.nodes {
+        let hp_str = node.hp.map(|v| v.to_string()).unwrap_or_default();
+        let ext_str = match &node.ext {
+            Some(v) => {
+                let raw = serde_json::to_string(v).unwrap_or_default();
+                percent_encode(&raw)
+            }
+            None => String::new(),
+        };
+        let node_str = format!(
+            "!{},{},{},{},{},{},{}",
+            percent_encode(&node.asi),
+            percent_encode(&node.sid),
+            hp_str,
+            percent_encode(&node.rid),
+            percent_encode(&node.name),
+            percent_encode(&node.domain),
+            ext_str,
+        );
+        sb.push_str(&node_str);
+    }
+    sb
+}
+
+/// Extract schain from request.source.ext and add "sch" param if valid.
+/// The Go code skips schain if nil or if nodes count > 2.
+fn set_schain(request: &openrtb::BidRequest, query_parts: &mut Vec<(String, String)>) {
+    let Some(source) = request.source.as_ref() else { return };
+    let Some(ext) = source.ext.as_ref() else { return };
+    let Ok(schain_ext) = serde_json::from_value::<EpExtRequestPrebidSchain>(ext.clone()) else { return };
+    let schain = schain_ext.schain;
+    // Go skips if len(nodes) > 2
+    if schain.nodes.len() > 2 {
+        return;
+    }
+    let schain_value = make_schain_string(&schain);
+    if !schain_value.is_empty() {
+        query_parts.push(("sch".to_string(), schain_value));
+    }
+}
+
 impl Bidder for EplanningAdapter {
     fn make_requests(
         &self,
@@ -344,6 +426,11 @@ impl Bidder for EplanningAdapter {
         if imp_type > 0 {
             query_parts.push(("vctx".to_string(), imp_type.to_string()));
             query_parts.push(("vv".to_string(), VAST_VERSION_DEFAULT.to_string()));
+        }
+
+        // Add schain param if source.ext contains valid schain data (matching Go's setSchain logic)
+        if request.source.as_ref().and_then(|s| s.ext.as_ref()).is_some() {
+            set_schain(request, &mut query_parts);
         }
 
         let query_string: String = query_parts.iter()

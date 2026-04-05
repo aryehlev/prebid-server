@@ -124,7 +124,6 @@ impl Bidder for EmtvAdapter {
         if let Some(cur) = &bid_resp.cur {
             result.currency = cur.clone();
         }
-        let mut errs = Vec::new();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
                 match internal.imp.iter().find(|i| i.id == bid.impid) {
@@ -133,7 +132,10 @@ impl Bidder for EmtvAdapter {
                         result.bids.push(TypedBid::new(bid, bid_type));
                     }
                     None => {
-                        errs.push(BidderError::BadInput(format!("Failed to find impression \"{}\"", bid.impid)));
+                        return Err(vec![BidderError::BadInput(format!(
+                            "Failed to find impression \"{}\"",
+                            bid.impid
+                        ))]);
                     }
                 }
             }

@@ -36,6 +36,6 @@ pub use blasto::BlastoAdapter;
 pub use bliink::BliinkAdapter;
 pub use blis::BlisAdapter;
 pub use blue::BlueAdapter;
-pub use bluesea::BluseaAdapter;
+pub use bluesea::BlueseaAdapter;
 pub use bmtm::BmtmAdapter;
 pub use compass::CompassAdapter;

@@ -4,8 +4,8 @@ use openrtb_ext::BidType;
 use serde::Deserialize;
 use serde_json::Value;
 
-pub struct BluseaAdapter { pub endpoint: String }
-impl BluseaAdapter { pub fn new(endpoint: String) -> Self { Self { endpoint } } }
+pub struct BlueseaAdapter { pub endpoint: String }
+impl BlueseaAdapter { pub fn new(endpoint: String) -> Self { Self { endpoint } } }
 
 #[derive(Deserialize)]
 struct ExtImpBidder { bidder: Value }
@@ -37,7 +37,7 @@ fn get_media_type_for_bid(bid: &openrtb::Bid) -> Result<BidType, BidderError> {
     }
 }
 
-impl Bidder for BluseaAdapter {
+impl Bidder for BlueseaAdapter {
     fn make_requests(&self, request: &openrtb::BidRequest, _: &ExtraRequestInfo) -> (Vec<RequestData>, Vec<BidderError>) {
         if request.imp.is_empty() {
             return (vec![], vec![BidderError::BadInput("Empty Imp objects".to_string())]);
@@ -53,24 +53,41 @@ impl Bidder for BluseaAdapter {
         for imp in &request.imp {
             let ext_val = match &imp.ext {
                 Some(v) => v.clone(),
-                None => { errs.push(BidderError::BadInput(format!("Error in parsing imp.ext.bidder. err = missing ext, bidder = "))); continue; }
+                None => {
+                    errs.push(BidderError::BadInput(format!(
+                        "Error in parsing imp.ext. err = missing ext, imp.ext = "
+                    )));
+                    continue;
+                }
             };
 
             let bidder_ext: ExtImpBidder = match serde_json::from_value(ext_val) {
                 Ok(v) => v,
-                Err(e) => { errs.push(BidderError::BadInput(format!("Error in parsing imp.ext.bidder. err = {}, bidder = ", e))); continue; }
+                Err(e) => {
+                    errs.push(BidderError::BadInput(format!(
+                        "Error in parsing imp.ext. err = {}, imp.ext = {}",
+                        e,
+                        imp.ext.as_ref().map(|v| v.to_string()).unwrap_or_default()
+                    )));
+                    continue;
+                }
             };
 
             let bluesea_ext: ExtImpBluesea = match serde_json::from_value(bidder_ext.bidder.clone()) {
                 Ok(v) => v,
                 Err(e) => {
-                    errs.push(BidderError::BadInput(format!("Error in parsing imp.ext.bidder. err = {}, bidder = {}", e, bidder_ext.bidder)));
+                    errs.push(BidderError::BadInput(format!(
+                        "Error in parsing imp.ext.bidder. err = {}, bidder = {}",
+                        e, bidder_ext.bidder
+                    )));
                     continue;
                 }
             };
 
             if bluesea_ext.pubid.is_empty() || bluesea_ext.token.is_empty() {
-                errs.push(BidderError::BadInput("Error in parsing imp.ext.bidder, empty pubid or token".to_string()));
+                errs.push(BidderError::BadInput(
+                    "Error in parsing imp.ext.bidder, empty pubid or token".to_string()
+                ));
                 continue;
             }
 

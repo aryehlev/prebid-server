@@ -36,6 +36,8 @@ struct ImpExtAdapter {
 struct RequestExtGoldbach {
     #[serde(rename = "publisherId")]
     publisher_id: String,
+    #[serde(rename = "mockResponse", skip_serializing_if = "Option::is_none")]
+    mock_response: Option<bool>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -105,6 +107,12 @@ impl Bidder for GoldbachAdapter {
     fn make_requests(&self, request: &openrtb::BidRequest, _: &ExtraRequestInfo) -> (Vec<RequestData>, Vec<BidderError>) {
         let mut errs = Vec::new();
 
+        // Parse existing request.ext to extract goldbach fields (e.g. mockResponse)
+        let existing_goldbach_ext: RequestExtGoldbach = request.ext.as_ref()
+            .and_then(|e| e.get("goldbach"))
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+
         // Group impressions by publisher ID
         let mut publisher_imps: HashMap<String, Vec<openrtb::Imp>> = HashMap::new();
         for imp in &request.imp {
@@ -127,10 +135,11 @@ impl Bidder for GoldbachAdapter {
             req_copy.imp = imps;
             req_copy.id = format!("{}_{}", request.id, pub_id);
 
-            // Build request ext
+            // Build request ext preserving mockResponse from the original ext
             let ext_val = serde_json::to_value(&RequestExtAdapter {
                 goldbach: RequestExtGoldbach {
                     publisher_id: pub_id.clone(),
+                    mock_response: existing_goldbach_ext.mock_response,
                 },
             });
             match ext_val {

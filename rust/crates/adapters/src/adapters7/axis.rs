@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_bid_type_from_imp, get_imp_ids};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
 use openrtb_ext::BidType;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -98,11 +98,34 @@ impl Bidder for AxisAdapter {
         if let Some(cur) = &bid_resp.cur {
             result.currency = cur.clone();
         }
+
+        // Build imp map by ID for O(1) lookup
+        let imp_map: HashMap<&str, &openrtb::Imp> = internal.imp.iter()
+            .map(|imp| (imp.id.as_str(), imp))
+            .collect();
+
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
-                let bid_type = internal.imp.iter().find(|i| i.id == bid.impid)
-                    .map(get_bid_type_from_imp)
-                    .unwrap_or(BidType::Banner);
+                let bid_type = match imp_map.get(bid.impid.as_str()) {
+                    Some(imp) => {
+                        if imp.banner.is_some() {
+                            BidType::Banner
+                        } else if imp.video.is_some() {
+                            BidType::Video
+                        } else if imp.native.is_some() {
+                            BidType::Native
+                        } else {
+                            return Err(vec![BidderError::BadInput(
+                                format!("Failed to find impression \"{}\"", bid.impid)
+                            )]);
+                        }
+                    }
+                    None => {
+                        return Err(vec![BidderError::BadInput(
+                            format!("Failed to find impression \"{}\"", bid.impid)
+                        )]);
+                    }
+                };
                 result.bids.push(TypedBid::new(bid, bid_type));
             }
         }

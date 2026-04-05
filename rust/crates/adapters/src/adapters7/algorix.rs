@@ -78,6 +78,23 @@ fn preprocess_request(request: &mut openrtb::BidRequest) {
                 }
             }
         }
+        // Handle rewarded video: if imp.ext.prebid.is_rewarded_inventory == 1, set video ext rewarded=1
+        if imp.video.is_some() {
+            let is_rewarded = imp
+                .ext
+                .as_ref()
+                .and_then(|e| e.get("prebid"))
+                .and_then(|p| p.get("is_rewarded_inventory"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0)
+                == 1;
+
+            if is_rewarded {
+                if let Some(video) = &mut imp.video {
+                    video.ext = Some(serde_json::json!({"rewarded": 1}));
+                }
+            }
+        }
     }
 }
 

@@ -70,7 +70,10 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     reg!("openx", crate::adapters::OpenxAdapter::new(ep("openx"), "openx".to_string()));
     reg!("pubmatic", crate::adapters::PubmaticAdapter::new(ep("pubmatic")));
     reg!("33across", crate::adapters::Across33Adapter::new(ep("33across")));
-    reg!("beachfront", crate::adapters::BeachfrontAdapter::new(ep("beachfront")));
+    reg!("beachfront", crate::adapters::BeachfrontAdapter::new(
+        ep("beachfront"),
+        "https://reachms.bfmio.com/bid.json?exchange_id".to_string(),
+    ));
     reg!("criteo", crate::adapters::CriteoAdapter::new(ep("criteo")));
     reg!("sharethrough", crate::adapters::SharethroughAdapter::new(ep("sharethrough")));
 
@@ -204,7 +207,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     reg!("bliink", crate::adapters8::BliinkAdapter::new(ep("bliink")));
     reg!("blis", crate::adapters8::BlisAdapter::new(ep("blis")));
     reg!("blue", crate::adapters8::BlueAdapter::new(ep("blue")));
-    reg!("bluesea", crate::adapters8::BluseaAdapter::new(ep("bluesea")));
+    reg!("bluesea", crate::adapters8::BlueseaAdapter::new(ep("bluesea")));
     reg!("bmtm", crate::adapters8::BmtmAdapter::new(ep("bmtm")));
     reg!("compass", crate::adapters8::CompassAdapter::new(ep("compass")));
 

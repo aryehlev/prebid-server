@@ -107,11 +107,12 @@ impl Bidder for AmxAdapter {
     fn make_bids(&self, _: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
         if response.status_code == 204 { return Ok(BidderResponse::new()); }
         if response.status_code == 400 {
-            // Read error from response headers - just use generic message
-            return Err(vec![BidderError::BadInput(format!("Invalid Request: 400. Error Code: "))]);
+            let nbr = response.headers.get("x-nbr").map(|s| s.as_str()).unwrap_or("");
+            return Err(vec![BidderError::BadInput(format!("Invalid Request: 400. Error Code: {}", nbr))]);
         }
         if response.status_code != 200 {
-            return Err(vec![BidderError::BadServerResponse(format!("Unexpected response: {}. Error Code: ", response.status_code))]);
+            let nbr = response.headers.get("x-nbr").map(|s| s.as_str()).unwrap_or("");
+            return Err(vec![BidderError::BadServerResponse(format!("Unexpected response: {}. Error Code: {}", response.status_code, nbr))]);
         }
 
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
@@ -122,9 +123,18 @@ impl Bidder for AmxAdapter {
 
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
-                let bid_ext = bid.ext.as_ref()
-                    .and_then(|e| serde_json::from_value::<AmxBidExt>(e.clone()).ok())
-                    .unwrap_or(AmxBidExt { start_delay: None, creative_type: None, demand_source: None, bidder_code: None });
+                // Parse bid ext - if ext is non-empty but fails to parse, skip the bid
+                let bid_ext = if let Some(ext) = &bid.ext {
+                    match serde_json::from_value::<AmxBidExt>(ext.clone()) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            errs.push(BidderError::BadServerResponse(e.to_string()));
+                            continue;
+                        }
+                    }
+                } else {
+                    AmxBidExt { start_delay: None, creative_type: None, demand_source: None, bidder_code: None }
+                };
 
                 let bid_type = get_media_type(&bid_ext);
                 let demand_source = bid_ext.demand_source.clone().unwrap_or_default();
@@ -136,6 +146,7 @@ impl Bidder for AmxAdapter {
                     demand_source: Some(demand_source),
                     ..Default::default()
                 });
+                // Note: Go sets b.Seat = bidder_code, but TypedBid has no seat field in Rust
 
                 result.bids.push(typed_bid);
             }
