@@ -14,19 +14,23 @@ impl Bidder for InteractiveoffersAdapter {
         }
 
         // Extract partnerId from first imp.ext.bidder
-        let bidder = request.imp[0].ext.as_ref()
+        let bidder_ext = request.imp[0].ext.as_ref()
             .and_then(|e| e.get("bidder"))
-            .cloned()
-            .unwrap_or(serde_json::Value::Null);
+            .cloned();
 
-        if bidder.is_null() {
-            return (vec![], vec![BidderError::BadInput("bidder ext is required".to_string())]);
+        let partner_id = bidder_ext
+            .as_ref()
+            .and_then(|b| b.get("partnerId"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        // If bidder ext is missing, fail with BadInput
+        if bidder_ext.is_none() {
+            return (vec![], vec![BidderError::BadInput("missing bidder ext".to_string())]);
         }
 
-        let partner_id = bidder.get("partnerId").and_then(|v| v.as_str()).unwrap_or("").to_string();
-
         // Build URL from template: replace {{.AccountID}} with partner_id
-        let url = self.endpoint.replace("{{.AccountID}}", &partner_id);
+        let url = self.endpoint.replace("{{.AccountID}}", partner_id);
 
         let body = match serde_json::to_vec(request) {
             Ok(b) => b,
@@ -53,7 +57,12 @@ impl Bidder for InteractiveoffersAdapter {
                 "Unexpected status code: 400. Bad request from publisher. Run with request.debug = 1 for more info.".to_string()
             )]);
         }
-        if let Err(e) = crate::check_response_status(response.status_code) { return Err(vec![e]); }
+        if response.status_code != 200 {
+            return Err(vec![BidderError::BadServerResponse(format!(
+                "Unexpected status code: {}. Run with request.debug = 1 for more info.",
+                response.status_code
+            ))]);
+        }
 
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;

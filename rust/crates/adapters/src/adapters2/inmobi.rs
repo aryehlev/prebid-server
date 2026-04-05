@@ -12,9 +12,9 @@ impl InmobiAdapter {
     }
 }
 
-/// Get media type from mtype value (from bid ext or response mtype field).
-/// InMobi: 1=Banner, 2=Video, 4=Native
-fn get_media_type_from_mtype(mtype: u64, bid_id: &str) -> Result<BidType, BidderError> {
+/// Get media type from mtype value.
+/// InMobi uses OpenRTB mtype: 1=Banner, 2=Video, 4=Native
+fn get_media_type_from_mtype(mtype: i32, bid_id: &str) -> Result<BidType, BidderError> {
     match mtype {
         1 => Ok(BidType::Banner),
         2 => Ok(BidType::Video),
@@ -114,11 +114,8 @@ impl Bidder for InmobiAdapter {
 
         for sb in bid_response.seatbid {
             for bid in sb.bid {
-                // mtype is stored in bid.ext.mtype (no direct mtype field on Bid struct)
-                let mtype = bid.ext.as_ref()
-                    .and_then(|e| e.get("mtype"))
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
+                // mtype is a direct field on the bid struct (OpenRTB 2.6+)
+                let mtype = bid.mtype.unwrap_or(0);
 
                 let bid_type = get_media_type_from_mtype(mtype, &bid.id)
                     .map_err(|e| vec![e])?;

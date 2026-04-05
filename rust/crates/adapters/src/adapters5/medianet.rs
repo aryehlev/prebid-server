@@ -8,7 +8,7 @@ impl MedianetAdapter {
 }
 
 /// Get bid type from OpenRTB mtype value: 1=Banner, 2=Video, 4=Native
-fn get_bid_type_from_mtype(mtype: i32, imp_id: &str) -> Result<BidType, BidderError> {
+fn get_bid_media_type_from_mtype(mtype: i32, imp_id: &str) -> Result<BidType, BidderError> {
     match mtype {
         1 => Ok(BidType::Banner),
         2 => Ok(BidType::Video),
@@ -46,18 +46,18 @@ impl Bidder for MedianetAdapter {
         }
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
-        let mut result = BidderResponse::with_capacity(5);
+        let mut result = BidderResponse::new();
         let mut errs = Vec::new();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
-                // Use bid.mtype directly (OpenRTB 2.6+ field)
                 let mtype = bid.mtype.unwrap_or(0);
-                match get_bid_type_from_mtype(mtype, &bid.impid) {
+                match get_bid_media_type_from_mtype(mtype, &bid.impid) {
                     Ok(bid_type) => result.bids.push(TypedBid::new(bid, bid_type)),
                     Err(e) => errs.push(e),
                 }
             }
         }
+        // Return bids along with accumulated errors (matching Go behavior)
         if !errs.is_empty() && result.bids.is_empty() {
             return Err(errs);
         }
