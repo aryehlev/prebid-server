@@ -124,10 +124,10 @@ impl Bidder for UnrulyAdapter {
                 match get_media_type_for_imp(&bid.impid, &internal.imp) {
                     Ok(bid_type) => {
                         let mut typed_bid = TypedBid::new(bid.clone(), bid_type.clone());
-                        // Include video duration if available
+                        // Include video duration if available (dur is a field on Bid, not in ext)
                         if bid_type == BidType::Video {
-                            if let Some(dur) = bid.ext.as_ref().and_then(|e| e.get("dur")).and_then(|v| v.as_i64()) {
-                                if dur > 0 {
+                            if let Some(dur) = bid.dur {
+                                if dur > 0.0 {
                                     typed_bid.bid_video = Some(openrtb_ext::ExtBidPrebidVideo {
                                         duration: dur as i32,
                                         ..Default::default()

@@ -133,8 +133,12 @@ impl Bidder for SharethroughAdapter {
             let pkey = str_params.pkey.clone();
 
             // Accumulate bcat and badv from each imp's ext (matches Go behavior)
-            req_copy.bcat.extend(str_params.bcat.iter().cloned());
-            req_copy.badv.extend(str_params.badv.iter().cloned());
+            if !str_params.bcat.is_empty() {
+                req_copy.bcat.get_or_insert_with(Vec::new).extend(str_params.bcat.iter().cloned());
+            }
+            if !str_params.badv.is_empty() {
+                req_copy.badv.get_or_insert_with(Vec::new).extend(str_params.badv.iter().cloned());
+            }
 
             // Set tagid from pkey
             let mut imp_with_tagid = imp.clone();

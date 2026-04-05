@@ -19,13 +19,25 @@ struct ExtImpAxonix {
 const PRICE_MACRO: &str = "${AUCTION_PRICE}";
 
 fn resolve_macros_bid(bid: &mut openrtb::Bid) {
-    let price = format!("{}", bid.price);
+    // Format price with no trailing zeros, matching Go's strconv.FormatFloat(price, 'f', -1, 64)
+    let price = format_price(bid.price);
     if let Some(nurl) = &bid.nurl {
         bid.nurl = Some(nurl.replace(PRICE_MACRO, &price));
     }
     if let Some(adm) = &bid.adm {
         bid.adm = Some(adm.replace(PRICE_MACRO, &price));
     }
+}
+
+fn format_price(price: f64) -> String {
+    // Match Go's strconv.FormatFloat(price, 'f', -1, 64): decimal notation, minimum digits
+    let s = format!("{:.10}", price);
+    let s = s.trim_end_matches('0');
+    let s = s.trim_end_matches('.');
+    if s.is_empty() || s == "-" {
+        return "0".to_string();
+    }
+    s.to_string()
 }
 
 fn get_media_type(imp_id: &str, imps: &[openrtb::Imp]) -> BidType {

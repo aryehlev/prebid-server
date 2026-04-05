@@ -231,7 +231,11 @@ impl Bidder for BeachfrontAdapter {
                     Err(e) => { errs.push(e); continue; }
                 };
 
-                let bid_floor = if imp.bidfloor > 0.0 { imp.bidfloor } else { imp_ext.bidder.bid_floor };
+                let bid_floor = if imp.bidfloor.unwrap_or(0.0) > 0.0 {
+                    imp.bidfloor.unwrap_or(0.0)
+                } else {
+                    imp_ext.bidder.bid_floor
+                };
 
                 let sizes: Vec<BannerSize> = imp.banner.as_ref()
                     .and_then(|b| b.format.as_ref())
@@ -359,8 +363,8 @@ impl Bidder for BeachfrontAdapter {
             req_copy.imp = vec![video_imp];
             req_copy.ext = None;
 
-            if req_copy.cur.is_empty() {
-                req_copy.cur = vec!["USD".to_string()];
+            if req_copy.cur.as_deref().unwrap_or(&[]).is_empty() {
+                req_copy.cur = Some(vec!["USD".to_string()]);
             }
 
             // For adm type, inject fake IP if device.ip is empty
