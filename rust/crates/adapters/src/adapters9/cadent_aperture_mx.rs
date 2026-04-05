@@ -182,15 +182,12 @@ impl Bidder for CadentApertureMxAdapter {
         let preprocess_errs = preprocess(&mut req);
 
         if !preprocess_errs.is_empty() {
+            let first_msg = preprocess_errs.first().map(|e| e.to_string()).unwrap_or_default();
             let mut all_errs = preprocess_errs;
             all_errs.push(BidderError::BadInput(format!(
-                "Error in preprocess of Imp, err: {:?}", all_errs.first().map(|e| e.to_string()).unwrap_or_default()
+                "Error in preprocess of Imp, err: {}", first_msg
             )));
             return (vec![], all_errs);
-        }
-
-        if req.imp.is_empty() {
-            return (vec![], vec![BidderError::BadInput("No valid Imps after preprocessing".to_string())]);
         }
 
         let body = match serde_json::to_vec(&req) {
