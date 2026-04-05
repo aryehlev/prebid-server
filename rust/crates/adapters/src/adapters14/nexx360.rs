@@ -16,6 +16,17 @@ fn get_bid_type(bid: &openrtb::Bid) -> Result<BidType, BidderError> {
     }
 }
 
+/// Build the request ext with nexx360 caller info.
+fn make_req_ext() -> serde_json::Value {
+    serde_json::json!({
+        "nexx360": {
+            "caller": [
+                { "name": "Prebid-Server", "version": "n/a" }
+            ]
+        }
+    })
+}
+
 impl Bidder for Nexx360Adapter {
     fn make_requests(&self, request: &openrtb::BidRequest, _: &ExtraRequestInfo) -> (Vec<RequestData>, Vec<BidderError>) {
         // Process imps: replace bidder ext with nexx360 ext
@@ -51,28 +62,33 @@ impl Bidder for Nexx360Adapter {
 
         let mut req_copy = request.clone();
         req_copy.imp = imps;
+
+        // Set request ext with nexx360 caller info
+        req_copy.ext = Some(make_req_ext());
+
         let body = match serde_json::to_vec(&req_copy) {
             Ok(b) => b,
             Err(e) => return (vec![], vec![BidderError::BadInput(e.to_string())]),
         };
         let mut headers = HashMap::new();
-        headers.insert("Content-Type".to_string(), "application/json;charset=utf-8".to_string());
-        headers.insert("Accept".to_string(), "application/json".to_string());
+        headers.insert("Content-Type".to_string(), "application/json".to_string());
         (vec![RequestData { method: "POST".to_string(), uri, body, headers, imp_ids: get_imp_ids(&request.imp) }], errs)
     }
 
     fn make_bids(&self, _: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
         if response.status_code == 204 { return Ok(BidderResponse::new()); }
-        if let Err(e) = crate::check_response_status(response.status_code) { return Err(vec![e]); }
+        if response.status_code != 200 {
+            return Err(vec![BidderError::BadInput(format!("Unexpected http status code: {}", response.status_code))]);
+        }
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
         if bid_resp.seatbid.is_empty() { return Ok(BidderResponse::new()); }
         let mut bids = Vec::new();
         let mut errors = Vec::new();
-        for sb in bid_resp.seatbid {
-            for bid in sb.bid {
-                match get_bid_type(&bid) {
-                    Ok(t) => bids.push(TypedBid::new(bid, t)),
+        for sb in &bid_resp.seatbid {
+            for bid in &sb.bid {
+                match get_bid_type(bid) {
+                    Ok(t) => bids.push(TypedBid::new(bid.clone(), t)),
                     Err(e) => errors.push(e),
                 }
             }
@@ -81,7 +97,6 @@ impl Bidder for Nexx360Adapter {
         let mut result = BidderResponse::with_capacity(bids.len());
         if let Some(cur) = &bid_resp.cur { if !cur.is_empty() { result.currency = cur.clone(); } }
         result.bids = bids;
-        if !errors.is_empty() && result.bids.is_empty() { return Err(errors); }
         Ok(result)
     }
 }

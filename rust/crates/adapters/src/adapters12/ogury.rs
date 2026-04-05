@@ -139,8 +139,8 @@ impl Bidder for OguryAdapter {
         let bid_resp: BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
         let mut result = BidderResponse::with_capacity(5);
-        if let Some(cur) = &bid_resp.cur {
-            if !cur.is_empty() { result.currency = cur.clone(); }
+        if let Some(cur) = bid_resp.cur {
+            result.currency = cur;
         }
         let mut errs = Vec::new();
         for sb in bid_resp.seatbid {

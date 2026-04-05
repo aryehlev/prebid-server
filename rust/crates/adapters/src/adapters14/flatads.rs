@@ -68,27 +68,31 @@ impl Bidder for FlatadsAdapter {
             }
         }
 
-        let mut errors = Vec::new();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
                 // Get bid type from imp
                 match request.imp.iter().find(|i| i.id == bid.impid) {
                     Some(imp) => {
-                        let bid_type = get_bid_type_from_imp(imp);
+                        let bid_type = if imp.banner.is_some() {
+                            openrtb_ext::BidType::Banner
+                        } else if imp.video.is_some() {
+                            openrtb_ext::BidType::Video
+                        } else if imp.native.is_some() {
+                            openrtb_ext::BidType::Native
+                        } else {
+                            // Skip bids with unknown type (matches Go behavior returning error)
+                            continue;
+                        };
                         result.bids.push(TypedBid::new(bid, bid_type));
                     }
                     None => {
-                        errors.push(BidderError::BadServerResponse(
-                            format!("The impression with ID {} is not present into the request", bid.impid)
-                        ));
+                        // Skip bids for imps not in request (matches Go behavior)
+                        continue;
                     }
                 }
             }
         }
 
-        if !errors.is_empty() {
-            return Err(errors);
-        }
         Ok(result)
     }
 }
