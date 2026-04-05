@@ -71,13 +71,11 @@ impl Bidder for TradplusAdapter {
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
         let mut result = BidderResponse::with_capacity(internal.imp.len());
-        let mut errs = Vec::new();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
                 let mtype = bid.mtype.unwrap_or(0);
-                match get_media_type_for_bid(mtype, &bid.impid) {
-                    Ok(t) => result.bids.push(TypedBid::new(bid, t)),
-                    Err(e) => errs.push(e),
+                if let Ok(t) = get_media_type_for_bid(mtype, &bid.impid) {
+                    result.bids.push(TypedBid::new(bid, t));
                 }
             }
         }

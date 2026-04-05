@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_bid_type_from_mtype, get_imp_ids};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
+use openrtb_ext::BidType;
 
 pub struct RiseAdapter { pub endpoint: String }
 impl RiseAdapter { pub fn new(endpoint: String) -> Self { Self { endpoint } } }
@@ -13,6 +14,15 @@ fn extract_org(request: &openrtb::BidRequest) -> Result<String, BidderError> {
         if !pub_id.is_empty() { return Ok(pub_id); }
     }
     Err(BidderError::BadInput("no org or publisher_id supplied".to_string()))
+}
+
+fn get_media_type_for_bid(bid: &openrtb::Bid) -> Result<BidType, BidderError> {
+    match bid.mtype.unwrap_or(0) {
+        1 => Ok(BidType::Banner),
+        2 => Ok(BidType::Video),
+        4 => Ok(BidType::Native),
+        mtype => Err(BidderError::BadServerResponse(format!("unsupported MType {}", mtype))),
+    }
 }
 
 impl Bidder for RiseAdapter {
@@ -31,25 +41,26 @@ impl Bidder for RiseAdapter {
         (vec![RequestData { method: "POST".to_string(), uri, body, headers, imp_ids: get_imp_ids(&request.imp) }], vec![])
     }
 
-    fn make_bids(&self, _: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
+    fn make_bids(&self, internal: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
         if response.status_code == 204 { return Ok(BidderResponse::new()); }
         if let Err(e) = crate::check_response_status(response.status_code) { return Err(vec![e]); }
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
-        let mut result = BidderResponse::with_capacity(5);
+        let mut result = BidderResponse::with_capacity(internal.imp.len());
         if let Some(cur) = &bid_resp.cur { if !cur.is_empty() { result.currency = cur.clone(); } }
         let mut errs = Vec::new();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
-                let mtype = bid.mtype.unwrap_or(0);
-                if mtype == 0 {
-                    errs.push(BidderError::BadServerResponse(format!("unsupported MType {}", mtype)));
-                    continue;
+                match get_media_type_for_bid(&bid) {
+                    Ok(bid_type) => result.bids.push(TypedBid::new(bid, bid_type)),
+                    Err(e) => errs.push(e),
                 }
-                result.bids.push(TypedBid::new(bid, get_bid_type_from_mtype(mtype)));
             }
         }
-        if !errs.is_empty() && result.bids.is_empty() { return Err(errs); }
+        // Return bids along with any errors (Go behavior: return bidResponse, errs)
+        if !errs.is_empty() && result.bids.is_empty() {
+            return Err(errs);
+        }
         Ok(result)
     }
 }

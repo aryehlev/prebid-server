@@ -49,16 +49,28 @@ impl Bidder for KoblerAdapter {
             req_copy.cur.get_or_insert_with(Vec::new).push(SUPPORTED_CURRENCY.to_string());
         }
 
-        // Check first imp for test mode
+        // Check first imp for test mode (match Go: continue on parse errors, don't return).
         let mut test_mode = false;
-        if let Some(first_imp) = req_copy.imp.first() {
-            if let Some(ext) = &first_imp.ext {
-                if let Some(bidder_val) = ext.get("bidder") {
-                    match serde_json::from_value::<KoblerImpExt>(bidder_val.clone()) {
+        'test_mode: {
+            if let Some(first_imp) = req_copy.imp.first() {
+                if let Some(ext) = &first_imp.ext {
+                    let bidder_val = match ext.get("bidder") {
+                        Some(v) => v.clone(),
+                        None => break 'test_mode,
+                    };
+                    // Parse outer bidder ext
+                    let bidder_ext: serde_json::Value = match serde_json::from_value(bidder_val) {
+                        Ok(v) => v,
+                        Err(_e) => {
+                            errs.push(BidderError::BadInput("Error parsing bidderExt object".to_string()));
+                            break 'test_mode;  // continue to use default endpoint
+                        }
+                    };
+                    match serde_json::from_value::<KoblerImpExt>(bidder_ext) {
                         Ok(imp_ext) => test_mode = imp_ext.test,
-                        Err(e) => {
-                            errs.push(BidderError::BadInput(format!("Error parsing impExt object: {}", e)));
-                            return (vec![], errs);
+                        Err(_e) => {
+                            errs.push(BidderError::BadInput("Error parsing impExt object".to_string()));
+                            // continue with test_mode = false
                         }
                     }
                 }
