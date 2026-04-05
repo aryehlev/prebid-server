@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_bid_type_from_imp, get_imp_ids};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
 use openrtb_ext::BidType;
 use serde::{Deserialize, Serialize};
 
@@ -19,12 +19,31 @@ struct ExtImpSovrn {
     pub tagid: String,
     #[serde(rename = "TagId", default)]
     pub tag_id: String,
+    // bidfloor can be string or number
+    #[serde(default)]
+    pub bidfloor: serde_json::Value,
 }
 
 #[derive(Deserialize, Default)]
 struct ImpExt {
     #[serde(default)]
     bidder: ExtImpSovrn,
+}
+
+fn get_ext_bid_floor(sovrn_ext: &ExtImpSovrn) -> f64 {
+    match &sovrn_ext.bidfloor {
+        serde_json::Value::String(s) => s.parse::<f64>().unwrap_or(0.0),
+        serde_json::Value::Number(n) => n.as_f64().unwrap_or(0.0),
+        _ => 0.0,
+    }
+}
+
+/// URL-decode percent-encoded string (best-effort).
+fn url_decode(s: &str) -> String {
+    percent_encoding::percent_decode_str(s)
+        .decode_utf8()
+        .map(|c| c.into_owned())
+        .unwrap_or_else(|_| s.to_string())
 }
 
 impl Bidder for SovrnAdapter {
@@ -62,6 +81,21 @@ impl Bidder for SovrnAdapter {
 
             let mut imp_copy = imp.clone();
             imp_copy.tagid = Some(tag_id);
+
+            // Apply ext bidfloor if imp has no floor set
+            let ext_floor = get_ext_bid_floor(sovrn_ext);
+            if imp_copy.bidfloor == 0.0 && ext_floor > 0.0 {
+                imp_copy.bidfloor = ext_floor;
+            }
+
+            // Validate video params if video impression
+            if let Some(video) = &imp_copy.video {
+                if video.mimes.is_none() || video.maxduration.unwrap_or(0) == 0 || video.protocols.is_none() {
+                    errs.push(BidderError::BadInput("Missing required video parameter".to_string()));
+                    continue;
+                }
+            }
+
             valid_imps.push(imp_copy);
         }
 
@@ -78,8 +112,8 @@ impl Bidder for SovrnAdapter {
         };
 
         let mut headers = HashMap::new();
-        headers.insert("Content-Type".to_string(), "application/json;charset=utf-8".to_string());
-        headers.insert("Accept".to_string(), "application/json".to_string());
+        // Go uses "application/json" (no charset) for sovrn
+        headers.insert("Content-Type".to_string(), "application/json".to_string());
 
         // Add device headers if present
         if let Some(device) = &request.device {
@@ -136,27 +170,60 @@ impl Bidder for SovrnAdapter {
         if response.status_code == 204 {
             return Ok(BidderResponse::new());
         }
-        if let Err(e) = crate::check_response_status(response.status_code) {
-            return Err(vec![e]);
+
+        if response.status_code == 400 {
+            return Err(vec![BidderError::BadInput(format!(
+                "Unexpected status code: {}. Run with request.debug = 1 for more info",
+                response.status_code
+            ))]);
+        }
+
+        if response.status_code != 200 {
+            return Err(vec![BidderError::BadServerResponse(format!(
+                "Unexpected status code: {}. Run with request.debug = 1 for more info",
+                response.status_code
+            ))]);
         }
 
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
 
         let mut result = BidderResponse::with_capacity(5);
+        let mut errs = Vec::new();
 
         for sb in bid_resp.seatbid {
-            for bid in sb.bid {
-                let bid_type = internal
-                    .imp
-                    .iter()
-                    .find(|i| i.id == bid.impid)
-                    .map(get_bid_type_from_imp)
-                    .unwrap_or(BidType::Banner);
-                result.bids.push(TypedBid::new(bid, bid_type));
+            for mut bid in sb.bid {
+                // URL-decode the AdM field (Go does url.QueryUnescape)
+                if let Some(adm) = &bid.adm {
+                    bid.adm = Some(url_decode(adm));
+                }
+
+                // Find matching imp to determine bid type
+                let imp = internal.imp.iter().find(|i| i.id == bid.impid);
+                match imp {
+                    Some(imp) => {
+                        let bid_type = if imp.video.is_some() {
+                            BidType::Video
+                        } else {
+                            BidType::Banner
+                        };
+                        result.bids.push(TypedBid::new(bid, bid_type));
+                    }
+                    None => {
+                        errs.push(BidderError::BadInput(format!(
+                            "Imp ID {} in bid didn't match with any imp in the original request",
+                            bid.impid
+                        )));
+                    }
+                }
             }
         }
 
-        Ok(result)
+        if errs.is_empty() {
+            Ok(result)
+        } else {
+            // Non-fatal errors: return partial result
+            Ok(result)
+        }
     }
 }

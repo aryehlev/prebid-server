@@ -97,15 +97,23 @@ impl Bidder for RtbhouseAdapter {
 
             let mut imp = imp.clone();
 
-            // Apply bidFloor from bidder ext when imp has no floor set
-            if imp.bidfloor.is_none() || imp.bidfloor == Some(0.0) {
+            // Apply bidFloor from bidder ext when imp has neither floor nor floor currency set
+            // (matching Go: if bidFloorCur == "" && bidFloor == 0)
+            let imp_floor = imp.bidfloor.unwrap_or(0.0);
+            let imp_floor_cur = imp.bidfloorcur.as_deref().unwrap_or("");
+            if imp_floor_cur.is_empty() && imp_floor == 0.0 {
                 if let Some(ext_floor) = bidder_ext.as_ref()
                     .and_then(|b| b.get("bidfloor"))
                     .and_then(|v| v.as_f64())
                 {
                     if ext_floor > 0.0 {
                         imp.bidfloor = Some(ext_floor);
-                        imp.bidfloorcur = Some(BIDDER_CURRENCY.to_string());
+                        // Use first currency from request if available, else bidder currency
+                        let floor_cur = req_copy.cur.as_ref()
+                            .and_then(|c| c.first())
+                            .map(|s| s.as_str())
+                            .unwrap_or(BIDDER_CURRENCY);
+                        imp.bidfloorcur = Some(floor_cur.to_string());
                     }
                 }
             }
@@ -164,11 +172,17 @@ impl Bidder for RtbhouseAdapter {
         _external: &RequestData,
         response: &ResponseData,
     ) -> Result<BidderResponse, Vec<BidderError>> {
-        if response.status_code == 204 {
-            return Ok(BidderResponse::new());
-        }
-        if let Err(e) = crate::check_response_status(response.status_code) {
-            return Err(vec![e]);
+        match response.status_code {
+            200 => {}
+            204 => return Ok(BidderResponse::new()),
+            400 => return Err(vec![BidderError::BadInput(format!(
+                "Unexpected status code: {}. Run with request.debug = 1 for more info",
+                response.status_code
+            ))]),
+            _ => return Err(vec![BidderError::BadServerResponse(format!(
+                "Unexpected status code: {}. Run with request.debug = 1 for more info",
+                response.status_code
+            ))]),
         }
 
         let bid_response: openrtb::BidResponse = serde_json::from_slice(&response.body)

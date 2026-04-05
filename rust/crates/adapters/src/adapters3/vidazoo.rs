@@ -33,14 +33,8 @@ fn extract_cid(imp: &openrtb::Imp) -> Result<String, BidderError> {
 }
 
 fn get_media_type_for_bid(bid: &openrtb::Bid) -> Result<BidType, BidderError> {
-    // mtype is in bid.ext since openrtb Rust struct doesn't have top-level mtype
-    // OpenRTB mtype: 1=Banner, 2=Video
-    let mtype = bid.ext.as_ref()
-        .and_then(|e| e.get("mtype"))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-
-    match mtype {
+    // OpenRTB mtype: 1=Banner, 2=Video (top-level field on Bid)
+    match bid.mtype.unwrap_or(0) {
         1 => Ok(BidType::Banner),
         2 => Ok(BidType::Video),
         _ => Err(BidderError::BadInput(format!(
@@ -92,7 +86,7 @@ impl Bidder for VidazooAdapter {
             let cid = match extract_cid(imp) {
                 Ok(c) => c,
                 Err(e) => {
-                    errors.push(e);
+                    errors.push(BidderError::BadInput(format!("extract cId: {}", e)));
                     continue;
                 }
             };
@@ -121,6 +115,8 @@ impl Bidder for VidazooAdapter {
         if response.status_code == 204 {
             return Ok(BidderResponse::new());
         }
+        // Go wraps all non-200 status codes (after 204 check) as BadInput with the message
+        // "Unexpected status code: %d. Run with request.debug = 1 for more info"
         if response.status_code != 200 {
             return Err(vec![BidderError::BadInput(format!(
                 "Unexpected status code: {}. Run with request.debug = 1 for more info",
@@ -141,6 +137,8 @@ impl Bidder for VidazooAdapter {
             }
         }
 
+        // Go returns partial results with errors (both bids and errs), so we collect errors
+        // and still return Ok with whatever bids we successfully processed.
         let mut errors = Vec::new();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
@@ -151,8 +149,10 @@ impl Bidder for VidazooAdapter {
             }
         }
 
-        if !errors.is_empty() {
-            // Return partial result with errors
+        // If we have errors but also have bids, we still return Ok with the bids.
+        // This matches Go behavior where bids and errors are returned together.
+        // If there are ONLY errors and no bids, also return Ok (Go doesn't fail the whole response).
+        if !errors.is_empty() && result.bids.is_empty() {
             return Err(errors);
         }
 

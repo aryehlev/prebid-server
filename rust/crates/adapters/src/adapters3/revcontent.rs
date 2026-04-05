@@ -26,7 +26,12 @@ impl Bidder for RevcontentAdapter {
         request: &openrtb::BidRequest,
         _req_info: &ExtraRequestInfo,
     ) -> (Vec<RequestData>, Vec<BidderError>) {
-        // Require app.name or site.domain
+        let body = match serde_json::to_vec(request) {
+            Ok(b) => b,
+            Err(e) => return (vec![], vec![BidderError::BadInput(e.to_string())]),
+        };
+
+        // Require app.name or site.domain (checked after serialization, matching Go order)
         let has_app_name = request
             .app
             .as_ref()
@@ -46,11 +51,6 @@ impl Bidder for RevcontentAdapter {
                 )],
             );
         }
-
-        let body = match serde_json::to_vec(request) {
-            Ok(b) => b,
-            Err(e) => return (vec![], vec![BidderError::BadInput(e.to_string())]),
-        };
 
         let mut headers = HashMap::new();
         headers.insert("Content-Type".to_string(), "application/json;charset=utf-8".to_string());
@@ -76,8 +76,17 @@ impl Bidder for RevcontentAdapter {
         if response.status_code == 204 {
             return Ok(BidderResponse::new());
         }
-        if let Err(e) = crate::check_response_status(response.status_code) {
-            return Err(vec![e]);
+
+        if response.status_code == 400 {
+            return Err(vec![BidderError::BadInput(format!(
+                "unexpected status code: {}.", response.status_code
+            ))]);
+        }
+
+        if response.status_code != 200 {
+            return Err(vec![BidderError::BadServerResponse(format!(
+                "unexpected status code: {}.", response.status_code
+            ))]);
         }
 
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)

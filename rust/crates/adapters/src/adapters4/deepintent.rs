@@ -115,9 +115,6 @@ impl Bidder for DeepintentAdapter {
                 }
             }
         }
-        if !errs.is_empty() && result.bids.is_empty() {
-            return Err(errs);
-        }
         Ok(result)
     }
 }

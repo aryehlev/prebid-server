@@ -37,22 +37,20 @@ fn extract_consumable_ext(imp: &openrtb::Imp) -> Result<ExtImpConsumable, Bidder
 }
 
 fn get_media_type_for_bid(bid: &openrtb::Bid) -> Result<BidType, BidderError> {
-    // mtype is stored in bid.ext since openrtb Rust struct doesn't have top-level mtype
+    // Use the top-level mtype field from the OpenRTB Bid struct.
     // OpenRTB mtype: 1=Banner, 2=Video, 3=Audio, 4=Native
-    let mtype = bid.ext.as_ref()
-        .and_then(|e| e.get("mtype"))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-
-    match mtype {
-        1 => Ok(BidType::Banner),
-        2 => Ok(BidType::Video),
-        3 => Ok(BidType::Audio),
-        _ => Err(BidderError::BadServerResponse(format!(
-            "Failed to parse impression \"{}\" mediatype",
-            bid.impid
-        ))),
+    if let Some(mtype) = bid.mtype {
+        match mtype {
+            1 => return Ok(BidType::Banner),
+            2 => return Ok(BidType::Video),
+            3 => return Ok(BidType::Audio),
+            _ => {}
+        }
     }
+    Err(BidderError::BadServerResponse(format!(
+        "Failed to parse impression \"{}\" mediatype",
+        bid.impid
+    )))
 }
 
 impl Bidder for ConsumableAdapter {
@@ -148,11 +146,8 @@ impl Bidder for ConsumableAdapter {
                 // Set mtype on bid based on bid_type (the Go code does this)
                 let mut typed_bid = TypedBid::new(bid, bid_type.clone());
                 if bid_type == BidType::Video {
-                    // Extract duration from bid.ext.dur if present
-                    let dur = typed_bid.bid.ext.as_ref()
-                        .and_then(|e| e.get("dur"))
-                        .and_then(|v| v.as_i64())
-                        .unwrap_or(0) as i32;
+                    // Extract duration from bid.dur (top-level OpenRTB field)
+                    let dur = typed_bid.bid.dur.unwrap_or(0.0) as i32;
                     typed_bid.bid_video = Some(openrtb_ext::ExtBidPrebidVideo { duration: dur, primary_category: String::new() });
                 }
                 result.bids.push(typed_bid);
