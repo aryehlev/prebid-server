@@ -60,7 +60,7 @@ impl Bidder for BematterfullAdapter {
         let mut results = Vec::new();
         let mut errs = Vec::new();
 
-        for (idx, imp) in request.imp.iter().enumerate() {
+        for imp in request.imp.iter() {
             let ext_val = match &imp.ext {
                 Some(v) => v.clone(),
                 None => {
