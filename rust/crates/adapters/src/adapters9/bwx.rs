@@ -90,7 +90,7 @@ impl Bidder for BwxAdapter {
             }
         }
 
-        if !errs.is_empty() { return Err(errs); }
+        // Return partial bids even if some had unrecognized mtypes (match Go behavior).
         Ok(result)
     }
 }
