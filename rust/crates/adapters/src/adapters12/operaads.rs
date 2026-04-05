@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids, check_response_status};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
 use openrtb::BidResponse;
 use openrtb_ext::BidType;
 
@@ -46,26 +46,56 @@ fn convert_banner(banner: &mut openrtb::Banner) -> Result<(), BidderError> {
     Ok(())
 }
 
+/// Convert native: if native.request is non-empty and not already wrapped in {"native": ...},
+/// wrap it (matching Go's convertImpression logic).
+fn convert_native(native: &mut openrtb::Native) -> Result<(), BidderError> {
+    let req = match &native.request {
+        Some(r) if !r.is_empty() => r.clone(),
+        _ => return Ok(()),
+    };
+    // Parse the request JSON
+    let v: serde_json::Value = serde_json::from_str(&req)
+        .map_err(|e| BidderError::BadInput(e.to_string()))?;
+    // Check if already has "native" key
+    if v.get("native").is_none() {
+        let wrapped = serde_json::json!({ "native": v });
+        native.request = Some(serde_json::to_string(&wrapped)
+            .map_err(|e| BidderError::BadInput(e.to_string()))?);
+    }
+    Ok(())
+}
+
 /// Build a single per-format request
 fn build_format_request(
     request: &openrtb::BidRequest,
     mut imp: openrtb::Imp,
+    headers: HashMap<String, String>,
     endpoint: &str,
     bid_type: &str,
 ) -> Result<RequestData, BidderError> {
     imp.id = build_opera_imp_id(&imp.id, bid_type);
 
-    // Clear other format fields
+    // Clear other format fields and apply conversions
     match bid_type {
-        "banner" => { imp.video = None; imp.native = None; }
-        "video"  => { imp.banner = None; imp.native = None; }
-        "native" => { imp.banner = None; imp.video = None; }
+        "banner" => {
+            imp.video = None;
+            imp.native = None;
+            if let Some(banner) = &mut imp.banner {
+                convert_banner(banner)?;
+            }
+        }
+        "video" => {
+            imp.banner = None;
+            imp.native = None;
+        }
+        "native" => {
+            imp.banner = None;
+            imp.video = None;
+            if let Some(native) = &mut imp.native {
+                convert_native(native)?;
+            }
+        }
         _ => {}
-    }
-
-    // Validate/fix banner size
-    if let Some(banner) = &mut imp.banner {
-        convert_banner(banner)?;
     }
 
     let mut req_copy = request.clone();
@@ -75,11 +105,6 @@ fn build_format_request(
     let body = serde_json::to_vec(&req_copy)
         .map_err(|e| BidderError::BadInput(e.to_string()))?;
 
-    let mut headers = HashMap::new();
-    headers.insert("Content-Type".to_string(), "application/json;charset=utf-8".to_string());
-    headers.insert("Accept".to_string(), "application/json".to_string());
-
-    // Build endpoint URL with publisherId and endpointId from imp.ext.bidder
     Ok(RequestData {
         method: "POST".to_string(),
         uri: endpoint.to_string(),
@@ -91,7 +116,7 @@ fn build_format_request(
 
 impl Bidder for OperaadsAdapter {
     fn make_requests(&self, request: &openrtb::BidRequest, _: &ExtraRequestInfo) -> (Vec<RequestData>, Vec<BidderError>) {
-        // Validate device OS is present
+        // Validate device OS is present (matching Go's checkRequest)
         let device_os_ok = request.device.as_ref()
             .and_then(|d| d.os.as_ref())
             .map(|os| !os.is_empty())
@@ -104,6 +129,10 @@ impl Bidder for OperaadsAdapter {
 
         let mut errs = Vec::new();
         let mut requests = Vec::new();
+
+        let mut headers = HashMap::new();
+        headers.insert("Content-Type".to_string(), "application/json;charset=utf-8".to_string());
+        headers.insert("Accept".to_string(), "application/json".to_string());
 
         for imp in &request.imp {
             // Get endpoint URL from imp.ext.bidder publisherId and endpointId
@@ -120,21 +149,21 @@ impl Bidder for OperaadsAdapter {
             let mut imp_copy = imp.clone();
             imp_copy.tagid = Some(placement_id);
 
-            // Build per-format requests
+            // Build per-format requests: native, video, banner (Go order)
             if imp.native.is_some() {
-                match build_format_request(request, imp_copy.clone(), &endpoint, "native") {
+                match build_format_request(request, imp_copy.clone(), headers.clone(), &endpoint, "native") {
                     Ok(rd) => requests.push(rd),
                     Err(e) => errs.push(e),
                 }
             }
             if imp.video.is_some() {
-                match build_format_request(request, imp_copy.clone(), &endpoint, "video") {
+                match build_format_request(request, imp_copy.clone(), headers.clone(), &endpoint, "video") {
                     Ok(rd) => requests.push(rd),
                     Err(e) => errs.push(e),
                 }
             }
             if imp.banner.is_some() {
-                match build_format_request(request, imp_copy.clone(), &endpoint, "banner") {
+                match build_format_request(request, imp_copy.clone(), headers.clone(), &endpoint, "banner") {
                     Ok(rd) => requests.push(rd),
                     Err(e) => errs.push(e),
                 }
@@ -146,12 +175,23 @@ impl Bidder for OperaadsAdapter {
 
     fn make_bids(&self, _: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
         if response.status_code == 204 { return Ok(BidderResponse::new()); }
-        if let Err(e) = check_response_status(response.status_code) { return Err(vec![e]); }
+        // Use explicit status code checks matching Go's MakeBids
+        if response.status_code == 400 {
+            return Err(vec![BidderError::BadInput(format!(
+                "Unexpected status code: {}. Run with request.debug = 1 for more info", response.status_code
+            ))]);
+        }
+        if response.status_code != 200 {
+            return Err(vec![BidderError::BadServerResponse(format!(
+                "Unexpected status code: {}. Run with request.debug = 1 for more info", response.status_code
+            ))]);
+        }
         let bid_resp: BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
         let mut result = BidderResponse::with_capacity(5);
         for sb in bid_resp.seatbid {
             for mut bid in sb.bid {
+                // Only include bids with non-zero price (matching Go)
                 if bid.price == 0.0 { continue; }
                 let (origin_id, bid_type) = parse_opera_imp_id(&bid.impid);
                 bid.impid = origin_id;
