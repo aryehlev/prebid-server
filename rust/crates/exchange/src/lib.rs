@@ -6,8 +6,10 @@ use pbs_adapters::{BidderError, BidderResponse, ExtraRequestInfo, RequestData, R
 
 pub mod adserver_targeting;
 pub mod analytics;
+pub mod bidadjustment;
 pub mod cache;
 pub mod currency;
+pub mod dsa;
 pub mod floors;
 pub mod gdpr;
 pub mod hooks;
@@ -1608,5 +1610,173 @@ impl Exchange {
             targeting,
             timed_out_bidders,
         })
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Bid ID Generation
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Strategy for generating bid IDs in the auction response.
+///
+/// Mirrors the Go `BidIDGenerator` interface with three strategies:
+///   - `BidderGenerated`: keep the original bid ID from the bidder (no-op).
+///   - `RequestBidId`: use `{request.id}-{bidder}-{counter}` to produce
+///     deterministic, request-scoped IDs.
+///   - `Uuid`: generate a fresh UUID v4 for every bid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BidIdStrategy {
+    /// Keep the original bid.id returned by the bidder.
+    BidderGenerated,
+    /// Derive a deterministic ID from request.id + bidder name + counter.
+    RequestBidId,
+    /// Generate a new UUID v4 for each bid.
+    Uuid,
+}
+
+impl Default for BidIdStrategy {
+    fn default() -> Self {
+        Self::BidderGenerated
+    }
+}
+
+/// Generate a bid ID according to the chosen strategy.
+///
+/// * `strategy`       – which ID generation approach to use.
+/// * `original_bid_id` – the bid.id value the bidder returned.
+/// * `request_id`     – the auction request ID (`request.id`).
+/// * `bidder_name`    – the canonical bidder name (used by `RequestBidId`).
+/// * `counter`        – a monotonically increasing counter per bidder within
+///                       the same auction (used by `RequestBidId`).
+pub fn generate_bid_id(
+    strategy: BidIdStrategy,
+    original_bid_id: &str,
+    request_id: &str,
+    bidder_name: &str,
+    counter: u64,
+) -> String {
+    match strategy {
+        BidIdStrategy::BidderGenerated => original_bid_id.to_string(),
+        BidIdStrategy::RequestBidId => {
+            format!("{}-{}-{}", request_id, bidder_name, counter)
+        }
+        BidIdStrategy::Uuid => uuid::Uuid::new_v4().to_string(),
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// SeatNonBid / NonBidReason
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Reason codes for why a bid was not produced for an impression.
+///
+/// Reference: IAB OpenRTB community extension `seat-non-bid.md`.
+/// These mirror the Go `NonBidReason` constants in `exchange/non_bid_reason.go`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
+pub enum NonBidReason {
+    // ── No-bid (0–99) ────────────────────────────────────────────────────────
+    /// The bidder simply chose not to bid.
+    NoBid = 0,
+
+    // ── Error (100–199) ──────────────────────────────────────────────────────
+    /// General / unclassified error.
+    ErrorGeneral = 100,
+    /// The bidder did not respond within the timeout window.
+    ErrorTimeout = 101,
+    /// The bidder endpoint could not be reached (DNS / connection refused).
+    ErrorBidderUnreachable = 103,
+
+    // ── Request rejection (200–299) ──────────────────────────────────────────
+    /// General request rejection.
+    RequestRejectedGeneral = 200,
+    /// Request blocked by publisher-level settings.
+    RequestBlockedPublisher = 201,
+    /// Request blocked by GDPR / privacy enforcement.
+    RequestBlockedPrivacy = 202,
+    /// Request blocked by DSA transparency requirements.
+    RequestBlockedDsa = 203,
+
+    // ── Response rejection (300–399) ─────────────────────────────────────────
+    /// General response rejection.
+    ResponseRejectedGeneral = 300,
+    /// Bid price fell below the impression floor.
+    ResponseRejectedBelowFloor = 301,
+    /// Category mapping for the bid was invalid.
+    ResponseRejectedCategoryMappingInvalid = 303,
+    /// Bid was below the deal floor price.
+    ResponseRejectedBelowDealFloor = 304,
+    /// Creative size not allowed for the placement.
+    ResponseRejectedCreativeSizeNotAllowed = 351,
+    /// Creative was not secure (HTTP in an HTTPS context).
+    ResponseRejectedCreativeNotSecure = 352,
+}
+
+impl NonBidReason {
+    /// Return the numeric IAB status code for this reason.
+    pub fn code(self) -> i32 {
+        self as i32
+    }
+}
+
+impl std::fmt::Display for NonBidReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            Self::NoBid => "no bid",
+            Self::ErrorGeneral => "general error",
+            Self::ErrorTimeout => "timeout",
+            Self::ErrorBidderUnreachable => "bidder unreachable",
+            Self::RequestRejectedGeneral => "request rejected (general)",
+            Self::RequestBlockedPublisher => "request blocked by publisher",
+            Self::RequestBlockedPrivacy => "request blocked by privacy",
+            Self::RequestBlockedDsa => "request blocked by DSA",
+            Self::ResponseRejectedGeneral => "response rejected (general)",
+            Self::ResponseRejectedBelowFloor => "response rejected: below floor",
+            Self::ResponseRejectedCategoryMappingInvalid => {
+                "response rejected: category mapping invalid"
+            }
+            Self::ResponseRejectedBelowDealFloor => "response rejected: below deal floor",
+            Self::ResponseRejectedCreativeSizeNotAllowed => {
+                "response rejected: creative size not allowed"
+            }
+            Self::ResponseRejectedCreativeNotSecure => {
+                "response rejected: creative not secure"
+            }
+        };
+        write!(f, "{}", label)
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// AdsCert Signing (stub interface)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Header name used to carry the Ads Cert signature, matching the Go constant
+/// `adscert.SignHeader`.
+pub const ADS_CERT_SIGN_HEADER: &str = "X-Ads-Cert-Auth";
+
+/// Trait representing the Ads Cert request-signing interface.
+///
+/// Real implementations would use the IABTechLab `adscert` library to produce
+/// an authenticated-connection signature.  This trait provides the integration
+/// seam so that adapters can conditionally attach the `X-Ads-Cert-Auth` header.
+pub trait AdsCertSigner: Send + Sync {
+    /// Sign a bid request destined for `destination_url` with the given `body`.
+    ///
+    /// Returns `Ok(Some(signature))` on success, `Ok(None)` when signing is
+    /// disabled / not configured, or `Err` when the signer is enabled but
+    /// encounters an error.
+    fn sign(&self, destination_url: &str, body: &[u8]) -> Result<Option<String>, String>;
+}
+
+/// No-op signer that always returns `None` (signing disabled).
+///
+/// This is the default used when Ads Cert is not configured, mirroring the Go
+/// `NilSigner` implementation.
+pub struct NoopAdsCertSigner;
+
+impl AdsCertSigner for NoopAdsCertSigner {
+    fn sign(&self, _destination_url: &str, _body: &[u8]) -> Result<Option<String>, String> {
+        Ok(None)
     }
 }

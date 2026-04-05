@@ -47,6 +47,8 @@ pub struct AppStateInner {
     pub gdpr_enabled: bool,
     /// Account-level configurations
     pub accounts: std::collections::HashMap<String, pbs_config::AccountConfig>,
+    /// Optional shared currency converter for the /currency/rates endpoint
+    pub currency_converter: Option<Arc<pbs_exchange::currency::CurrencyConverter>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -359,6 +361,9 @@ pub async fn auction_handler(
             bid_request.tmax = Some(tmax as i64);
         }
     }
+
+    // Process interstitial impressions (expand banner formats for instl=1).
+    process_interstitials(&mut bid_request);
 
     let handler_start = std::time::Instant::now();
     let auction_req = pbs_exchange::AuctionRequest {
@@ -700,6 +705,35 @@ pub async fn amp_handler(
             }
         }
     }
+
+    // ms (multi-size) → imp[0].banner.format
+    // Format: "WxH,WxH,..." e.g. "300x250,728x90"
+    if let Some(ms) = params.ms.as_deref().filter(|s| !s.is_empty()) {
+        let mut formats: Vec<openrtb::Format> = Vec::new();
+        for size_str in ms.split(',') {
+            let size_str = size_str.trim();
+            if let Some((w_str, h_str)) = size_str.split_once('x') {
+                if let (Ok(w), Ok(h)) = (w_str.trim().parse::<i32>(), h_str.trim().parse::<i32>()) {
+                    if w > 0 && h > 0 {
+                        formats.push(openrtb::Format {
+                            w: Some(w),
+                            h: Some(h),
+                            ..Default::default()
+                        });
+                    }
+                }
+            }
+        }
+        if !formats.is_empty() {
+            if let Some(imp) = bid_request.imp.first_mut() {
+                let banner = imp.banner.get_or_insert_with(Default::default);
+                banner.format = Some(formats);
+            }
+        }
+    }
+
+    // Apply interstitial processing for instl=1 impressions.
+    process_interstitials(&mut bid_request);
 
     // slot → imp[0].tagid
     if let Some(slot) = params.slot.as_deref().filter(|s| !s.is_empty()) {
@@ -1366,6 +1400,144 @@ pub async fn metrics_handler(State(state): State<AppState>) -> Response {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// GET /currency/rates — current currency conversion rates
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Response shape for the `/currency/rates` endpoint, mirroring Go's
+/// `currencyRatesInfo` struct.
+#[derive(Serialize)]
+pub struct CurrencyRatesInfo {
+    pub active: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(rename = "lastUpdated", skip_serializing_if = "Option::is_none")]
+    pub last_updated: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rates: Option<HashMap<String, HashMap<String, f64>>>,
+}
+
+pub async fn currency_rates_handler(State(state): State<AppState>) -> Json<CurrencyRatesInfo> {
+    match &state.currency_converter {
+        Some(converter) => {
+            Json(CurrencyRatesInfo {
+                active: true,
+                source: converter.source().map(|s| s.to_string()),
+                last_updated: converter.last_updated(),
+                rates: Some(converter.rates().clone()),
+            })
+        }
+        None => {
+            Json(CurrencyRatesInfo {
+                active: false,
+                source: None,
+                last_updated: None,
+                rates: None,
+            })
+        }
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Interstitial processing (applied before auction for instl=1 impressions)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Common interstitial ad sizes, sorted by frequency / size (larger first).
+/// Mirrors Go `config.ResolvedInterstitialSizes`.
+const INTERSTITIAL_SIZES: &[(i32, i32)] = &[
+    (300, 250), (728, 90), (160, 600), (320, 50), (300, 600),
+    (320, 480), (336, 280), (120, 600), (468, 60), (970, 90),
+    (970, 250), (320, 100), (300, 50), (300, 100), (768, 1024),
+    (1024, 768), (480, 320), (300, 1050), (320, 250), (250, 250),
+];
+
+/// Process interstitial impressions by expanding banner format lists to include
+/// standard sizes that fit between the device dimensions and the minimum
+/// percentage thresholds from `device.ext.prebid.interstitial`.
+///
+/// This is a pre-auction transformation matching Go's `processInterstitials`.
+pub fn process_interstitials(bid_request: &mut openrtb::BidRequest) {
+    // Read min width/height percentage from device.ext.prebid.interstitial
+    let interstitial = bid_request
+        .device
+        .as_ref()
+        .and_then(|d| d.ext.as_ref())
+        .and_then(|e| e.get("prebid"))
+        .and_then(|p| p.get("interstitial"));
+
+    let interstitial = match interstitial {
+        Some(v) => v.clone(),
+        None => return, // no interstitial config, nothing to do
+    };
+
+    let min_width_perc = interstitial
+        .get("minwidthperc")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0) as i32;
+    let min_height_perc = interstitial
+        .get("minheightperc")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0) as i32;
+
+    if min_width_perc <= 0 || min_height_perc <= 0 {
+        return;
+    }
+
+    let device_w = bid_request
+        .device
+        .as_ref()
+        .and_then(|d| d.w)
+        .unwrap_or(0);
+    let device_h = bid_request
+        .device
+        .as_ref()
+        .and_then(|d| d.h)
+        .unwrap_or(0);
+
+    for imp in &mut bid_request.imp {
+        if imp.instl != Some(1) {
+            continue;
+        }
+        let banner = match &mut imp.banner {
+            Some(b) => b,
+            None => continue,
+        };
+
+        // Determine max dimensions from first format entry or device size.
+        let (max_w, max_h) = if let Some(first) = banner.format.as_ref().and_then(|f| f.first()) {
+            let fw = first.w.unwrap_or(0);
+            let fh = first.h.unwrap_or(0);
+            if fw < 2 && fh < 2 { (device_w, device_h) } else { (fw, fh) }
+        } else {
+            (device_w, device_h)
+        };
+
+        if max_w <= 0 || max_h <= 0 {
+            continue;
+        }
+
+        let min_w = (max_w * min_width_perc) / 100;
+        let min_h = (max_h * min_height_perc) / 100;
+
+        let mut formats: Vec<openrtb::Format> = Vec::new();
+        for &(w, h) in INTERSTITIAL_SIZES {
+            if w >= min_w && w <= max_w && h >= min_h && h <= max_h {
+                formats.push(openrtb::Format {
+                    w: Some(w),
+                    h: Some(h),
+                    ..Default::default()
+                });
+                if formats.len() >= 10 {
+                    break;
+                }
+            }
+        }
+        if !formats.is_empty() {
+            banner.format = Some(formats);
+        }
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Router
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -1393,6 +1565,8 @@ pub fn create_router(state: AppState) -> axum::Router {
         // Events
         .route("/event", axum::routing::get(event_handler))
         .route("/vtrack", axum::routing::post(vtrack_handler))
+        // Currency
+        .route("/currency/rates", axum::routing::get(currency_rates_handler))
         .with_state(state)
 }
 
@@ -1429,6 +1603,7 @@ mod tests {
             gdpr_enabled: false,
             accounts: std::collections::HashMap::new(),
             bidder_sync_info: std::collections::HashMap::new(),
+            currency_converter: None,
         })
     }
 

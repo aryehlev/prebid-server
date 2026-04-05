@@ -310,6 +310,7 @@ async fn main() -> anyhow::Result<()> {
         max_request_size: cfg.max_request_size,
         gdpr_enabled: cfg.gdpr_enabled,
         accounts: cfg.accounts.clone(),
+        currency_converter: None,
     });
 
     // Build CORS layer: permissive for all origins.
