@@ -26,7 +26,7 @@ struct ImpExtBidstack {
 }
 
 impl Bidder for BidstackAdapter {
-    fn make_requests(&self, request: &openrtb::BidRequest, _: &ExtraRequestInfo) -> (Vec<RequestData>, Vec<BidderError>) {
+    fn make_requests(&self, request: &openrtb::BidRequest, _req_info: &ExtraRequestInfo) -> (Vec<RequestData>, Vec<BidderError>) {
         if request.imp.is_empty() {
             return (vec![], vec![BidderError::BadInput("missing impressions".to_string())]);
         }
@@ -47,7 +47,22 @@ impl Bidder for BidstackAdapter {
             Err(e) => return (vec![], vec![BidderError::BadInput(format!("get bidder ext: bidder ext: {}", e))]),
         };
 
-        let body = match serde_json::to_vec(request) {
+        // Note: Go implementation converts imp.BidFloor currency to USD using reqInfo.ConvertCurrency.
+        // Currency conversion is not yet supported in ExtraRequestInfo for Rust; bids are forwarded as-is.
+        let mut req_copy = request.clone();
+        for imp in &mut req_copy.imp {
+            if imp.bidfloor.map(|f| f > 0.0).unwrap_or(false) {
+                if let Some(cur) = &imp.bidfloorcur {
+                    if cur.to_uppercase() == "USD" || cur.is_empty() {
+                        // already USD, no conversion needed
+                    }
+                    // If non-USD, ideally we'd convert; skip for now as ExtraRequestInfo
+                    // doesn't expose currency conversion in the Rust port.
+                }
+            }
+        }
+
+        let body = match serde_json::to_vec(&req_copy) {
             Ok(b) => b,
             Err(e) => return (vec![], vec![BidderError::BadInput(format!("bid request marshal: {}", e))]),
         };
@@ -61,7 +76,7 @@ impl Bidder for BidstackAdapter {
             uri: self.endpoint.clone(),
             body,
             headers,
-            imp_ids: get_imp_ids(&request.imp),
+            imp_ids: get_imp_ids(&req_copy.imp),
         }], vec![])
     }
 
