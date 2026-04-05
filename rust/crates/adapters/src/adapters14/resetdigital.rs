@@ -122,7 +122,7 @@ impl Bidder for ResetdigitalAdapter {
                     }
                 };
 
-                let mut typed_bid = TypedBid::new(bid, bid_type);
+                let typed_bid = TypedBid::new(bid, bid_type);
                 // Store seat in orig_bid_cur field is not right; use a custom approach
                 // The Go TypedBid has a Seat field; our Rust TypedBid doesn't, so we skip that
                 // but we still include the bid

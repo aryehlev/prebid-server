@@ -36,16 +36,19 @@ struct ExtImpAppnexus {
     #[serde(rename = "traffic_source_code", default)]
     pub traffic_source_code: String,
     #[serde(rename = "keywords", default)]
+    #[allow(dead_code)]
     pub keywords: serde_json::Value,
     #[serde(rename = "use_pmt_rule", default)]
     pub use_payment_rule: Option<bool>,
     #[serde(rename = "private_sizes", default)]
+    #[allow(dead_code)]
     pub private_sizes: Option<serde_json::Value>,
     #[serde(rename = "ext_inv_code", default)]
     pub ext_inv_code: String,
     #[serde(rename = "external_imp_id", default)]
     pub external_imp_id: String,
     #[serde(rename = "generate_ad_pod_id", default)]
+    #[allow(dead_code)]
     pub generate_ad_pod_id: bool,
 }
 
@@ -91,6 +94,7 @@ struct BidExtAppnexus {
     #[serde(rename = "bid_ad_type", default)]
     bid_ad_type: i32,
     #[serde(rename = "brand_category_id", default)]
+    #[allow(dead_code)]
     brand_category: i32,
     #[serde(rename = "deal_priority", default)]
     deal_priority: i32,

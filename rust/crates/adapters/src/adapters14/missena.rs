@@ -22,6 +22,7 @@ struct ExtImpMissena {
     settings: Option<serde_json::Value>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Serialize, Clone, Default)]
 struct EidUid {
     id: String,
@@ -31,6 +32,7 @@ struct EidUid {
     ext: Option<serde_json::Value>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Serialize, Clone, Default)]
 struct Eid {
     source: String,

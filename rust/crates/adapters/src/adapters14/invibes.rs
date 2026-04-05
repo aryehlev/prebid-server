@@ -102,6 +102,7 @@ struct BidServerTypedBid {
     deal_priority: i32,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, Clone, Default)]
 struct InvibesBid {
     #[serde(default)]

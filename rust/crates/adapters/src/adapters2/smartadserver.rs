@@ -27,6 +27,7 @@ impl SmartadserverAdapter {
 
 /// Smartadserver bidder extension from imp.ext.bidder
 #[derive(Debug, Default, Deserialize)]
+#[allow(dead_code)]
 struct ExtImpSmartadserver {
     #[serde(rename = "networkId", default)]
     network_id: i64,

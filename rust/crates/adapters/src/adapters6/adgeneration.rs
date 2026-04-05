@@ -13,6 +13,7 @@ struct ExtImpBidder { bidder: Value }
 #[derive(Deserialize)]
 struct ExtImpAdgeneration { id: String }
 
+#[allow(dead_code)]
 #[derive(Deserialize, Default)]
 struct AdgServerResponse {
     #[serde(default)]
@@ -51,8 +52,13 @@ fn insert_vast_method(bid_id: &str, vastxml: &str) -> String {
 
 fn append_child_to_body(ad: &str, data: &str) -> String {
     // Replace </body> or </ body> with data + </body>
-    let re = regex::Regex::new(r"</\s?body>").unwrap();
-    re.replace_all(ad, format!("{data}</body>").as_str()).to_string()
+    if let Some(pos) = ad.find("</body>") {
+        format!("{}{data}</body>{}", &ad[..pos], &ad[pos + 7..])
+    } else if let Some(pos) = ad.find("</ body>") {
+        format!("{}{data}</body>{}", &ad[..pos], &ad[pos + 8..])
+    } else {
+        ad.to_string()
+    }
 }
 
 fn remove_wrapper(ad: &str) -> String {
@@ -167,20 +173,21 @@ impl Bidder for AdgenerationAdapter {
         if let Err(e) = crate::check_response_status(response.status_code) { return Err(vec![e]); }
         let bid_resp: AdgServerResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
-        if bid_resp.results.as_ref().map(|r| r.is_empty()).unwrap_or(true) { return Ok(BidderResponse::new()); }
-        let location_id = bid_resp.locationid.as_deref().unwrap_or("");
+        if bid_resp.results.is_empty() { return Ok(BidderResponse::new()); }
+        let location_id = &bid_resp.locationid;
         for imp in &internal.imp {
             let ext = match unmarshal_adg_ext(imp) { Some(e) => e, None => continue };
-            if ext.id == location_id {
+            if ext.id == *location_id {
+                let ad_markup = create_ad(&bid_resp, &imp.id);
                 let bid = openrtb::Bid {
                     id: location_id.to_string(),
                     impid: imp.id.clone(),
-                    price: bid_resp.cpm.unwrap_or(0.0),
-                    adm: bid_resp.ad.clone(),
-                    crid: bid_resp.creativeid.clone(),
-                    dealid: bid_resp.dealid.clone(),
-                    w: bid_resp.w.map(|v| v as i32),
-                    h: bid_resp.h.map(|v| v as i32),
+                    price: bid_resp.cpm,
+                    adm: Some(ad_markup),
+                    crid: Some(bid_resp.creativeid.clone()),
+                    dealid: if bid_resp.dealid.is_empty() { None } else { Some(bid_resp.dealid.clone()) },
+                    w: if bid_resp.w > 0 { Some(bid_resp.w as i32) } else { None },
+                    h: if bid_resp.h > 0 { Some(bid_resp.h as i32) } else { None },
                     ..Default::default()
                 };
                 let mut result = BidderResponse::with_capacity(1);

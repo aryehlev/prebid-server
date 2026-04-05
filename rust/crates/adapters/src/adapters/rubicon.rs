@@ -66,8 +66,10 @@ struct ExtImpRubicon {
     #[serde(rename = "inventory", default)]
     inventory: Option<serde_json::Value>,
     #[serde(rename = "visitor", default)]
+    #[allow(dead_code)]
     visitor: Option<serde_json::Value>,
     #[serde(rename = "keywords", default)]
+    #[allow(dead_code)]
     keywords: Vec<String>,
 }
 

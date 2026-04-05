@@ -128,6 +128,7 @@ struct ExtImpBidder {
     bidder: Value,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize, Default)]
 struct ImpExtAdnuntius {
     #[serde(rename = "auId", default)]

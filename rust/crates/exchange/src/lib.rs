@@ -592,7 +592,7 @@ impl Exchange {
     pub async fn hold_auction_with_timeouts(
         &self,
         request: AuctionRequest,
-        per_bidder_timeouts: &HashMap<String, u64>,
+        _per_bidder_timeouts: &HashMap<String, u64>,
     ) -> Result<AuctionResponse, anyhow::Error> {
         // Validate the request before any processing.
         let validation_errors = validation::validate_request(&request.bid_request);

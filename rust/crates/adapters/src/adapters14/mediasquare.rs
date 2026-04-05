@@ -136,7 +136,7 @@ fn get_user_uid(request: &openrtb::BidRequest) -> String {
         .to_string()
 }
 
-fn to_json_value(v: &openrtb::BidRequest) -> Option<serde_json::Value> {
+fn _to_json_value(_v: &openrtb::BidRequest) -> Option<serde_json::Value> {
     None // used in tech fields
 }
 

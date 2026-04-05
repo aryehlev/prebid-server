@@ -490,7 +490,10 @@ mod tests {
         );
         let mut imp = openrtb::Imp::default();
         imp.id = "imp1".to_string();
-        imp.banner = Some(Banner::default());
+        imp.banner = Some(Banner {
+            format: Some(vec![make_format(300, 250)]),
+            ..Default::default()
+        });
         imp.ext = Some(
             serde_json::json!({"bidder": {"accountId": 1234, "siteId": 5678, "zoneId": 9012}}),
         );
@@ -522,8 +525,11 @@ mod tests {
         );
         let mut imp = openrtb::Imp::default();
         imp.id = "imp1".to_string();
-        imp.banner = Some(Banner::default());
-        imp.ext = Some(serde_json::json!({"bidder": {"accountId": 1}}));
+        imp.banner = Some(Banner {
+            format: Some(vec![make_format(300, 250)]),
+            ..Default::default()
+        });
+        imp.ext = Some(serde_json::json!({"bidder": {"accountId": 1, "siteId": 5678, "zoneId": 9012}}));
         let req = openrtb::BidRequest {
             id: "r".to_string(),
             imp: vec![imp],

@@ -88,6 +88,7 @@ struct DsaTransparencyRequest {
     pub params: Vec<i32>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, Default)]
 struct ExtRegsWithDsa {
     #[serde(default)]

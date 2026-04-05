@@ -53,7 +53,7 @@ fn get_bid_ext(bid: &StroeerBid) -> Option<serde_json::Value> {
 impl Bidder for StroeerCoreAdapter {
     fn make_requests(&self, request: &openrtb::BidRequest, _: &ExtraRequestInfo) -> (Vec<RequestData>, Vec<BidderError>) {
         let mut req_copy = request.clone();
-        let mut errs = Vec::new();
+        let errs = Vec::new();
 
         for imp in &mut req_copy.imp {
             if let Some(sid) = imp.ext.as_ref()

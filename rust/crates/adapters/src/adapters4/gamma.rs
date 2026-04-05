@@ -51,6 +51,7 @@ struct GammaSeatBid {
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[allow(dead_code)]
 struct GammaBidResponse {
     #[serde(rename = "id", default)]
     id: String,

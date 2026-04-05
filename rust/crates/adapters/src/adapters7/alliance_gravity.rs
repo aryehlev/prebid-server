@@ -53,7 +53,7 @@ fn get_media_type_for_bid(bid: &openrtb::Bid) -> Result<BidType, BidderError> {
                         "video" => Ok(BidType::Video),
                         "native" => Ok(BidType::Native),
                         "audio" => Ok(BidType::Audio),
-                        other => Err(BidderError::BadServerResponse(format!(
+                        _other => Err(BidderError::BadServerResponse(format!(
                             "Failed to parse impression \"{}\" mediatype", bid.impid
                         ))),
                     };

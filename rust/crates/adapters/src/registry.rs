@@ -184,7 +184,7 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     reg!("apacdex", crate::adapters7::ApacdexAdapter::new(ep("apacdex")));
     reg!("appush", crate::adapters7::AppushAdapter::new(ep("appush")));
     reg!("aso", crate::adapters7::AsoAdapter::new(ep("aso")));
-    reg!("audience_network", crate::adapters7::AudienceNetworkAdapter::new(ep("audienceNetwork")));
+    reg!("audienceNetwork", crate::adapters7::AudienceNetworkAdapter::new(ep("audienceNetwork")));
     reg!("automatad", crate::adapters7::AutomatadAdapter::new(ep("automatad")));
     reg!("avocet", crate::adapters7::AvocetAdapter::new(ep("avocet")));
     reg!("axis", crate::adapters7::AxisAdapter::new(ep("axis")));

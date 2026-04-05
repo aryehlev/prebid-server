@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_bid_type_from_imp, get_imp_ids};
-use openrtb_ext::BidType;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

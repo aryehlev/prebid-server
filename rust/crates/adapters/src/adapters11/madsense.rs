@@ -90,7 +90,7 @@ impl Bidder for MadsenseAdapter {
         if let Some(cur) = &bid_resp.cur {
             if !cur.is_empty() { result.currency = cur.clone(); }
         }
-        let mut errs = Vec::new();
+        let errs = Vec::new();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
                 let mtype = bid.ext.as_ref()

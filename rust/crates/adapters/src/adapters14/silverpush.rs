@@ -288,7 +288,7 @@ impl Bidder for SilverpushAdapter {
 
     fn make_bids(&self, _: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
         if response.status_code == 204 { return Ok(BidderResponse::new()); }
-        if let Err(e) = crate::check_response_status(response.status_code) {
+        if let Err(_e) = crate::check_response_status(response.status_code) {
             return Err(vec![BidderError::BadInput(format!("Unexpected status code: {}. Run with request.debug = 1 for more info", response.status_code))]);
         }
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)

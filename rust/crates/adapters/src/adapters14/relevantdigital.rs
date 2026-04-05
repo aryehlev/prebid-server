@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_bid_type_from_mtype, get_imp_ids};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
 use openrtb_ext::BidType;
 use serde::{Deserialize, Serialize};
 
@@ -24,6 +24,7 @@ struct ExtImpRelevantDigital {
 }
 
 /// request.ext structure with relevant and prebid fields
+#[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize, Default)]
 struct RelevantRequestExt {
     #[serde(default)]
@@ -32,6 +33,7 @@ struct RelevantRequestExt {
     prebid: PrebidMeta,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize, Default)]
 struct RelevantMeta {
     #[serde(default)]
@@ -40,6 +42,7 @@ struct RelevantMeta {
     adapter_type: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize, Default)]
 struct PrebidMeta {
     #[serde(default)]
@@ -48,6 +51,7 @@ struct PrebidMeta {
     debug: bool,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize, Default)]
 struct StoredRequest {
     #[serde(default)]
@@ -148,7 +152,8 @@ fn set_tmax(request: &mut openrtb::BidRequest, buffer_ms: i64) {
 }
 
 /// Scrub relevant/prebid cached data from the request JSON after marshaling
-fn scrub_json(mut body: Vec<u8>, imp_count: usize) -> Vec<u8> {
+#[allow(dead_code)]
+fn scrub_json(body: Vec<u8>, imp_count: usize) -> Vec<u8> {
     // We do a simple JSON string manipulation to delete unwanted keys.
     // Since we're working with serde_json Value directly, we handle this in the struct level.
     // The Go implementation uses jsonparser.Delete after marshaling; we approximate by

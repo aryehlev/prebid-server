@@ -8,6 +8,7 @@ use openrtb_ext::{BidType, ExtBidPrebidVideo, FledgeAuctionConfig};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+#[allow(dead_code)]
 const MAX_IMPS_PUBMATIC: usize = 30;
 
 pub struct PubmaticAdapter {
@@ -32,6 +33,7 @@ struct ExtImpPubmatic {
     #[serde(rename = "pmZoneId", default)]
     pm_zone_id_alt: String,
     #[serde(default)]
+    #[allow(dead_code)]
     keywords: Option<Vec<PubmaticKeyword>>,
     #[serde(default)]
     wrapper: Option<PubmaticWrapperExt>,
@@ -39,7 +41,9 @@ struct ExtImpPubmatic {
 
 #[derive(Debug, Default, Deserialize)]
 struct PubmaticKeyword {
+    #[allow(dead_code)]
     key: String,
+    #[allow(dead_code)]
     value: Vec<String>,
 }
 

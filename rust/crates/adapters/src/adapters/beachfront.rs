@@ -391,7 +391,7 @@ impl Bidder for BeachfrontAdapter {
 
             let body_result = if is_nurl {
                 // Prepend {"isPrebid":true, to the JSON
-                serde_json::to_vec(&req_copy).map(|mut b| {
+                serde_json::to_vec(&req_copy).map(|b| {
                     let prefix = br#"{"isPrebid":true,"#;
                     // Replace opening `{` with `{"isPrebid":true,`
                     if b.first() == Some(&b'{') {
@@ -464,7 +464,7 @@ impl Bidder for BeachfrontAdapter {
             // Try standard OpenRTB response
             match serde_json::from_slice::<openrtb::BidResponse>(&response.body) {
                 Ok(bid_resp) if !bid_resp.seatbid.is_empty() => {
-                    let is_nurl = external.uri.ends_with(NURL_VIDEO_ENDPOINT_SUFFIX);
+                    let _is_nurl = external.uri.ends_with(NURL_VIDEO_ENDPOINT_SUFFIX);
                     for sb in bid_resp.seatbid {
                         for bid in sb.bid {
                             result.bids.push(TypedBid::new(bid, BidType::Video));

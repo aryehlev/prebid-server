@@ -10,6 +10,7 @@ impl AdponeAdapter { pub fn new(endpoint: String) -> Self { Self { endpoint } } 
 #[derive(Deserialize)]
 struct ExtImpBidder { bidder: Value }
 
+#[allow(dead_code)]
 #[derive(Deserialize)]
 struct ExtAdpone {
     #[serde(rename = "placementId", default)]

@@ -22,7 +22,7 @@ struct SspBcRequest<'a> {
     request_info: SspBcRequestInfo,
 }
 
-fn get_bid_type_from_mtype(mtype: i32, imp_id: &str) -> Result<BidType, BidderError> {
+fn get_bid_type_from_mtype(mtype: i32, _imp_id: &str) -> Result<BidType, BidderError> {
     match mtype {
         1 => Ok(BidType::Banner),
         2 => Ok(BidType::Video),

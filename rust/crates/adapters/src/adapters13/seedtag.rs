@@ -16,7 +16,7 @@ fn get_bid_type_from_mtype(mtype: u64) -> Result<BidType, BidderError> {
 
 impl Bidder for SeedtagAdapter {
     fn make_requests(&self, request: &openrtb::BidRequest, _: &ExtraRequestInfo) -> (Vec<RequestData>, Vec<BidderError>) {
-        let mut errs = Vec::new();
+        let errs = Vec::new();
         let mut valid_imps: Vec<openrtb::Imp> = Vec::new();
 
         for imp in &request.imp {
