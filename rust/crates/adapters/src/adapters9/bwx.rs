@@ -78,19 +78,17 @@ impl Bidder for BwxAdapter {
         }
 
         let mut result = BidderResponse::with_capacity(5);
-        let mut errs = Vec::new();
 
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
                 let mtype = bid.mtype.unwrap_or(0) as u64;
-                match get_bid_type_from_mtype(mtype, &bid.impid) {
-                    Ok(t) => result.bids.push(TypedBid::new(bid, t)),
-                    Err(e) => errs.push(e),
+                // Skip bids with unrecognized mtype (match Go behavior: continue on error).
+                if let Ok(t) = get_bid_type_from_mtype(mtype, &bid.impid) {
+                    result.bids.push(TypedBid::new(bid, t));
                 }
             }
         }
 
-        // Return partial bids even if some had unrecognized mtypes (match Go behavior).
         Ok(result)
     }
 }
