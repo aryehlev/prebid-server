@@ -32,7 +32,12 @@ Decimal phases appear between their surrounding integers in numeric order.
   1. The team can run automated Go-vs-Rust endpoint comparisons and receive categorized mismatch output by parity area.
   2. The team can inspect a compatibility matrix that tracks parity status across endpoints, config surfaces, bidders, modules, cache behavior, and support services.
   3. When a comparison fails, the output is specific enough to place the mismatch into the next implementation phase without manual guesswork.
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+- [ ] 01-01-PLAN.md — Define shared parity contracts, locked domains, and Wave-0 validation scaffolding.
+- [ ] 01-02-PLAN.md — Implement the auction-first Go-vs-Rust oracle, narrow normalization, and categorized diff artifacts.
+- [ ] 01-03-PLAN.md — Build the domain-level compatibility matrix and rendered Phase 1 snapshot.
 
 ### Phase 2: Config and Bootstrap Compatibility
 **Goal**: Operators can start Rust with the same configuration inputs and bootstrap assets they use for Go.
@@ -122,7 +127,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Parity Oracle and Coverage Matrix | 0/TBD | Not started | - |
+| 1. Parity Oracle and Coverage Matrix | 0/3 | Not started | - |
 | 2. Config and Bootstrap Compatibility | 0/TBD | Not started | - |
 | 3. Stored Data and Account Resolution | 0/TBD | Not started | - |
 | 4. Core Auction Lifecycle | 0/TBD | Not started | - |
