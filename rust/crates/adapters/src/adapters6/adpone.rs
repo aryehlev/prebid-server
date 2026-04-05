@@ -1,9 +1,20 @@
 use std::collections::HashMap;
 use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
 use openrtb_ext::BidType;
+use serde::Deserialize;
+use serde_json::Value;
 
 pub struct AdponeAdapter { pub endpoint: String }
 impl AdponeAdapter { pub fn new(endpoint: String) -> Self { Self { endpoint } } }
+
+#[derive(Deserialize)]
+struct ExtImpBidder { bidder: Value }
+
+#[derive(Deserialize)]
+struct ExtAdpone {
+    #[serde(rename = "placementId", default)]
+    placement_id: String,
+}
 
 impl Bidder for AdponeAdapter {
     fn make_requests(
@@ -14,13 +25,13 @@ impl Bidder for AdponeAdapter {
         let mut errs = Vec::new();
 
         // Validate the first impression's ext (mirrors Go's validation block).
-        // Errors here are non-fatal — the request is still sent.
+        // Errors here are non-fatal — the request is still sent if imps exist.
         if let Some(imp) = request.imp.first() {
-            if let Some(ext) = &imp.ext {
-                if let Some(bidder) = ext.get("bidder") {
-                    // Attempt to parse but only collect errors, do not abort.
-                    if bidder.is_null() {
-                        errs.push(BidderError::BadInput("adpone bidder ext is null".to_string()));
+            match imp.ext.as_ref().and_then(|e| serde_json::from_value::<ExtImpBidder>(e.clone()).ok()) {
+                None => errs.push(BidderError::BadInput("ext.bidder not provided".to_string())),
+                Some(bidder_ext) => {
+                    if serde_json::from_value::<ExtAdpone>(bidder_ext.bidder).is_err() {
+                        errs.push(BidderError::BadInput("ext.bidder not provided".to_string()));
                     }
                 }
             }

@@ -12,7 +12,7 @@ fn get_bid_type_from_mtype(mtype: i32) -> Result<BidType, BidderError> {
         1 => Ok(BidType::Banner),
         2 => Ok(BidType::Video),
         4 => Ok(BidType::Native),
-        _ => Err(BidderError::BadInput(format!("unsupported MType {}", mtype))),
+        _ => Err(BidderError::BadServerResponse(format!("unsupported MType {}", mtype))),
     }
 }
 
@@ -27,6 +27,10 @@ impl Bidder for IntenzeAdapter {
             .and_then(|e| e.get("bidder"))
             .cloned()
             .unwrap_or(serde_json::Value::Null);
+
+        if bidder.is_null() {
+            return (vec![], vec![BidderError::BadInput("missing bidder ext".to_string())]);
+        }
 
         let account_id = bidder.get("accountId").and_then(|v| v.as_str()).unwrap_or("").to_string();
 
