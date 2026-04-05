@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
-use openrtb_ext::BidType;
+use openrtb_ext::{BidType, ExtBidPrebidMeta, ExtBidPrebidVideo};
 
 pub struct TrustxAdapter { pub endpoint: String }
 impl TrustxAdapter {
@@ -42,6 +42,35 @@ fn set_imp_ext_gpid(imp: &mut openrtb::Imp) {
     }
 }
 
+/// Extract network name from bid ext for bid meta.
+fn get_bid_meta(bid: &openrtb::Bid) -> Option<ExtBidPrebidMeta> {
+    let network_name = bid.ext.as_ref()
+        .and_then(|e| e.get("bidder"))
+        .and_then(|b| b.get("trustx"))
+        .and_then(|t| t.get("networkName"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())?;
+    if network_name.is_empty() {
+        return None;
+    }
+    Some(ExtBidPrebidMeta {
+        network_name: Some(network_name),
+        ..Default::default()
+    })
+}
+
+/// Build ExtBidPrebidVideo for video bids.
+fn get_bid_video(bid: &openrtb::Bid) -> ExtBidPrebidVideo {
+    let primary_category = bid.cat.as_ref()
+        .and_then(|c| c.first())
+        .cloned()
+        .unwrap_or_default();
+    ExtBidPrebidVideo {
+        duration: 0,
+        primary_category,
+    }
+}
+
 impl Bidder for TrustxAdapter {
     fn make_requests(&self, request: &openrtb::BidRequest, _: &ExtraRequestInfo) -> (Vec<RequestData>, Vec<BidderError>) {
         let mut req_copy = request.clone();
@@ -74,7 +103,16 @@ impl Bidder for TrustxAdapter {
                         continue;
                     }
                 };
-                result.bids.push(TypedBid::new(bid, bid_type));
+                let bid_video = if bid_type == BidType::Video {
+                    Some(get_bid_video(&bid))
+                } else {
+                    None
+                };
+                let bid_meta = get_bid_meta(&bid);
+                let mut typed = TypedBid::new(bid, bid_type);
+                typed.bid_video = bid_video;
+                typed.bid_meta = bid_meta;
+                result.bids.push(typed);
             }
         }
         if !errs.is_empty() && result.bids.is_empty() { return Err(errs); }

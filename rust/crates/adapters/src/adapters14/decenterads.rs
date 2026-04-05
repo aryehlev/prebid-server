@@ -71,8 +71,16 @@ impl Bidder for DecenteradsAdapter {
     }
 
     fn make_bids(&self, internal: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
-        if response.status_code == 204 { return Ok(BidderResponse::new()); }
-        if let Err(e) = crate::check_response_status(response.status_code) { return Err(vec![e]); }
+        match response.status_code {
+            204 => return Ok(BidderResponse::new()),
+            400 => return Err(vec![BidderError::BadInput(format!(
+                "unexpected status code: {}", response.status_code
+            ))]),
+            200 => {},
+            _ => return Err(vec![BidderError::BadServerResponse(format!(
+                "unexpected status code: {}", response.status_code
+            ))]),
+        }
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
         let mut result = BidderResponse::with_capacity(internal.imp.len());

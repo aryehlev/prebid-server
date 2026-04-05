@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids, check_response_status};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
 use openrtb_ext::BidType;
 use serde::Deserialize;
 
@@ -65,7 +65,7 @@ impl Bidder for TradplusAdapter {
 
     fn make_bids(&self, internal: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
         if response.status_code == 204 { return Ok(BidderResponse::new()); }
-        if let Err(e) = check_response_status(response.status_code) {
+        if response.status_code != 200 {
             return Err(vec![BidderError::BadInput(format!("Unexpected status code: {}.", response.status_code))]);
         }
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
