@@ -187,18 +187,30 @@ impl Bidder for TaboolaAdapter {
     }
 
     fn make_bids(&self, internal: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
-        if response.status_code == 204 { return Ok(BidderResponse::new()); }
-        if let Err(e) = crate::check_response_status(response.status_code) { return Err(vec![e]); }
+        if response.status_code == 204 {
+            return Ok(BidderResponse::new());
+        }
+        if response.status_code == 400 {
+            return Err(vec![BidderError::BadInput(
+                "Unexpected status code: 400. Bad request from publisher. Run with request.debug = 1 for more info.".to_string()
+            )]);
+        }
+        if response.status_code != 200 {
+            return Err(vec![BidderError::BadServerResponse(format!(
+                "Unexpected status code: {}. Run with request.debug = 1 for more info.",
+                response.status_code
+            ))]);
+        }
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
-        let mut result = BidderResponse::with_capacity(5);
+        let mut result = BidderResponse::with_capacity(internal.imp.len());
         if let Some(cur) = bid_resp.cur {
             result.currency = cur;
         }
         let mut errs = Vec::new();
         for sb in bid_resp.seatbid {
             for mut bid in sb.bid {
-                // Resolve AUCTION_PRICE macro
+                // Resolve AUCTION_PRICE macro in nurl and adm
                 let price_str = format!("{}", bid.price);
                 if let Some(ref nurl) = bid.nurl {
                     bid.nurl = Some(nurl.replace("${AUCTION_PRICE}", &price_str));
@@ -209,11 +221,12 @@ impl Bidder for TaboolaAdapter {
                 match get_media_type(&bid.impid, &internal.imp) {
                     Some(bid_type) => result.bids.push(TypedBid::new(bid, bid_type)),
                     None => errs.push(BidderError::BadInput(format!(
-                        "Failed to find banner/native impression \"{}\"", bid.impid
+                        "Failed to find banner/native impression \"{}\" ", bid.impid
                     ))),
                 }
             }
         }
+        // Return collected bids alongside non-fatal errors (matching Go behavior)
         if !errs.is_empty() && result.bids.is_empty() {
             return Err(errs);
         }

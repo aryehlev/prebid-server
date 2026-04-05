@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
 use openrtb_ext::BidType;
 use serde::Deserialize;
+use serde_json::Value;
 
 pub struct OutbrainAdapter { pub endpoint: String }
 impl OutbrainAdapter {
@@ -30,19 +31,65 @@ struct ExtImpOutbrain {
     badv: Option<Vec<String>>,
 }
 
-fn get_media_type_for_imp(imp_id: &str, imps: &[openrtb::Imp]) -> BidType {
+fn get_media_type_for_imp(imp_id: &str, imps: &[openrtb::Imp]) -> Result<BidType, BidderError> {
     for imp in imps {
         if imp.id == imp_id {
             if imp.native.is_some() {
-                return BidType::Native;
+                return Ok(BidType::Native);
             } else if imp.banner.is_some() {
-                return BidType::Banner;
+                return Ok(BidType::Banner);
             } else if imp.video.is_some() {
-                return BidType::Video;
+                return Ok(BidType::Video);
             }
         }
     }
-    BidType::Banner
+    Err(BidderError::BadInput(format!(
+        "Failed to find native/banner/video impression \"{}\" ", imp_id
+    )))
+}
+
+/// Transform native event trackers to imptrackers/jstracker.
+/// The native-trk.js library used by Outbrain doesn't support native 1.2 eventtrackers,
+/// so we transform them to the deprecated imptrackers and jstracker fields.
+fn transform_event_trackers(native_payload: &mut Value) {
+    let event_trackers = match native_payload.get("eventtrackers") {
+        Some(Value::Array(arr)) => arr.clone(),
+        _ => return,
+    };
+
+    // event type 1 = impression
+    // method 1 = image, method 2 = js
+    for tracker in &event_trackers {
+        let event = tracker.get("event").and_then(|v| v.as_i64()).unwrap_or(0);
+        if event != 1 {
+            continue;
+        }
+        let method = tracker.get("method").and_then(|v| v.as_i64()).unwrap_or(0);
+        let url = match tracker.get("url").and_then(|v| v.as_str()) {
+            Some(u) => u.to_string(),
+            None => continue,
+        };
+        match method {
+            1 => {
+                // image tracker -> imptrackers
+                if let Some(arr) = native_payload.get_mut("imptrackers").and_then(|v| v.as_array_mut()) {
+                    arr.push(Value::String(url));
+                } else {
+                    native_payload["imptrackers"] = Value::Array(vec![Value::String(url)]);
+                }
+            }
+            2 => {
+                // js tracker -> jstracker
+                native_payload["jstracker"] = Value::String(format!("<script src=\"{}\"></script>", url));
+            }
+            _ => {}
+        }
+    }
+
+    // Remove eventtrackers
+    if let Some(obj) = native_payload.as_object_mut() {
+        obj.remove("eventtrackers");
+    }
 }
 
 impl Bidder for OutbrainAdapter {
@@ -106,19 +153,62 @@ impl Bidder for OutbrainAdapter {
     }
 
     fn make_bids(&self, internal: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
-        if response.status_code == 204 { return Ok(BidderResponse::new()); }
-        if let Err(e) = crate::check_response_status(response.status_code) { return Err(vec![e]); }
+        if response.status_code == 204 {
+            return Ok(BidderResponse::new());
+        }
+        if response.status_code == 400 {
+            return Err(vec![BidderError::BadInput(
+                "Unexpected status code: 400. Bad request from publisher. Run with request.debug = 1 for more info.".to_string()
+            )]);
+        }
+        if response.status_code != 200 {
+            return Err(vec![BidderError::BadServerResponse(format!(
+                "Unexpected status code: {}. Run with request.debug = 1 for more info.",
+                response.status_code
+            ))]);
+        }
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
-        let mut result = BidderResponse::with_capacity(5);
+        let mut result = BidderResponse::with_capacity(internal.imp.len());
         if let Some(cur) = bid_resp.cur {
             result.currency = cur;
         }
+        let mut errs = Vec::new();
         for sb in bid_resp.seatbid {
-            for bid in sb.bid {
-                let bid_type = get_media_type_for_imp(&bid.impid, &internal.imp);
+            for mut bid in sb.bid {
+                let bid_type = match get_media_type_for_imp(&bid.impid, &internal.imp) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        errs.push(e);
+                        continue;
+                    }
+                };
+                // For native bids, transform event trackers to imptrackers/jstracker
+                if bid_type == BidType::Native {
+                    if let Some(adm) = bid.adm.as_ref() {
+                        match serde_json::from_str::<Value>(adm) {
+                            Ok(mut native_payload) => {
+                                transform_event_trackers(&mut native_payload);
+                                match serde_json::to_string(&native_payload) {
+                                    Ok(new_adm) => bid.adm = Some(new_adm),
+                                    Err(e) => {
+                                        errs.push(BidderError::BadServerResponse(e.to_string()));
+                                        continue;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                errs.push(BidderError::BadServerResponse(e.to_string()));
+                                continue;
+                            }
+                        }
+                    }
+                }
                 result.bids.push(TypedBid::new(bid, bid_type));
             }
+        }
+        if !errs.is_empty() && result.bids.is_empty() {
+            return Err(errs);
         }
         Ok(result)
     }

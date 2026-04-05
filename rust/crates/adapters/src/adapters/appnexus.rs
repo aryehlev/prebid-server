@@ -212,10 +212,13 @@ impl Bidder for AppnexusAdapter {
                     banner.pos = Some(p);
                 }
                 // Populate w/h from first format if missing
-                if banner.w.is_none() && banner.h.is_none() && !banner.format.is_empty() {
-                    let first = &banner.format[0];
-                    banner.w = first.w;
-                    banner.h = first.h;
+                if banner.w.is_none() && banner.h.is_none() {
+                    if let Some(formats) = banner.format.as_ref() {
+                        if let Some(first) = formats.first() {
+                            banner.w = first.w;
+                            banner.h = first.h;
+                        }
+                    }
                 }
             }
 

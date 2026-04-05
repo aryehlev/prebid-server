@@ -288,7 +288,8 @@ impl Bidder for RubiconAdapter {
                 };
                 let mut bc = imp_copy.banner.clone().unwrap_or_default();
                 // Validate banner has format or dimensions
-                if bc.format.is_empty()
+                let has_format = bc.format.as_ref().map_or(false, |f| !f.is_empty());
+                if !has_format
                     && (bc.w.is_none() || bc.w == Some(0))
                     && (bc.h.is_none() || bc.h == Some(0))
                 {

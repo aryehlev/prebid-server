@@ -4,7 +4,8 @@ use openrtb_ext::BidType;
 
 pub struct TripleliftNativeAdapter {
     pub endpoint: String,
-    /// Publisher IDs allowed to use this adapter. Empty means all publishers allowed.
+    /// Publisher IDs allowed to use this adapter.
+    /// Checked as a set: if publisher ID is not present, requests are rejected.
     pub publisher_whitelist: Vec<String>,
 }
 
@@ -21,18 +22,24 @@ impl TripleliftNativeAdapter {
     }
 }
 
-fn get_publisher_id(request: &openrtb::BidRequest) -> String {
-    // Check app publisher first, then site publisher
-    if let Some(app) = &request.app {
-        if let Some(pub_) = &app.publisher {
-            if let Some(id) = &pub_.id {
-                return id.clone();
+/// Get the effective publisher ID from a request, mirroring Go's effectivePubID.
+/// Checks publisher.ext.prebid.parentAccount first, then publisher.id, defaulting to "unknown".
+fn effective_pub_id(publisher: Option<&openrtb::Publisher>) -> String {
+    if let Some(pub_) = publisher {
+        // Check ext.prebid.parentAccount
+        if let Some(ext) = &pub_.ext {
+            if let Some(parent_account) = ext
+                .get("prebid")
+                .and_then(|p| p.get("parentAccount"))
+                .and_then(|v| v.as_str())
+            {
+                if !parent_account.is_empty() {
+                    return parent_account.to_string();
+                }
             }
         }
-    }
-    if let Some(site) = &request.site {
-        if let Some(pub_) = &site.publisher {
-            if let Some(id) = &pub_.id {
+        if let Some(id) = &pub_.id {
+            if !id.is_empty() {
                 return id.clone();
             }
         }
@@ -40,18 +47,31 @@ fn get_publisher_id(request: &openrtb::BidRequest) -> String {
     "unknown".to_string()
 }
 
-fn is_msn(request: &openrtb::BidRequest) -> bool {
-    let site_msn = request.site.as_ref()
+/// Get the publisher from the request (app first, then site), mirroring Go's getPublisher.
+fn get_publisher(request: &openrtb::BidRequest) -> Option<&openrtb::Publisher> {
+    if let Some(app) = &request.app {
+        return app.publisher.as_ref();
+    }
+    if let Some(site) = &request.site {
+        return site.publisher.as_ref();
+    }
+    None
+}
+
+fn is_msn_in_site(request: &openrtb::BidRequest) -> bool {
+    request.site.as_ref()
         .and_then(|s| s.publisher.as_ref())
         .and_then(|p| p.domain.as_deref())
         .map(|d| d == "msn.com")
-        .unwrap_or(false);
-    let app_msn = request.app.as_ref()
+        .unwrap_or(false)
+}
+
+fn is_msn_in_app(request: &openrtb::BidRequest) -> bool {
+    request.app.as_ref()
         .and_then(|a| a.publisher.as_ref())
         .and_then(|p| p.domain.as_deref())
         .map(|d| d == "msn.com")
-        .unwrap_or(false);
-    site_msn || app_msn
+        .unwrap_or(false)
 }
 
 impl Bidder for TripleliftNativeAdapter {
@@ -62,17 +82,7 @@ impl Bidder for TripleliftNativeAdapter {
     ) -> (Vec<RequestData>, Vec<BidderError>) {
         let mut errs = Vec::new();
 
-        // Check publisher whitelist (if non-empty)
-        if !self.publisher_whitelist.is_empty() {
-            let pub_id = get_publisher_id(request);
-            if !self.publisher_whitelist.contains(&pub_id) {
-                return (vec![], vec![BidderError::BadInput(
-                    "Unsupported publisher for triplelift_native".to_string()
-                )]);
-            }
-        }
-
-        let msn = is_msn(request);
+        let msn = is_msn_in_site(request) || is_msn_in_app(request);
         let mut valid_imps: Vec<openrtb::Imp> = Vec::new();
 
         for imp in &request.imp {
@@ -83,27 +93,29 @@ impl Bidder for TripleliftNativeAdapter {
 
             let mut imp_copy = imp.clone();
 
-            // Determine tag_id from ext
-            let tag_id = imp.ext.as_ref().and_then(|e| {
-                if msn {
-                    // Use data.tag_code if available for MSN
-                    e.get("data")
-                        .and_then(|d| d.get("tag_code"))
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string())
-                        .or_else(|| {
-                            e.get("bidder")
-                                .and_then(|b| b.get("inventoryCode").or_else(|| b.get("inv_code")))
-                                .and_then(|v| v.as_str())
-                                .map(|s| s.to_string())
-                        })
-                } else {
-                    e.get("bidder")
-                        .and_then(|b| b.get("inventoryCode").or_else(|| b.get("inv_code")))
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string())
-                }
-            });
+            // Determine tagid from ext, matching Go's processImp logic:
+            // If MSN and ext.data.tag_code is non-empty, use that; else use tlext.InvCode (bidder.inventoryCode)
+            let tag_id = if msn {
+                imp.ext.as_ref()
+                    .and_then(|e| e.get("data"))
+                    .and_then(|d| d.get("tag_code"))
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+                    .or_else(|| {
+                        imp.ext.as_ref()
+                            .and_then(|e| e.get("bidder"))
+                            .and_then(|b| b.get("inventoryCode").or_else(|| b.get("inv_code")))
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
+                    })
+            } else {
+                imp.ext.as_ref()
+                    .and_then(|e| e.get("bidder"))
+                    .and_then(|b| b.get("inventoryCode").or_else(|| b.get("inv_code")))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            };
 
             if let Some(tid) = tag_id {
                 imp_copy.tagid = Some(tid);
@@ -119,6 +131,17 @@ impl Bidder for TripleliftNativeAdapter {
             }
 
             valid_imps.push(imp_copy);
+        }
+
+        // Check publisher whitelist - matching Go behavior:
+        // The whitelist map is always checked; if publisher ID is not in the map, reject.
+        // An empty whitelist means NO publishers are whitelisted.
+        let publisher = get_publisher(request);
+        let publisher_id = effective_pub_id(publisher);
+        if !self.publisher_whitelist.contains(&publisher_id) {
+            return (vec![], vec![BidderError::BadInput(
+                "Unsupported publisher for triplelift_native".to_string()
+            )]);
         }
 
         if valid_imps.is_empty() {
@@ -162,8 +185,19 @@ impl Bidder for TripleliftNativeAdapter {
         if response.status_code == 204 {
             return Ok(BidderResponse::new());
         }
-        if let Err(e) = crate::check_response_status(response.status_code) {
-            return Err(vec![e]);
+
+        if response.status_code == 400 {
+            return Err(vec![BidderError::BadInput(format!(
+                "Unexpected status code: {}. Run with request.debug = 1 for more info",
+                response.status_code
+            ))]);
+        }
+
+        if response.status_code != 200 {
+            return Err(vec![BidderError::BadServerResponse(format!(
+                "Unexpected status code: {}. Run with request.debug = 1 for more info",
+                response.status_code
+            ))]);
         }
 
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
