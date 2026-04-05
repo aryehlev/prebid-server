@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_bid_type_from_imp, get_imp_ids};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
 use openrtb_ext::BidType;
 use serde::Deserialize;
 use serde_json::Value;
@@ -12,16 +12,22 @@ struct ExtImpBidder { bidder: Value }
 
 #[derive(Deserialize)]
 struct ExtImpAdyoulike {
-    #[serde(rename = "placement", default)]
-    placement_id: String,
+    #[serde(default)]
+    placement: String,
 }
 
 /// Returns the bid type for a given imp ID by inspecting the impression fields.
-/// Defaults to Banner if no video or native object is present.
+/// Matches Go logic: defaults to Banner unless banner is nil and video/native present.
 fn get_media_type_for_imp(imp_id: &str, imps: &[openrtb::Imp]) -> BidType {
     for imp in imps {
         if imp.id == imp_id {
-            return get_bid_type_from_imp(imp);
+            if imp.banner.is_none() && imp.video.is_some() {
+                return BidType::Video;
+            }
+            if imp.banner.is_none() && imp.native.is_some() {
+                return BidType::Native;
+            }
+            return BidType::Banner;
         }
     }
     BidType::Banner
@@ -36,18 +42,19 @@ impl Bidder for AdyoulikeAdapter {
         let mut errs: Vec<BidderError> = Vec::new();
         for imp in &mut req.imp {
             // Extract placement from imp.ext.bidder.placement and set as tagid
-            let tag_id = imp.ext.as_ref()
+            let placement = imp.ext.as_ref()
                 .and_then(|e| serde_json::from_value::<ExtImpBidder>(e.clone()).ok())
                 .and_then(|be| serde_json::from_value::<ExtImpAdyoulike>(be.bidder).ok())
-                .map(|ext| ext.placement_id)
+                .map(|ext| ext.placement)
                 .unwrap_or_default();
-            if !tag_id.is_empty() {
-                imp.tagid = Some(tag_id);
+            if !placement.is_empty() {
+                imp.tagid = Some(placement);
             } else {
                 errs.push(BidderError::BadInput("placement not provided in imp ext".to_string()));
             }
         }
 
+        // If any errors occurred, return them (matching Go behavior)
         if !errs.is_empty() {
             return (vec![], errs);
         }
@@ -66,11 +73,22 @@ impl Bidder for AdyoulikeAdapter {
     }
 
     fn make_bids(&self, request: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
-        if response.status_code == 204 { return Ok(BidderResponse::new()); }
-        if let Err(e) = crate::check_response_status(response.status_code) { return Err(vec![e]); }
+        match response.status_code {
+            200 => {}
+            204 => return Ok(BidderResponse::new()),
+            400 => return Err(vec![BidderError::BadInput(format!(
+                "Unexpected status code: {}. Run with request.debug = 1 for more info",
+                response.status_code
+            ))]),
+            _ => return Err(vec![BidderError::BadServerResponse(format!(
+                "Unexpected status code: {}. Run with request.debug = 1 for more info",
+                response.status_code
+            ))]),
+        }
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
-        let mut result = BidderResponse::with_capacity(5);
+        let cap = request.imp.len();
+        let mut result = BidderResponse::with_capacity(cap);
         result.currency = "USD".to_string();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {

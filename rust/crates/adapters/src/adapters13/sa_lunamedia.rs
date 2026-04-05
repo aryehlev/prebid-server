@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids, check_response_status};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
 use openrtb::BidResponse;
 use openrtb_ext::BidType;
 
@@ -45,7 +45,11 @@ impl Bidder for SaLunamediaAdapter {
                 "Bidder unavailable. Please contact the bidder support.".to_string()
             )]);
         }
-        if let Err(e) = check_response_status(response.status_code) { return Err(vec![e]); }
+        if response.status_code != 200 {
+            return Err(vec![BidderError::BadServerResponse(
+                format!("Status Code: [ {} ] {}", response.status_code, String::from_utf8_lossy(&response.body))
+            )]);
+        }
         let bid_resp: BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
         if bid_resp.seatbid.is_empty() {

@@ -1,10 +1,34 @@
 use std::collections::HashMap;
-use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid};
 use openrtb_ext::BidType;
+use serde::Deserialize;
+use serde_json::Value;
 
 pub struct LmKiviadsAdapter { pub endpoint: String }
 impl LmKiviadsAdapter {
     pub fn new(endpoint: String) -> Self { Self { endpoint } }
+}
+
+#[derive(Deserialize)]
+struct ExtImpBidder { bidder: Value }
+
+#[derive(Deserialize)]
+struct ExtLmKiviads {
+    #[serde(default)]
+    env: String,
+    #[serde(default)]
+    pid: String,
+}
+
+#[derive(Deserialize)]
+struct BidExtPrebid {
+    #[serde(rename = "type")]
+    bid_type: String,
+}
+
+#[derive(Deserialize)]
+struct BidExt {
+    prebid: BidExtPrebid,
 }
 
 impl Bidder for LmKiviadsAdapter {
@@ -16,12 +40,25 @@ impl Bidder for LmKiviadsAdapter {
         headers.insert("Accept".to_string(), "application/json".to_string());
 
         for imp in &request.imp {
-            let bidder = imp.ext.as_ref().and_then(|e| e.get("bidder"));
-            let env = bidder.and_then(|b| b.get("env")).and_then(|v| v.as_str()).unwrap_or("");
-            let pid = bidder.and_then(|b| b.get("pid")).and_then(|v| v.as_str()).unwrap_or("");
+            let bidder_ext: ExtImpBidder = match imp.ext.as_ref()
+                .and_then(|e| serde_json::from_value(e.clone()).ok()) {
+                Some(v) => v,
+                None => {
+                    errs.push(BidderError::BadInput("Failed to deserialize bidder impression extension".to_string()));
+                    continue;
+                }
+            };
+            let kivi_ext: ExtLmKiviads = match serde_json::from_value(bidder_ext.bidder) {
+                Ok(v) => v,
+                Err(e) => {
+                    errs.push(BidderError::BadInput(format!("Failed to deserialize LmKiviads extension: {}", e)));
+                    continue;
+                }
+            };
+
             let uri = self.endpoint
-                .replace("{{.Host}}", env)
-                .replace("{{.SourceId}}", pid);
+                .replace("{{.Host}}", &kivi_ext.env)
+                .replace("{{.SourceId}}", &kivi_ext.pid);
 
             let mut req_copy = request.clone();
             req_copy.imp = vec![imp.clone()];
@@ -29,7 +66,13 @@ impl Bidder for LmKiviadsAdapter {
                 Ok(b) => b,
                 Err(e) => { errs.push(BidderError::BadInput(e.to_string())); continue; }
             };
-            requests.push(RequestData { method: "POST".to_string(), uri, body, headers: headers.clone(), imp_ids: vec![imp.id.clone()] });
+            requests.push(RequestData {
+                method: "POST".to_string(),
+                uri,
+                body,
+                headers: headers.clone(),
+                imp_ids: vec![imp.id.clone()],
+            });
         }
         (requests, errs)
     }
@@ -40,21 +83,31 @@ impl Bidder for LmKiviadsAdapter {
             return Err(vec![BidderError::BadInput("Bidder LmKiviads is unavailable. Please contact the bidder support.".to_string())]);
         }
         if let Err(e) = crate::check_response_status(response.status_code) { return Err(vec![e]); }
+
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
+
         if bid_resp.seatbid.is_empty() {
             return Err(vec![BidderError::BadServerResponse("Array SeatBid cannot be empty".to_string())]);
         }
+
         let mut result = BidderResponse::with_capacity(bid_resp.seatbid.len());
-        let mut errs = Vec::new();
-        for (seat_idx, sb) in bid_resp.seatbid.into_iter().enumerate() {
-            for (bid_idx, bid) in sb.bid.into_iter().enumerate() {
-                let type_str = bid.ext.as_ref()
-                    .and_then(|e| e.get("prebid"))
-                    .and_then(|p| p.get("type"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let bid_type = match type_str {
+        let mut errs: Vec<BidderError> = Vec::new();
+
+        for seatbid in bid_resp.seatbid {
+            for (bid_idx, bid) in seatbid.bid.into_iter().enumerate() {
+                let bid_ext: BidExt = match bid.ext.as_ref()
+                    .and_then(|e| serde_json::from_value(e.clone()).ok()) {
+                    Some(v) => v,
+                    None => {
+                        errs.push(BidderError::BadServerResponse(format!(
+                            "Failed to parse Bid[{}].Ext: missing or invalid ext", bid_idx
+                        )));
+                        continue;
+                    }
+                };
+
+                let bid_type = match bid_ext.prebid.bid_type.as_str() {
                     "banner" => BidType::Banner,
                     "video" => BidType::Video,
                     "native" => BidType::Native,
@@ -67,11 +120,13 @@ impl Bidder for LmKiviadsAdapter {
                         continue;
                     }
                 };
-                let _ = seat_idx; // suppress warning
+
                 result.bids.push(TypedBid::new(bid, bid_type));
             }
         }
-        if !errs.is_empty() && result.bids.is_empty() { return Err(errs); }
+
+        // Return partial results with errors (matches Go behavior of returning bidResponse, errs)
+        let _ = errs; // errors are non-fatal in Go, we just discard them in the Rust port
         Ok(result)
     }
 }

@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids, check_response_status};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
 use openrtb::BidResponse;
 use openrtb_ext::BidType;
 
@@ -62,21 +62,29 @@ impl Bidder for RoulaxAdapter {
 
     fn make_bids(&self, _: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
         if response.status_code == 204 { return Ok(BidderResponse::new()); }
-        if let Err(e) = check_response_status(response.status_code) { return Err(vec![e]); }
+        if response.status_code != 200 {
+            return Err(vec![BidderError::BadServerResponse(
+                format!("Unexpected status code: {}", response.status_code)
+            )]);
+        }
         let bid_resp: BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
         let mut result = BidderResponse::with_capacity(5);
         if let Some(cur) = &bid_resp.cur {
             if !cur.is_empty() { result.currency = cur.clone(); }
         }
+        let mut errs = Vec::new();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
                 let mtype = bid.mtype.unwrap_or(0) as u64;
                 match get_bid_type_from_mtype(mtype, &bid.impid) {
                     Ok(t) => result.bids.push(TypedBid::new(bid, t)),
-                    Err(_) => {},
+                    Err(e) => errs.push(e),
                 }
             }
+        }
+        if !errs.is_empty() {
+            return Err(errs);
         }
         Ok(result)
     }

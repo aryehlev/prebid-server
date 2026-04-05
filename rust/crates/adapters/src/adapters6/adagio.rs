@@ -20,13 +20,13 @@ struct ExtBidAdagio {
     prebid: Option<ExtBidPrebidAdagio>,
 }
 
-fn get_bid_type(mtype: Option<i32>) -> Result<BidType, BidderError> {
-    match mtype {
+fn get_bid_type(bid: &openrtb::Bid) -> Result<BidType, BidderError> {
+    match bid.mtype {
         Some(1) => Ok(BidType::Banner),
         Some(2) => Ok(BidType::Video),
         Some(4) => Ok(BidType::Native),
         _ => Err(BidderError::BadInput(format!(
-            "Could not define media type for impression"
+            "Could not define media type for impression: {}", bid.impid
         ))),
     }
 }
@@ -59,11 +59,15 @@ impl Bidder for AdagioAdapter {
         }
         let mut result = BidderResponse::with_capacity(5);
         if let Some(cur) = &bid_resp.cur { result.currency = cur.clone(); }
+        let mut errs = Vec::new();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
-                let bid_type = match get_bid_type(bid.mtype) {
+                let bid_type = match get_bid_type(&bid) {
                     Ok(bt) => bt,
-                    Err(_) => continue,
+                    Err(e) => {
+                        errs.push(e);
+                        continue;
+                    }
                 };
                 let bid_ext = get_bid_ext(&bid.ext);
                 let (bid_meta, bid_video) = if let Some(ext) = bid_ext {
@@ -81,6 +85,7 @@ impl Bidder for AdagioAdapter {
                 result.bids.push(typed_bid);
             }
         }
+        // Return accumulated bids; bid-type errors are non-fatal
         Ok(result)
     }
 }

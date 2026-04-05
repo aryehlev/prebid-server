@@ -53,19 +53,31 @@ impl Bidder for AaxAdapter {
     }
 
     fn make_bids(&self, internal: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
-        if response.status_code == 204 { return Ok(BidderResponse::new()); }
-        if let Err(e) = crate::check_response_status(response.status_code) { return Err(vec![e]); }
+        match response.status_code {
+            200 => {}
+            204 => return Ok(BidderResponse::new()),
+            400 => return Err(vec![BidderError::BadInput(format!(
+                "Unexpected status code: {}. Run with request.debug = 1 for more info",
+                response.status_code
+            ))]),
+            _ => return Err(vec![BidderError::BadServerResponse(format!(
+                "Unexpected status code: {}. Run with request.debug = 1 for more info",
+                response.status_code
+            ))]),
+        }
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
         let mut result = BidderResponse::with_capacity(5);
+        let mut errs = Vec::new();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
                 match get_aax_bid_type(&bid, &internal.imp) {
                     Ok(bt) => result.bids.push(TypedBid::new(bid, bt)),
-                    Err(_) => {} // skip bids with unresolvable type
+                    Err(e) => errs.push(e),
                 }
             }
         }
+        // Return accumulated bids; bid-type errors are non-fatal
         Ok(result)
     }
 }

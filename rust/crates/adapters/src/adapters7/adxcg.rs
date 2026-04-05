@@ -26,19 +26,28 @@ impl Bidder for AdxcgAdapter {
         (vec![RequestData { method: "POST".to_string(), uri: self.endpoint.clone(), body, headers, imp_ids: get_imp_ids(&request.imp) }], vec![])
     }
 
-    fn make_bids(&self, _: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
-        if response.status_code == 204 { return Ok(BidderResponse::new()); }
-        if let Err(e) = crate::check_response_status(response.status_code) { return Err(vec![e]); }
+    fn make_bids(&self, request: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
+        match response.status_code {
+            200 => {}
+            204 => return Ok(BidderResponse::new()),
+            400 => return Err(vec![BidderError::BadInput(format!(
+                "Unexpected status code: {}. Run with request.debug = 1 for more info",
+                response.status_code
+            ))]),
+            _ => return Err(vec![BidderError::BadServerResponse(format!(
+                "Unexpected status code: {}. Run with request.debug = 1 for more info",
+                response.status_code
+            ))]),
+        }
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
-        let mut result = BidderResponse::with_capacity(5);
+        let mut result = BidderResponse::with_capacity(request.imp.len());
         if let Some(cur) = &bid_resp.cur { result.currency = cur.clone(); }
-        let mut errs = Vec::new();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
                 match mtype_to_bid_type(bid.mtype) {
                     Ok(bt) => result.bids.push(TypedBid::new(bid, bt)),
-                    Err(e) => errs.push(e),
+                    Err(_) => {} // unsupported mtype bids are skipped, matching Go behavior
                 }
             }
         }

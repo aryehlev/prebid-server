@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids, check_response_status};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
 use openrtb::BidResponse;
 use openrtb_ext::BidType;
 
@@ -8,11 +8,14 @@ impl LogicadAdapter { pub fn new(endpoint: String) -> Self { Self { endpoint } }
 
 impl Bidder for LogicadAdapter {
     fn make_requests(&self, request: &openrtb::BidRequest, _: &ExtraRequestInfo) -> (Vec<RequestData>, Vec<BidderError>) {
+        if request.imp.is_empty() {
+            return (vec![], vec![BidderError::BadInput("No impression in the bid request".to_string())]);
+        }
+
         let mut errs = Vec::new();
         let mut requests = Vec::new();
 
         // Group imps by tid (from imp.ext.bidder.tid)
-        // Also collect all valid imps
         let mut groups: HashMap<String, Vec<openrtb::Imp>> = HashMap::new();
 
         for imp in &request.imp {
@@ -38,14 +41,14 @@ impl Bidder for LogicadAdapter {
         for (tid, imps) in groups {
             let imp_ids = get_imp_ids(&imps);
             // Build modified request: set TagID = tid on each imp, clear ext
-            let mut modified_imps: Vec<openrtb::Imp> = imps.into_iter().map(|mut i| {
+            let modified_imps: Vec<openrtb::Imp> = imps.into_iter().map(|mut i| {
                 i.tagid = Some(tid.clone());
                 i.ext = None;
                 i
             }).collect();
 
             let mut req_copy = request.clone();
-            req_copy.imp = modified_imps.drain(..).collect();
+            req_copy.imp = modified_imps;
 
             let body = match serde_json::to_vec(&req_copy) {
                 Ok(b) => b,
@@ -73,22 +76,25 @@ impl Bidder for LogicadAdapter {
 
     fn make_bids(&self, _: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
         if response.status_code == 204 { return Ok(BidderResponse::new()); }
-        if let Err(e) = check_response_status(response.status_code) { return Err(vec![e]); }
+        if response.status_code != 200 {
+            return Err(vec![BidderError::BadServerResponse(
+                format!("Unexpected http status code: {}", response.status_code)
+            )]);
+        }
         let bid_resp: BidResponse = serde_json::from_slice(&response.body)
-            .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
+            .map_err(|e| vec![BidderError::BadServerResponse(format!("Bad server response: {}", e))])?;
         if bid_resp.seatbid.len() != 1 {
             return Err(vec![BidderError::BadServerResponse(
                 format!("Invalid SeatBids count: {}", bid_resp.seatbid.len())
             )]);
         }
-        let mut result = BidderResponse::with_capacity(bid_resp.seatbid[0].bid.len());
+        let seatbid = &bid_resp.seatbid[0];
+        let mut result = BidderResponse::with_capacity(seatbid.bid.len());
         if let Some(cur) = bid_resp.cur.filter(|c| !c.is_empty()) {
             result.currency = cur;
         }
-        for sb in bid_resp.seatbid {
-            for bid in sb.bid {
-                result.bids.push(TypedBid::new(bid, BidType::Banner));
-            }
+        for bid in seatbid.bid.iter().cloned() {
+            result.bids.push(TypedBid::new(bid, BidType::Banner));
         }
         Ok(result)
     }

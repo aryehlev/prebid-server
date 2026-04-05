@@ -57,6 +57,9 @@ impl Bidder for AdtrgtmeAdapter {
         if response.status_code == 400 {
             return Err(vec![BidderError::BadInput(format!("Unexpected status code: [ {} ]", response.status_code))]);
         }
+        if response.status_code == 503 {
+            return Err(vec![BidderError::BadInput(format!("Something went wrong, please contact your Account Manager. Status Code: [ {} ] ", response.status_code))]);
+        }
         if response.status_code != 200 {
             return Err(vec![BidderError::BadInput(format!("Unexpected status code: [ {} ]. Run with request.debug = 1 for more info", response.status_code))]);
         }
@@ -65,9 +68,8 @@ impl Bidder for AdtrgtmeAdapter {
         if bid_resp.seatbid.is_empty() {
             return Err(vec![BidderError::BadServerResponse("Empty SeatBid array".to_string())]);
         }
-        let mut result = BidderResponse::with_capacity(5);
+        let mut result = BidderResponse::with_capacity(internal.imp.len());
         if let Some(cur) = &bid_resp.cur { result.currency = cur.clone(); }
-        let mut errs = Vec::new();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
                 let found = internal.imp.iter().find(|i| i.id == bid.impid);
@@ -76,10 +78,10 @@ impl Bidder for AdtrgtmeAdapter {
                         if imp.banner.is_some() {
                             result.bids.push(TypedBid::new(bid, BidType::Banner));
                         } else {
-                            errs.push(BidderError::BadInput(format!("Unsupported bidtype for bid: \"{}\"", bid.impid)));
+                            return Err(vec![BidderError::BadInput(format!("Unsupported bidtype for bid: \"{}\"", bid.impid))]);
                         }
                     }
-                    None => errs.push(BidderError::BadInput(format!("Failed to find impression: \"{}\"", bid.impid))),
+                    None => return Err(vec![BidderError::BadInput(format!("Failed to find impression: \"{}\"", bid.impid))]),
                 }
             }
         }
