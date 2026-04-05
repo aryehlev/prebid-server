@@ -26,6 +26,9 @@ impl Bidder for ZetaGlobalSspAdapter {
             return (vec![], vec![BidderError::BadInput("no impressions".to_string())]);
         }
         let bidder = request.imp[0].ext.as_ref().and_then(|e| e.get("bidder"));
+        if bidder.is_none() {
+            return (vec![], vec![BidderError::BadInput("imp.ext not provided or cannot be unmarshalled".to_string())]);
+        }
         // sid is an integer in the Go source, used as AccountID in URL template
         let sid = bidder.and_then(|b| b.get("sid"))
             .map(|v| if let Some(s) = v.as_str() { s.to_string() }
@@ -33,7 +36,10 @@ impl Bidder for ZetaGlobalSspAdapter {
                  else { String::new() })
             .unwrap_or_default();
         let url = self.endpoint.replace("{{.AccountID}}", &sid);
-        let body = match serde_json::to_vec(request) {
+        // Clear imp.ext on the first imp (matching Go's imp.Ext = nil before marshaling)
+        let mut req_copy = request.clone();
+        req_copy.imp[0].ext = None;
+        let body = match serde_json::to_vec(&req_copy) {
             Ok(b) => b,
             Err(e) => return (vec![], vec![BidderError::BadInput(e.to_string())]),
         };

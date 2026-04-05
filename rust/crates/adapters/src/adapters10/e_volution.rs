@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids, check_response_status};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
 use openrtb::BidResponse;
 use openrtb_ext::BidType;
 
@@ -44,8 +44,14 @@ impl Bidder for EvolutionAdapter {
                 "Bad Request. {}", String::from_utf8_lossy(&response.body)
             ))]);
         }
+        // 503 Service Unavailable: return no bids, no errors (matches Go nil, nil)
         if response.status_code == 503 { return Ok(BidderResponse::new()); }
-        if let Err(e) = check_response_status(response.status_code) { return Err(vec![e]); }
+        if response.status_code != 200 {
+            return Err(vec![BidderError::BadServerResponse(format!(
+                "Something went wrong, please contact your Account Manager. Status Code: [ {} ] ",
+                response.status_code
+            ))]);
+        }
 
         let bid_resp: BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(format!("Bad response, {}", e))])?;
@@ -54,8 +60,10 @@ impl Bidder for EvolutionAdapter {
             return Err(vec![BidderError::BadServerResponse("Empty seatbid".to_string())]);
         }
 
-        let mut result = BidderResponse::with_capacity(bid_resp.seatbid[0].bid.len());
-        for bid in &bid_resp.seatbid[0].bid {
+        // Only process the first seatbid (matches Go behavior)
+        let sb = &bid_resp.seatbid[0];
+        let mut result = BidderResponse::with_capacity(sb.bid.len());
+        for bid in &sb.bid {
             let bid_type = get_bid_type_from_bid_ext(bid);
             result.bids.push(TypedBid::new(bid.clone(), bid_type));
         }

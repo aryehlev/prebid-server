@@ -22,10 +22,11 @@ impl Bidder for SmartrtbAdapter {
             valid_imps.push(imp_copy);
         }
         if valid_imps.is_empty() {
-            return (vec![], vec![BidderError::BadInput("Cannot infer publisher ID from bid ext".to_string())]);
+            return (vec![], errs);
         }
         if pub_id.is_empty() {
-            return (vec![], vec![BidderError::BadInput("Cannot infer publisher ID from bid ext".to_string())]);
+            errs.push(BidderError::BadInput("Cannot infer publisher ID from bid ext".to_string()));
+            return (vec![], errs);
         }
         let uri = self.endpoint.replace("{{.PublisherID}}", &pub_id);
         // Build request ext with pub_id
@@ -46,11 +47,15 @@ impl Bidder for SmartrtbAdapter {
 
     fn make_bids(&self, _: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
         if response.status_code == 204 { return Ok(BidderResponse::new()); }
-        if let Err(e) = crate::check_response_status(response.status_code) { return Err(vec![e]); }
+        if response.status_code == 400 {
+            return Err(vec![BidderError::BadInput("Invalid request.".to_string())]);
+        }
+        if response.status_code != 200 {
+            return Err(vec![BidderError::BadServerResponse(format!("Unexpected HTTP status {}.", response.status_code))]);
+        }
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
         let mut result = BidderResponse::with_capacity(5);
-        let mut errs = Vec::new();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
                 // bid.ext.format contains creative type: BANNER, VIDEO
@@ -70,7 +75,6 @@ impl Bidder for SmartrtbAdapter {
                 result.bids.push(TypedBid::new(bid, bid_type));
             }
         }
-        if !errs.is_empty() && result.bids.is_empty() { return Err(errs); }
         Ok(result)
     }
 }

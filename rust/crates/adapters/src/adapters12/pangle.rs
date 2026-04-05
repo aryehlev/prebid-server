@@ -137,7 +137,7 @@ impl Bidder for PangleAdapter {
         if let Some(cur) = &bid_resp.cur {
             if !cur.is_empty() { result.currency = cur.clone(); }
         }
-        let mut errs = Vec::new();
+        let mut bid_errs = Vec::new();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
                 // Get adtype from bid.ext.pangle.adtype
@@ -149,11 +149,14 @@ impl Bidder for PangleAdapter {
                     .unwrap_or(-1);
                 match get_media_type_for_ad_type(ad_type) {
                     Ok(t) => result.bids.push(TypedBid::new(bid, t)),
-                    Err(e) => errs.push(e),
+                    Err(e) => bid_errs.push(e),
                 }
             }
         }
-        if !errs.is_empty() { return Err(errs); }
+        // Return bids even if there were partial errors (match Go behavior)
+        if !bid_errs.is_empty() && result.bids.is_empty() {
+            return Err(bid_errs);
+        }
         Ok(result)
     }
 }

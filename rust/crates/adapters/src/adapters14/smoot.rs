@@ -15,10 +15,18 @@ impl Bidder for SmootAdapter {
         headers.insert("Accept".to_string(), "application/json".to_string());
 
         for imp in &request.imp {
-            let bidder = imp.ext.as_ref().and_then(|e| e.get("bidder"));
-            let placement_id = bidder.and_then(|b| b.get("placementId")).and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let endpoint_id = bidder.and_then(|b| b.get("endpointId")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            // Parse bidder ext - skip with error if missing
+            let bidder = match imp.ext.as_ref().and_then(|e| e.get("bidder")) {
+                Some(b) => b,
+                None => {
+                    errs.push(BidderError::BadInput("missing bidder ext in imp".to_string()));
+                    continue;
+                }
+            };
+            let placement_id = bidder.get("placementId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let endpoint_id = bidder.get("endpointId").and_then(|v| v.as_str()).unwrap_or("").to_string();
 
+            // Build new imp.ext with type and placement/endpoint id
             let imp_ext = if !placement_id.is_empty() {
                 json!({ "bidder": { "type": "publisher", "placementId": placement_id } })
             } else {
@@ -34,7 +42,7 @@ impl Bidder for SmootAdapter {
                 Ok(b) => b,
                 Err(e) => { errs.push(BidderError::BadInput(e.to_string())); continue; }
             };
-            requests.push(RequestData { method: "POST".to_string(), uri: self.endpoint.clone(), body, headers: headers.clone(), imp_ids: vec![imp.id.clone()] });
+            requests.push(RequestData { method: "POST".to_string(), uri: self.endpoint.clone(), body, headers: headers.clone(), imp_ids: get_imp_ids(&req_copy.imp) });
         }
         (requests, errs)
     }
