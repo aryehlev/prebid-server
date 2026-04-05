@@ -52,12 +52,21 @@ impl Bidder for BraveAdapter {
         if response.status_code == 204 {
             return Err(vec![BidderError::BadInput("No bid".to_string())]);
         }
-        if response.status_code == 400 || response.status_code == 503 {
+        if response.status_code == 400 {
             return Err(vec![BidderError::BadInput(format!(
                 "Unexpected status code: {}. Run with request.debug = 1 for more info", response.status_code
             ))]);
         }
-        if let Err(e) = check_response_status(response.status_code) { return Err(vec![e]); }
+        if response.status_code == 503 {
+            return Err(vec![BidderError::BadInput(format!(
+                "Service Unavailable. Status Code: [ {} ] ", response.status_code
+            ))]);
+        }
+        if response.status_code != 200 {
+            return Err(vec![BidderError::BadServerResponse(format!(
+                "Something went wrong, please contact your Account Manager. Status Code: [ {} ] ", response.status_code
+            ))]);
+        }
 
         let bid_resp: BidResponse = serde_json::from_slice(&response.body)
             .map_err(|_| vec![BidderError::BadServerResponse("Bad Server Response".to_string())])?;
