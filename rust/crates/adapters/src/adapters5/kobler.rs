@@ -49,28 +49,24 @@ impl Bidder for KoblerAdapter {
             req_copy.cur.get_or_insert_with(Vec::new).push(SUPPORTED_CURRENCY.to_string());
         }
 
-        // Check first imp for test mode (match Go: continue on parse errors, don't return).
+        // Check first imp for test mode (match Go: continue on parse errors, don't return early).
         let mut test_mode = false;
         'test_mode: {
             if let Some(first_imp) = req_copy.imp.first() {
                 if let Some(ext) = &first_imp.ext {
+                    // Parse the full imp.ext into {bidder: ...} structure
                     let bidder_val = match ext.get("bidder") {
                         Some(v) => v.clone(),
-                        None => break 'test_mode,
-                    };
-                    // Parse outer bidder ext
-                    let bidder_ext: serde_json::Value = match serde_json::from_value(bidder_val) {
-                        Ok(v) => v,
-                        Err(_e) => {
+                        None => {
                             errs.push(BidderError::BadInput("Error parsing bidderExt object".to_string()));
-                            break 'test_mode;  // continue to use default endpoint
+                            break 'test_mode;
                         }
                     };
-                    match serde_json::from_value::<KoblerImpExt>(bidder_ext) {
+                    match serde_json::from_value::<KoblerImpExt>(bidder_val) {
                         Ok(imp_ext) => test_mode = imp_ext.test,
                         Err(_e) => {
                             errs.push(BidderError::BadInput("Error parsing impExt object".to_string()));
-                            // continue with test_mode = false
+                            // continue with test_mode = false (don't return)
                         }
                     }
                 }
@@ -100,7 +96,7 @@ impl Bidder for KoblerAdapter {
     }
 
     fn make_bids(&self, _internal: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
-        if response.status_code == 204 {
+        if response.status_code == 204 || response.body.is_empty() {
             return Ok(BidderResponse::new());
         }
         if response.status_code != 200 {

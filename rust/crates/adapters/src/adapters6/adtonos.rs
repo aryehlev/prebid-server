@@ -45,11 +45,15 @@ impl Bidder for AdtonosAdapter {
         let bidder_ext: ExtImpBidder = match imp.ext.as_ref()
             .and_then(|e| serde_json::from_value(e.clone()).ok()) {
             Some(v) => v,
-            None => return (vec![], vec![BidderError::BadInput(format!("Invalid imp.ext for impression index 0"))]),
+            None => return (vec![], vec![BidderError::BadInput(
+                format!("Invalid imp.ext for impression index 0")
+            )]),
         };
         let imp_ext: ImpExtAdTonos = match serde_json::from_value(bidder_ext.bidder) {
             Ok(v) => v,
-            Err(e) => return (vec![], vec![BidderError::BadInput(format!("Invalid imp.ext.bidder for impression index 0. Error Infomation: {}", e))]),
+            Err(e) => return (vec![], vec![BidderError::BadInput(
+                format!("Invalid imp.ext.bidder for impression index 0. Error Infomation: {}", e)
+            )]),
         };
         let uri = self.endpoint.replace("{{.PublisherID}}", &imp_ext.supplier_id);
         let body = match serde_json::to_vec(request) {
@@ -67,8 +71,8 @@ impl Bidder for AdtonosAdapter {
         if let Err(e) = crate::check_response_status(response.status_code) { return Err(vec![e]); }
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
-        let mut result = BidderResponse::with_capacity(5);
-        if let Some(cur) = &bid_resp.cur { result.currency = cur.clone(); }
+        let mut result = BidderResponse::with_capacity(internal.imp.len());
+        if let Some(cur) = &bid_resp.cur { if !cur.is_empty() { result.currency = cur.clone(); } }
         let mut errs = Vec::new();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
@@ -77,6 +81,10 @@ impl Bidder for AdtonosAdapter {
                     Err(e) => errs.push(e),
                 }
             }
+        }
+        // Return bids with errors accumulated (errors don't prevent returning bids)
+        if !errs.is_empty() && result.bids.is_empty() {
+            return Err(errs);
         }
         Ok(result)
     }

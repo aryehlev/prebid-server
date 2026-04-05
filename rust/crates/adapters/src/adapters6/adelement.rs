@@ -15,13 +15,15 @@ struct ExtAdelement {
     supply_id: String,
 }
 
-fn get_bid_type_from_mtype(mtype: Option<i32>) -> Result<BidType, BidderError> {
+fn get_bid_type_from_mtype(mtype: Option<i32>, imp_id: &str) -> Result<BidType, BidderError> {
     match mtype {
         Some(1) => Ok(BidType::Banner),
         Some(2) => Ok(BidType::Video),
         Some(3) => Ok(BidType::Audio),
         Some(4) => Ok(BidType::Native),
-        _ => Err(BidderError::BadServerResponse("unknown mtype".to_string())),
+        _ => Err(BidderError::BadInput(format!(
+            "Could not define media type for impression: {}", imp_id
+        ))),
     }
 }
 
@@ -64,7 +66,7 @@ impl Bidder for AdelementAdapter {
         let mut errs = Vec::new();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
-                match get_bid_type_from_mtype(bid.mtype) {
+                match get_bid_type_from_mtype(bid.mtype, &bid.impid) {
                     Ok(bt) => result.bids.push(TypedBid::new(bid, bt)),
                     Err(e) => errs.push(e),
                 }
