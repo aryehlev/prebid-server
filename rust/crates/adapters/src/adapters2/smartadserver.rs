@@ -203,12 +203,8 @@ impl Bidder for SmartadserverAdapter {
         let mut result = BidderResponse::with_capacity(5);
         for sb in bid_response.seatbid {
             for bid in sb.bid {
-                // mtype is in bid.ext since the openrtb struct doesn't have it
-                let mtype = bid.ext
-                    .as_ref()
-                    .and_then(|e| e.get("mtype"))
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as u32;
+                // Use bid.mtype directly (OpenRTB 2.6 field)
+                let mtype = bid.mtype.unwrap_or(0);
                 let bid_type = get_bid_type_from_mtype(mtype);
                 result.bids.push(TypedBid::new(bid, bid_type));
             }

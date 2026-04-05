@@ -14,15 +14,14 @@ impl RtbhouseAdapter {
     }
 }
 
-/// Get bid type from bid.mtype stored in ext or direct field.
-/// RTBHouse uses mtype: 1=Banner, 4=Native
-fn get_bid_type_from_mtype(mtype: u64) -> Result<BidType, BidderError> {
-    match mtype {
+/// Get bid type from bid.mtype. RTBHouse uses mtype: 1=Banner, 4=Native
+fn get_bid_type_for_bid(bid: &openrtb::Bid) -> Result<BidType, BidderError> {
+    match bid.mtype.unwrap_or(0) {
         1 => Ok(BidType::Banner),
         4 => Ok(BidType::Native),
-        _ => Err(BidderError::BadServerResponse(
-            "unrecognized bid type in response from rtbhouse".to_string()
-        )),
+        _ => Err(BidderError::BadServerResponse(format!(
+            "unrecognized bid type in response from rtbhouse for bid {}", bid.impid
+        ))),
     }
 }
 
@@ -194,10 +193,7 @@ impl Bidder for RtbhouseAdapter {
                     *adm = adm.replace("${AUCTION_PRICE}", &price_str);
                 }
 
-                // Get mtype directly from bid.mtype field (OpenRTB 2.6)
-                let mtype = bid.mtype.unwrap_or(0) as u64;
-
-                let bid_type = match get_bid_type_from_mtype(mtype) {
+                let bid_type = match get_bid_type_for_bid(&bid) {
                     Ok(t) => t,
                     Err(e) => {
                         errs.push(e);

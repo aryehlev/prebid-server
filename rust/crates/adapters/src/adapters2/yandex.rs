@@ -234,7 +234,6 @@ impl Bidder for YandexAdapter {
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
         let mut result = BidderResponse::with_capacity(internal.imp.len());
-        let mut errs = Vec::new();
 
         // Build imp map for O(1) lookup
         let imp_map: HashMap<&str, &openrtb::Imp> = internal.imp.iter().map(|i| (i.id.as_str(), i)).collect();
@@ -247,22 +246,15 @@ impl Bidder for YandexAdapter {
                         result.bids.push(TypedBid::new(bid, bid_type));
                     }
                     None => {
-                        errs.push(BidderError::BadInput(format!(
-                            "Invalid bid imp ID #{} does not match any imp IDs from the original bid request",
-                            bid.impid
-                        )));
+                        // Go returns this as an error alongside partial results.
+                        // Since Rust trait doesn't support partial+errors simultaneously,
+                        // we skip invalid bids (matching the net effect: other valid bids proceed).
                     }
                 }
             }
         }
 
-        if errs.is_empty() {
-            Ok(result)
-        } else {
-            // Return partial results alongside errors by placing bids already collected;
-            // match Go behaviour of returning both bids and errors
-            Ok(result)
-        }
+        Ok(result)
     }
 }
 
