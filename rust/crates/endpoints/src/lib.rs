@@ -377,14 +377,14 @@ pub async fn auction_handler(
     match state.exchange.hold_auction(auction_req).await {
         Ok(auction_response) => {
             let duration_ms = handler_start.elapsed().as_millis() as u64;
-            state.metrics.record_request("openrtb2", pbs_metrics::RequestStatus::Ok);
+            state.metrics.record_request_by_type("openrtb2", pbs_metrics::RequestStatus::Ok);
             state.metrics.record_http_request("openrtb2", 200, duration_ms);
             (StatusCode::OK, Json(auction_response.bid_response)).into_response()
         }
         Err(e) => {
             let duration_ms = handler_start.elapsed().as_millis() as u64;
             tracing::error!("Auction error: {}", e);
-            state.metrics.record_request("openrtb2", pbs_metrics::RequestStatus::BadServerResponse);
+            state.metrics.record_request_by_type("openrtb2", pbs_metrics::RequestStatus::BadServerResponse);
             state.metrics.record_http_request("openrtb2", 500, duration_ms);
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
@@ -464,14 +464,14 @@ pub async fn auction_get_handler(
     match state.exchange.hold_auction(auction_req).await {
         Ok(auction_response) => {
             let duration_ms = handler_start.elapsed().as_millis() as u64;
-            state.metrics.record_request("openrtb2", pbs_metrics::RequestStatus::Ok);
+            state.metrics.record_request_by_type("openrtb2", pbs_metrics::RequestStatus::Ok);
             state.metrics.record_http_request("openrtb2", 200, duration_ms);
             (StatusCode::OK, Json(auction_response.bid_response)).into_response()
         }
         Err(e) => {
             let duration_ms = handler_start.elapsed().as_millis() as u64;
             tracing::error!("Auction error: {}", e);
-            state.metrics.record_request("openrtb2", pbs_metrics::RequestStatus::BadServerResponse);
+            state.metrics.record_request_by_type("openrtb2", pbs_metrics::RequestStatus::BadServerResponse);
             state.metrics.record_http_request("openrtb2", 500, duration_ms);
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
         }
@@ -818,7 +818,7 @@ pub async fn amp_handler(
     }
 
     let duration_ms = handler_start.elapsed().as_millis() as u64;
-    state.metrics.record_request("amp", pbs_metrics::RequestStatus::Ok);
+    state.metrics.record_request_by_type("amp", pbs_metrics::RequestStatus::Ok);
     state.metrics.record_http_request("amp", 200, duration_ms);
 
     let response = serde_json::json!({ "targeting": flat_targeting });
@@ -1258,7 +1258,7 @@ pub async fn event_handler(
                 timestamp = timestamp,
                 "win notification received"
             );
-            state.metrics.record_request("event_win", pbs_metrics::RequestStatus::Ok);
+            state.metrics.record_request_by_type("event_win", pbs_metrics::RequestStatus::Ok);
         }
         "imp" => {
             tracing::info!(
@@ -1269,7 +1269,7 @@ pub async fn event_handler(
                 timestamp = timestamp,
                 "impression notification received"
             );
-            state.metrics.record_request("event_imp", pbs_metrics::RequestStatus::Ok);
+            state.metrics.record_request_by_type("event_imp", pbs_metrics::RequestStatus::Ok);
         }
         _ => {}
     }

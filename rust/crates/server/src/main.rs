@@ -3,7 +3,8 @@ use std::sync::Arc;
 use tokio::signal;
 use axum::{
     body::Body,
-    http::{Request, Response},
+    extract::State,
+    http::{Request, Response, StatusCode},
     middleware::{self, Next},
 };
 use tower_http::{
@@ -198,6 +199,62 @@ async fn request_id_middleware(
     response
 }
 
+/// Axum middleware that logs every request: method, path, response status, and
+/// wall-clock duration in milliseconds.
+async fn request_logging_middleware(
+    req: Request<Body>,
+    next: Next,
+) -> Response<Body> {
+    let method = req.method().clone();
+    let path = req.uri().path().to_string();
+    let start = std::time::Instant::now();
+
+    let response = next.run(req).await;
+
+    let duration = start.elapsed();
+    let status = response.status().as_u16();
+    tracing::info!(
+        method = %method,
+        path = %path,
+        status = status,
+        duration_ms = duration.as_millis() as u64,
+        "request completed"
+    );
+
+    response
+}
+
+/// Axum middleware that rejects requests whose `Content-Length` exceeds a
+/// configured maximum body size.  The limit is carried via Axum `State`.
+///
+/// Only requests that declare a `Content-Length` header are checked; chunked
+/// (streaming) bodies without the header are allowed through so that
+/// downstream handlers can enforce their own limits.
+async fn request_size_limit_middleware(
+    State(max_size): State<usize>,
+    req: Request<Body>,
+    next: Next,
+) -> Result<Response<Body>, StatusCode> {
+    if let Some(content_length) = req
+        .headers()
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<usize>().ok())
+    {
+        if content_length > max_size {
+            tracing::warn!(
+                content_length = content_length,
+                max_size = max_size,
+                path = %req.uri().path(),
+                "request body too large"
+            );
+            return Err(StatusCode::PAYLOAD_TOO_LARGE);
+        }
+    }
+
+    Ok(next.run(req).await)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Initialize structured tracing from RUST_LOG env var, defaulting to "info".
@@ -326,9 +383,18 @@ async fn main() -> anyhow::Result<()> {
             axum::http::header::AUTHORIZATION,
         ]);
 
+    let max_request_size = cfg.max_request_size as usize;
+
     let app = pbs_endpoints::create_router(state)
         // Request ID must run first so later layers see the header on responses.
         .layer(middleware::from_fn(request_id_middleware))
+        // Log every request (method, path, status, duration).
+        .layer(middleware::from_fn(request_logging_middleware))
+        // Reject requests whose Content-Length exceeds the configured maximum.
+        .layer(middleware::from_fn_with_state(
+            max_request_size,
+            request_size_limit_middleware,
+        ))
         // Gzip-compress responses when the client sends Accept-Encoding: gzip.
         .layer(CompressionLayer::new())
         // Global 30-second request timeout.

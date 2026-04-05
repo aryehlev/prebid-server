@@ -20,6 +20,7 @@ pub mod privacy;
 pub mod seat_non_bids;
 pub mod tmax;
 pub mod usersync;
+pub mod schain;
 pub mod validation;
 
 #[cfg(test)]
