@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
+use openrtb::SupplyChain;
 
 
 /// BidderName is a newtype wrapper around String representing a bidder identifier.
@@ -645,46 +646,7 @@ pub struct ExtRequestPrebidCacheVAST {
 }
 
 // ── Price Granularity ───────────────────────────────────────────────────────
-
-/// PriceGranularity defines how CPM prices are bucketed for targeting
-#[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(untagged)]
-pub enum PriceGranularity {
-    /// A named preset: "low", "medium", "med", "high", "auto", "dense"
-    Preset(String),
-    /// Custom ranges
-    Custom(PriceGranularityCustom),
-}
-
-impl Default for PriceGranularity {
-    fn default() -> Self {
-        PriceGranularity::Preset("medium".to_string())
-    }
-}
-
-/// Custom price granularity with explicit ranges
-#[derive(Debug, Deserialize, Serialize, Clone, Default)]
-pub struct PriceGranularityCustom {
-    pub precision: Option<u32>,
-    pub ranges: Vec<GranularityRange>,
-}
-
-/// A single price granularity range
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct GranularityRange {
-    pub min: f64,
-    pub max: f64,
-    pub increment: f64,
-}
-
-/// Media-type-specific price granularity overrides
-#[derive(Debug, Deserialize, Serialize, Clone, Default)]
-pub struct MediaTypePriceGranularity {
-    pub banner: Option<PriceGranularity>,
-    pub video: Option<PriceGranularity>,
-    #[serde(rename = "native")]
-    pub native_type: Option<PriceGranularity>,
-}
+// (Definitions moved to bottom of file, after bidder constructor functions.)
 
 // ── Targeting extension ──────────────────────────────────────────────────────
 
@@ -1293,4 +1255,795 @@ pub fn all_bidder_names() -> Vec<BidderName> {
         bidder_zetaglobalssp(),
         bidder_zmaticoo(),
     ]
+}
+
+// ── Price Granularity types ────────────────────────────────────────────────
+
+/// GranularityRange defines a range of prices used by PriceGranularity
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GranularityRange {
+    pub min: f64,
+    pub max: f64,
+    pub increment: f64,
+}
+
+/// PriceGranularity defines price bucket granularity configuration.
+/// Supports both legacy string IDs ("low", "medium", "high", "auto", "dense")
+/// and structured precision+ranges form.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PriceGranularity {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub precision: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ranges: Option<Vec<GranularityRange>>,
+}
+
+/// MediaTypePriceGranularity specifies price granularity at the media type level
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MediaTypePriceGranularity {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub banner: Option<PriceGranularity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub video: Option<PriceGranularity>,
+    #[serde(rename = "native", skip_serializing_if = "Option::is_none")]
+    pub native_type: Option<PriceGranularity>,
+}
+
+// ── Stored Request ─────────────────────────────────────────────────────────
+
+/// ExtStoredRequest references a stored request by its ID
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExtStoredRequest {
+    pub id: String,
+}
+
+// ── Data / EID Permissions ─────────────────────────────────────────────────
+
+/// ExtRequestPrebidDataEidPermission defines a filter rule for user.ext.eids
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExtRequestPrebidDataEidPermission {
+    pub source: String,
+    pub bidders: Vec<String>,
+}
+
+/// ExtRequestPrebidData defines the data configuration from req.ext.prebid.data
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExtRequestPrebidData {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eidpermissions: Option<Vec<ExtRequestPrebidDataEidPermission>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bidders: Option<Vec<String>>,
+}
+
+// ── SChain extension ───────────────────────────────────────────────────────
+
+/// ExtRequestPrebidSChain pairs a supply chain with the bidders it applies to
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExtRequestPrebidSChain {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bidders: Option<Vec<String>>,
+    pub schain: SupplyChain,
+}
+
+// ── Price Floor Rules ──────────────────────────────────────────────────────
+
+/// PriceFloorEndpoint defines a remote floor endpoint
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PriceFloorEndpoint {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+/// PriceFloorEnforcement controls how floor enforcement behaves
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PriceFloorEnforcement {
+    #[serde(skip_serializing_if = "Option::is_none", rename = "enforcepbs")]
+    pub enforce_pbs: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "floordeals")]
+    pub floor_deals: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "bidadjustment")]
+    pub bid_adjustment: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "enforcerate")]
+    pub enforce_rate: Option<i32>,
+}
+
+/// PriceFloorModelGroup defines a single model group within floor data
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PriceFloorModelGroup {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "modelweight")]
+    pub model_weight: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "skiprate")]
+    pub skip_rate: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema: Option<PriceFloorSchema>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub values: Option<HashMap<String, f64>>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "default")]
+    pub default_floor: Option<f64>,
+}
+
+/// PriceFloorSchema defines the schema (fields, delimiter) for floor rules
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PriceFloorSchema {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fields: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delimiter: Option<String>,
+}
+
+/// PriceFloorData holds the floor data including model groups
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PriceFloorData {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "skiprate")]
+    pub skip_rate: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "modelgroups")]
+    pub model_groups: Option<Vec<PriceFloorModelGroup>>,
+}
+
+/// ExtPriceFloorRules defines floor rules from req.ext.prebid.floors
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExtPriceFloorRules {
+    #[serde(skip_serializing_if = "Option::is_none", rename = "floormin")]
+    pub floor_min: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "floormincur")]
+    pub floor_min_cur: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "skiprate")]
+    pub skip_rate: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "floorendpoint")]
+    pub location: Option<PriceFloorEndpoint>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<PriceFloorData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enforcement: Option<PriceFloorEnforcement>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skipped: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "floorprovider")]
+    pub floor_provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "fetchstatus")]
+    pub fetch_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "location")]
+    pub price_floor_location: Option<String>,
+}
+
+// ── ExtMultiBid (request-level) ────────────────────────────────────────────
+
+/// ExtMultiBid defines multi-bid configuration in req.ext.prebid.multibid.
+/// This mirrors the Go ExtMultiBid type with its JSON field names.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExtMultiBid {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bidder: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bidders: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub maxbids: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "targetbiddercodeprefix")]
+    pub target_bidder_code_prefix: Option<String>,
+}
+
+impl std::fmt::Display for ExtMultiBid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let max_bids = match &self.maxbids {
+            Some(v) => v.to_string(),
+            None => "<nil>".to_string(),
+        };
+        write!(
+            f,
+            "{{Bidder:{}, Bidders:{:?}, MaxBids:{}, TargetBidderCodePrefix:{}}}",
+            self.bidder.as_deref().unwrap_or(""),
+            self.bidders.as_deref().unwrap_or(&[]),
+            max_bids,
+            self.target_bidder_code_prefix.as_deref().unwrap_or("")
+        )
+    }
+}
+
+// ── ExtRequestPrebidServer ─────────────────────────────────────────────────
+
+/// ExtRequestPrebidServer contains server-level information
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExtRequestPrebidServer {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub externalurl: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gvlid: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub datacenter: Option<String>,
+}
+
+// ── ExtRequestCurrency ─────────────────────────────────────────────────────
+
+/// ExtRequestCurrency describes the currency conversion config in req.ext.prebid.currency
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExtRequestCurrency {
+    #[serde(skip_serializing_if = "Option::is_none", rename = "rates")]
+    pub conversion_rates: Option<HashMap<String, HashMap<String, f64>>>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "usepbsrates")]
+    pub use_pbs_rates: Option<bool>,
+}
+
+// ── AlternateBidderCodes ───────────────────────────────────────────────────
+
+/// ExtAlternateBidderCodes describes alternate bidder code configuration
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExtAlternateBidderCodes {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bidders: Option<HashMap<String, ExtAdapterAlternateBidderCodes>>,
+}
+
+/// ExtAdapterAlternateBidderCodes defines per-adapter alternate bidder code settings
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExtAdapterAlternateBidderCodes {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "allowedbiddercodes")]
+    pub allowed_bidder_codes: Option<Vec<String>>,
+}
+
+// ── ExtRequestPrebid (the main ext.prebid on bid request) ──────────────────
+
+/// ExtRequestPrebid is the top-level prebid extension on a bid request (req.ext.prebid).
+/// This is the central configuration struct for Prebid Server behavior.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExtRequestPrebid {
+    /// Bidder alias mappings: alias name -> parent bidder name
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aliases: Option<HashMap<String, String>>,
+
+    /// GVL IDs for aliases
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aliasgvlids: Option<HashMap<String, u16>>,
+
+    /// Per-bidder bid CPM adjustment multipliers
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bidadjustmentfactors: Option<HashMap<String, f64>>,
+
+    /// New-style bid adjustment rules
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bidadjustments: Option<serde_json::Value>,
+
+    /// Per-bidder params (raw JSON, keyed by bidder name)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bidderparams: Option<serde_json::Value>,
+
+    /// Cache configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache: Option<ExtRequestPrebidCache>,
+
+    /// Channel identification (name + version)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel: Option<ExtRequestPrebidChannel>,
+
+    /// Currency conversion configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub currency: Option<ExtRequestCurrency>,
+
+    /// Data / EID permission configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<ExtRequestPrebidData>,
+
+    /// Enable debug output
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub debug: Option<bool>,
+
+    /// Event tracking configuration (raw JSON)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub events: Option<serde_json::Value>,
+
+    /// Floor rules configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub floors: Option<ExtPriceFloorRules>,
+
+    /// Host integration identifier
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub integration: Option<String>,
+
+    /// Multi-bid configuration per bidder
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub multibid: Option<Vec<ExtMultiBid>>,
+
+    /// Passthrough data forwarded to the response
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub passthrough: Option<serde_json::Value>,
+
+    /// Supply chain configurations per bidder group
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schains: Option<Vec<ExtRequestPrebidSChain>>,
+
+    /// SDK information
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sdk: Option<ExtRequestSdk>,
+
+    /// Server information (external URL, GVL ID, datacenter)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server: Option<ExtRequestPrebidServer>,
+
+    /// Reference to a stored request
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storedrequest: Option<ExtStoredRequest>,
+
+    /// Enable deals support
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supportdeals: Option<bool>,
+
+    /// Targeting configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub targeting: Option<ExtRequestTargeting>,
+
+    /// Alternate bidder codes configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alternatebiddercodes: Option<ExtAlternateBidderCodes>,
+
+    /// Ad server targeting rules (raw JSON)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub adservertargeting: Option<serde_json::Value>,
+
+    /// Per-bidder analytics modules config (raw JSON per module)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub analytics: Option<HashMap<String, serde_json::Value>>,
+
+    /// Bidder config overrides
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bidderconfig: Option<serde_json::Value>,
+
+    /// Experiment configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub experiment: Option<serde_json::Value>,
+}
+
+// ── Unit Tests ─────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_bid_type_serialize() {
+        assert_eq!(serde_json::to_string(&BidType::Banner).unwrap(), "\"banner\"");
+        assert_eq!(serde_json::to_string(&BidType::Video).unwrap(), "\"video\"");
+        assert_eq!(serde_json::to_string(&BidType::Audio).unwrap(), "\"audio\"");
+        assert_eq!(serde_json::to_string(&BidType::Native).unwrap(), "\"native\"");
+    }
+
+    #[test]
+    fn test_bid_type_deserialize() {
+        let b: BidType = serde_json::from_str("\"video\"").unwrap();
+        assert_eq!(b, BidType::Video);
+    }
+
+    #[test]
+    fn test_bid_type_display() {
+        assert_eq!(BidType::Banner.to_string(), "banner");
+        assert_eq!(BidType::Native.to_string(), "native");
+    }
+
+    #[test]
+    fn test_bid_type_default() {
+        assert_eq!(BidType::default(), BidType::Banner);
+    }
+
+    #[test]
+    fn test_ext_stored_request_roundtrip() {
+        let sr = ExtStoredRequest { id: "abc-123".into() };
+        let json = serde_json::to_string(&sr).unwrap();
+        assert!(json.contains("\"id\":\"abc-123\""));
+        let parsed: ExtStoredRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.id, "abc-123");
+    }
+
+    #[test]
+    fn test_ext_multi_bid_serialize() {
+        let mb = ExtMultiBid {
+            bidder: Some("appnexus".into()),
+            bidders: None,
+            maxbids: Some(3),
+            target_bidder_code_prefix: Some("apn".into()),
+        };
+        let json = serde_json::to_string(&mb).unwrap();
+        assert!(json.contains("\"bidder\":\"appnexus\""));
+        assert!(json.contains("\"maxbids\":3"));
+        assert!(json.contains("\"targetbiddercodeprefix\":\"apn\""));
+        assert!(!json.contains("\"bidders\""));
+    }
+
+    #[test]
+    fn test_ext_multi_bid_deserialize() {
+        let json = r#"{"bidder":"rubicon","maxbids":2}"#;
+        let mb: ExtMultiBid = serde_json::from_str(json).unwrap();
+        assert_eq!(mb.bidder.as_deref(), Some("rubicon"));
+        assert_eq!(mb.maxbids, Some(2));
+        assert!(mb.target_bidder_code_prefix.is_none());
+    }
+
+    #[test]
+    fn test_ext_multi_bid_display() {
+        let mb = ExtMultiBid {
+            bidder: Some("appnexus".into()),
+            bidders: None,
+            maxbids: Some(3),
+            target_bidder_code_prefix: Some("apn".into()),
+        };
+        let s = mb.to_string();
+        assert!(s.contains("appnexus"));
+        assert!(s.contains("3"));
+    }
+
+    #[test]
+    fn test_price_granularity_roundtrip() {
+        let pg = PriceGranularity {
+            precision: Some(2),
+            ranges: Some(vec![
+                GranularityRange { min: 0.0, max: 5.0, increment: 0.05 },
+                GranularityRange { min: 5.0, max: 20.0, increment: 0.5 },
+            ]),
+        };
+        let json = serde_json::to_string(&pg).unwrap();
+        let parsed: PriceGranularity = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.precision, Some(2));
+        assert_eq!(parsed.ranges.as_ref().unwrap().len(), 2);
+        assert!((parsed.ranges.as_ref().unwrap()[0].increment - 0.05).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_media_type_price_granularity() {
+        let mtpg = MediaTypePriceGranularity {
+            banner: Some(PriceGranularity {
+                precision: Some(2),
+                ranges: Some(vec![GranularityRange { min: 0.0, max: 10.0, increment: 0.1 }]),
+            }),
+            video: None,
+            native_type: None,
+        };
+        let json = serde_json::to_string(&mtpg).unwrap();
+        assert!(json.contains("\"banner\""));
+        assert!(!json.contains("\"video\""));
+        assert!(!json.contains("\"native\""));
+    }
+
+    #[test]
+    fn test_ext_request_targeting_roundtrip() {
+        let t = ExtRequestTargeting {
+            pricegranularity: Some(PriceGranularity {
+                precision: Some(2),
+                ranges: Some(vec![GranularityRange { min: 0.0, max: 20.0, increment: 0.01 }]),
+            }),
+            includewinners: Some(true),
+            includebidderkeys: Some(false),
+            includeformat: Some(true),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&t).unwrap();
+        let parsed: ExtRequestTargeting = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.includewinners, Some(true));
+        assert_eq!(parsed.includebidderkeys, Some(false));
+        assert_eq!(parsed.includeformat, Some(true));
+        assert!(parsed.pricegranularity.is_some());
+    }
+
+    #[test]
+    fn test_ext_request_prebid_cache_roundtrip() {
+        let c = ExtRequestPrebidCache {
+            bids: Some(ExtRequestPrebidCacheBids {
+                ttl_seconds: Some(300),
+                return_creative: Some(true),
+            }),
+            vastxml: Some(ExtRequestPrebidCacheVAST {
+                ttl_seconds: Some(600),
+                return_creative: Some(false),
+            }),
+            winningonly: Some(true),
+        };
+        let json = serde_json::to_string(&c).unwrap();
+        let parsed: ExtRequestPrebidCache = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.bids.as_ref().unwrap().ttl_seconds, Some(300));
+        assert_eq!(parsed.vastxml.as_ref().unwrap().return_creative, Some(false));
+        assert_eq!(parsed.winningonly, Some(true));
+    }
+
+    #[test]
+    fn test_ext_request_prebid_schain() {
+        let sc = ExtRequestPrebidSChain {
+            bidders: Some(vec!["appnexus".into(), "rubicon".into()]),
+            schain: SupplyChain {
+                complete: 1,
+                ver: "1.0".into(),
+                ..Default::default()
+            },
+        };
+        let json = serde_json::to_string(&sc).unwrap();
+        assert!(json.contains("\"bidders\""));
+        assert!(json.contains("\"schain\""));
+        let parsed: ExtRequestPrebidSChain = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.bidders.as_ref().unwrap().len(), 2);
+        assert_eq!(parsed.schain.complete, 1);
+    }
+
+    #[test]
+    fn test_ext_request_prebid_data() {
+        let d = ExtRequestPrebidData {
+            bidders: Some(vec!["appnexus".into()]),
+            eidpermissions: Some(vec![ExtRequestPrebidDataEidPermission {
+                source: "adserver.org".into(),
+                bidders: vec!["appnexus".into(), "rubicon".into()],
+            }]),
+        };
+        let json = serde_json::to_string(&d).unwrap();
+        let parsed: ExtRequestPrebidData = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.bidders.as_ref().unwrap().len(), 1);
+        let perms = parsed.eidpermissions.as_ref().unwrap();
+        assert_eq!(perms[0].source, "adserver.org");
+        assert_eq!(perms[0].bidders.len(), 2);
+    }
+
+    #[test]
+    fn test_ext_price_floor_rules_roundtrip() {
+        let f = ExtPriceFloorRules {
+            floor_min: Some(0.5),
+            floor_min_cur: Some("USD".into()),
+            enabled: Some(true),
+            skip_rate: Some(10),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&f).unwrap();
+        assert!(json.contains("\"floormin\":0.5"));
+        assert!(json.contains("\"floormincur\":\"USD\""));
+        let parsed: ExtPriceFloorRules = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.floor_min, Some(0.5));
+        assert_eq!(parsed.enabled, Some(true));
+    }
+
+    #[test]
+    fn test_ext_bid_prebid_roundtrip() {
+        let bp = ExtBidPrebid {
+            bidid: Some("bid-abc".into()),
+            bid_type: Some(BidType::Video),
+            targeting: Some(HashMap::from([
+                ("hb_pb".into(), "5.00".into()),
+                ("hb_bidder".into(), "appnexus".into()),
+            ])),
+            cache: Some(ExtBidPrebidCache {
+                key: None,
+                url: None,
+                bids: Some(CacheIdUrl {
+                    cache_id: Some("cache-123".into()),
+                    url: Some("https://cache.example.com/cache-123".into()),
+                }),
+                vastxml: Some(CacheIdUrl {
+                    cache_id: Some("vast-456".into()),
+                    url: Some("https://cache.example.com/vast-456".into()),
+                }),
+            }),
+            events: Some(ExtBidPrebidEvents {
+                win: Some("https://example.com/win".into()),
+                imp: Some("https://example.com/imp".into()),
+            }),
+            video: Some(ExtBidPrebidVideo {
+                duration: 30,
+                primary_category: "IAB1".into(),
+            }),
+            meta: Some(ExtBidPrebidMeta {
+                advertiser_id: Some(123),
+                advertiser_name: Some("Acme Corp".into()),
+                network_id: Some(456),
+                ..Default::default()
+            }),
+            floors: Some(ExtBidPrebidFloors {
+                floor_value: Some(1.5),
+                floor_currency: Some("USD".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&bp).unwrap();
+        let parsed: ExtBidPrebid = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.bidid.as_deref(), Some("bid-abc"));
+        assert_eq!(parsed.bid_type, Some(BidType::Video));
+        assert_eq!(parsed.targeting.as_ref().unwrap().get("hb_pb").unwrap(), "5.00");
+        assert!(parsed.cache.is_some());
+        let cache = parsed.cache.as_ref().unwrap();
+        assert_eq!(cache.bids.as_ref().unwrap().cache_id.as_deref(), Some("cache-123"));
+        assert_eq!(cache.vastxml.as_ref().unwrap().cache_id.as_deref(), Some("vast-456"));
+        assert_eq!(parsed.events.as_ref().unwrap().win.as_deref(), Some("https://example.com/win"));
+        assert_eq!(parsed.video.as_ref().unwrap().duration, 30);
+        assert_eq!(parsed.meta.as_ref().unwrap().advertiser_id, Some(123));
+        assert_eq!(parsed.floors.as_ref().unwrap().floor_value, Some(1.5));
+    }
+
+    #[test]
+    fn test_ext_request_prebid_full() {
+        let prebid = ExtRequestPrebid {
+            aliases: Some(HashMap::from([("appnexus_alias".into(), "appnexus".into())])),
+            bidadjustmentfactors: Some(HashMap::from([("appnexus".into(), 0.9)])),
+            cache: Some(ExtRequestPrebidCache {
+                bids: Some(ExtRequestPrebidCacheBids {
+                    ttl_seconds: None,
+                    return_creative: Some(true),
+                }),
+                vastxml: None,
+                winningonly: None,
+            }),
+            targeting: Some(ExtRequestTargeting {
+                pricegranularity: Some(PriceGranularity {
+                    precision: Some(2),
+                    ranges: Some(vec![GranularityRange { min: 0.0, max: 20.0, increment: 0.01 }]),
+                }),
+                includewinners: Some(true),
+                includebidderkeys: Some(true),
+                includeformat: Some(false),
+                ..Default::default()
+            }),
+            storedrequest: Some(ExtStoredRequest { id: "stored-req-1".into() }),
+            data: Some(ExtRequestPrebidData {
+                bidders: Some(vec!["appnexus".into()]),
+                eidpermissions: None,
+            }),
+            channel: Some(ExtRequestPrebidChannel {
+                name: "web".into(),
+                version: "1.0".into(),
+            }),
+            debug: Some(true),
+            floors: Some(ExtPriceFloorRules {
+                floor_min: Some(0.01),
+                enabled: Some(true),
+                ..Default::default()
+            }),
+            schains: Some(vec![ExtRequestPrebidSChain {
+                bidders: Some(vec!["*".into()]),
+                schain: SupplyChain {
+                    complete: 1,
+                    ver: "1.0".into(),
+                    ..Default::default()
+                },
+            }]),
+            multibid: Some(vec![ExtMultiBid {
+                bidder: Some("appnexus".into()),
+                bidders: None,
+                maxbids: Some(3),
+                target_bidder_code_prefix: Some("apn".into()),
+            }]),
+            ..Default::default()
+        };
+
+        let json = serde_json::to_string(&prebid).unwrap();
+        let parsed: ExtRequestPrebid = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.aliases.as_ref().unwrap().get("appnexus_alias").unwrap(), "appnexus");
+        assert!((parsed.bidadjustmentfactors.as_ref().unwrap()["appnexus"] - 0.9).abs() < f64::EPSILON);
+        assert!(parsed.cache.is_some());
+        assert!(parsed.targeting.is_some());
+        assert_eq!(parsed.storedrequest.as_ref().unwrap().id, "stored-req-1");
+        assert_eq!(parsed.data.as_ref().unwrap().bidders.as_ref().unwrap()[0], "appnexus");
+        assert_eq!(parsed.channel.as_ref().unwrap().name, "web");
+        assert_eq!(parsed.debug, Some(true));
+        assert_eq!(parsed.floors.as_ref().unwrap().floor_min, Some(0.01));
+        assert_eq!(parsed.schains.as_ref().unwrap().len(), 1);
+        assert_eq!(parsed.multibid.as_ref().unwrap().len(), 1);
+        assert_eq!(parsed.multibid.as_ref().unwrap()[0].maxbids, Some(3));
+    }
+
+    #[test]
+    fn test_ext_request_prebid_minimal_json() {
+        let json = r#"{"debug":true}"#;
+        let parsed: ExtRequestPrebid = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.debug, Some(true));
+        assert!(parsed.cache.is_none());
+        assert!(parsed.targeting.is_none());
+    }
+
+    #[test]
+    fn test_ext_request_prebid_empty() {
+        let json = "{}";
+        let parsed: ExtRequestPrebid = serde_json::from_str(json).unwrap();
+        assert!(parsed.aliases.is_none());
+        assert!(parsed.debug.is_none());
+    }
+
+    #[test]
+    fn test_cache_id_url_roundtrip() {
+        let cu = CacheIdUrl {
+            cache_id: Some("abc".into()),
+            url: Some("https://cache.example.com/abc".into()),
+        };
+        let json = serde_json::to_string(&cu).unwrap();
+        assert!(json.contains("\"cacheId\":\"abc\""));
+        let parsed: CacheIdUrl = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.cache_id.as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn test_ext_request_currency() {
+        let c = ExtRequestCurrency {
+            conversion_rates: Some(HashMap::from([(
+                "USD".into(),
+                HashMap::from([("EUR".into(), 0.85)]),
+            )])),
+            use_pbs_rates: Some(true),
+        };
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(json.contains("\"rates\""));
+        assert!(json.contains("\"usepbsrates\":true"));
+        let parsed: ExtRequestCurrency = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.use_pbs_rates, Some(true));
+    }
+
+    #[test]
+    fn test_ext_bid_prebid_floors_roundtrip() {
+        let f = ExtBidPrebidFloors {
+            floor_rule: Some("banner|*|*".into()),
+            floor_rule_value: Some(1.0),
+            floor_value: Some(1.5),
+            floor_currency: Some("USD".into()),
+        };
+        let json = serde_json::to_string(&f).unwrap();
+        assert!(json.contains("\"floorRule\":\"banner|*|*\""));
+        assert!(json.contains("\"floorValue\":1.5"));
+        assert!(json.contains("\"floorCurrency\":\"USD\""));
+        let parsed: ExtBidPrebidFloors = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.floor_currency.as_deref(), Some("USD"));
+    }
+
+    #[test]
+    fn test_ext_alternate_bidder_codes() {
+        let abc = ExtAlternateBidderCodes {
+            enabled: Some(true),
+            bidders: Some(HashMap::from([(
+                "appnexus".into(),
+                ExtAdapterAlternateBidderCodes {
+                    enabled: Some(true),
+                    allowed_bidder_codes: Some(vec!["apnx".into()]),
+                },
+            )])),
+        };
+        let json = serde_json::to_string(&abc).unwrap();
+        let parsed: ExtAlternateBidderCodes = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.enabled, Some(true));
+        let adapter = &parsed.bidders.as_ref().unwrap()["appnexus"];
+        assert_eq!(adapter.allowed_bidder_codes.as_ref().unwrap()[0], "apnx");
+    }
+
+    #[test]
+    fn test_price_floor_enforcement() {
+        let e = PriceFloorEnforcement {
+            enforce_pbs: Some(true),
+            floor_deals: Some(false),
+            bid_adjustment: Some(true),
+            enforce_rate: Some(100),
+        };
+        let json = serde_json::to_string(&e).unwrap();
+        assert!(json.contains("\"enforcepbs\":true"));
+        assert!(json.contains("\"floordeals\":false"));
+        let parsed: PriceFloorEnforcement = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.enforce_rate, Some(100));
+    }
+
+    #[test]
+    fn test_bidder_name_basics() {
+        let bn = BidderName::new("appnexus");
+        assert_eq!(bn.as_str(), "appnexus");
+        assert_eq!(bn.to_string(), "appnexus");
+
+        let bn2: BidderName = "rubicon".into();
+        assert_eq!(bn2.as_str(), "rubicon");
+
+        let bn3: BidderName = String::from("ix").into();
+        assert_eq!(bn3.as_str(), "ix");
+    }
+
+    #[test]
+    fn test_all_bidder_names_not_empty() {
+        let names = all_bidder_names();
+        assert!(!names.is_empty());
+        // Verify a few well-known bidders are present
+        assert!(names.iter().any(|n: &BidderName| n.as_str() == "appnexus"));
+        assert!(names.iter().any(|n: &BidderName| n.as_str() == "rubicon"));
+        assert!(names.iter().any(|n: &BidderName| n.as_str() == "ix"));
+    }
 }
