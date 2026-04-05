@@ -26,14 +26,19 @@ fn get_bid_type(imp: &openrtb::Imp) -> Option<BidType> {
     }
 }
 
-/// Parse an integer param that may be stored as number or string in JSON
+/// Parse an integer param that may be stored as number or string in JSON.
+/// Returns None if value is zero or absent.
 fn parse_int_param(val: &serde_json::Value) -> Option<i64> {
     if let Some(n) = val.as_i64() {
-        if n != 0 { return Some(n); }
+        if n != 0 {
+            return Some(n);
+        }
     }
     if let Some(s) = val.as_str() {
         if let Ok(n) = s.parse::<i64>() {
-            if n != 0 { return Some(n); }
+            if n != 0 {
+                return Some(n);
+            }
         }
     }
     None
@@ -65,33 +70,38 @@ impl Bidder for PulsepointAdapter {
                 }
             };
 
-            // pubId
+            // pubId - only parsed from the first valid imp
             if pub_id.is_empty() {
                 let pub_val = bidder_ext.get("pubId").or_else(|| bidder_ext.get("pub_id"));
                 match pub_val.and_then(|v| parse_int_param(v)) {
                     Some(n) => pub_id = n.to_string(),
                     None => {
-                        errs.push(BidderError::BadInput("param not found - pubID".to_string()));
+                        errs.push(BidderError::BadInput(
+                            "param not found - pubID".to_string(),
+                        ));
                         continue;
                     }
                 }
             }
 
-            // tagId
+            // tagId - required per imp
             let tag_val = bidder_ext.get("tagId").or_else(|| bidder_ext.get("tag_id"));
             let tag_id = match tag_val.and_then(|v| parse_int_param(v)) {
                 Some(n) => n.to_string(),
                 None => {
-                    errs.push(BidderError::BadInput("param not found - tagID".to_string()));
+                    errs.push(BidderError::BadInput(
+                        "param not found - tagID".to_string(),
+                    ));
                     continue;
                 }
             };
 
-            let mut imp = imp.clone();
-            imp.tagid = Some(tag_id);
-            imps.push(imp);
+            let mut imp_copy = imp.clone();
+            imp_copy.tagid = Some(tag_id);
+            imps.push(imp_copy);
         }
 
+        // If no valid imps, return errors without making a request
         if imps.is_empty() {
             return (vec![], errs);
         }
@@ -99,21 +109,21 @@ impl Bidder for PulsepointAdapter {
         let mut req = request.clone();
 
         // Set publisher id on site or app
-        let publisher = openrtb::Publisher {
+        let new_pub = openrtb::Publisher {
             id: Some(pub_id),
             ..Default::default()
         };
         if let Some(site) = req.site.as_mut() {
             if let Some(pub_ref) = site.publisher.as_mut() {
-                pub_ref.id = publisher.id;
+                pub_ref.id = new_pub.id;
             } else {
-                site.publisher = Some(publisher);
+                site.publisher = Some(new_pub);
             }
         } else if let Some(app) = req.app.as_mut() {
             if let Some(pub_ref) = app.publisher.as_mut() {
-                pub_ref.id = publisher.id;
+                pub_ref.id = new_pub.id;
             } else {
-                app.publisher = Some(publisher);
+                app.publisher = Some(new_pub);
             }
         }
 
@@ -128,7 +138,10 @@ impl Bidder for PulsepointAdapter {
         };
 
         let mut headers = HashMap::new();
-        headers.insert("Content-Type".to_string(), "application/json;charset=utf-8".to_string());
+        headers.insert(
+            "Content-Type".to_string(),
+            "application/json;charset=utf-8".to_string(),
+        );
         headers.insert("Accept".to_string(), "application/json".to_string());
 
         let imp_ids = get_imp_ids(&req.imp);
@@ -150,11 +163,23 @@ impl Bidder for PulsepointAdapter {
         _external: &RequestData,
         response: &ResponseData,
     ) -> Result<BidderResponse, Vec<BidderError>> {
+        // passback - no bid
         if response.status_code == 204 {
             return Ok(BidderResponse::new());
         }
-        if let Err(e) = crate::check_response_status(response.status_code) {
-            return Err(vec![e]);
+        // bad request
+        if response.status_code == 400 {
+            return Err(vec![BidderError::BadInput(format!(
+                "Bad user input: HTTP status {}",
+                response.status_code
+            ))]);
+        }
+        // other error
+        if response.status_code != 200 {
+            return Err(vec![BidderError::BadServerResponse(format!(
+                "Bad server response: HTTP status {}",
+                response.status_code
+            ))]);
         }
 
         let bid_response: openrtb::BidResponse = serde_json::from_slice(&response.body)
@@ -162,14 +187,17 @@ impl Bidder for PulsepointAdapter {
 
         let mut result = BidderResponse::with_capacity(5);
 
-        // Build imp map
-        let imp_map: HashMap<&str, &openrtb::Imp> = internal.imp.iter()
+        // Build imp map for quick lookup
+        let imp_map: HashMap<&str, &openrtb::Imp> = internal
+            .imp
+            .iter()
             .map(|i| (i.id.as_str(), i))
             .collect();
 
         for sb in bid_response.seatbid {
             for bid in sb.bid {
                 if let Some(imp) = imp_map.get(bid.impid.as_str()) {
+                    // Only include bid if we can determine a bid type
                     if let Some(bid_type) = get_bid_type(imp) {
                         result.bids.push(TypedBid::new(bid, bid_type));
                     }
