@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
+
 /// BidderName is a newtype wrapper around String representing a bidder identifier.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub struct BidderName(pub String);
@@ -364,21 +365,27 @@ pub struct ExtBidPrebid {
     pub floors: Option<ExtBidPrebidFloors>,
 }
 
+/// CacheIdUrl holds a cache ID and its corresponding URL
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheIdUrl {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_id: Option<String>,
+}
+
 /// ExtBidPrebidCache defines the cache information in bid ext
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ExtBidPrebidCache {
-    pub key: String,
-    pub url: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub bids: Option<ExtBidPrebidCacheBids>,
-}
-
-/// ExtBidPrebidCacheBids holds cache bid information
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct ExtBidPrebidCacheBids {
-    pub url: String,
-    pub cache_id: String,
+    pub key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bids: Option<CacheIdUrl>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vastxml: Option<CacheIdUrl>,
 }
 
 /// ExtBidPrebidFloors defines floor information on a bid
@@ -637,21 +644,79 @@ pub struct ExtRequestPrebidCacheVAST {
     pub return_creative: Option<bool>,
 }
 
+// ── Price Granularity ───────────────────────────────────────────────────────
+
+/// PriceGranularity defines how CPM prices are bucketed for targeting
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(untagged)]
+pub enum PriceGranularity {
+    /// A named preset: "low", "medium", "med", "high", "auto", "dense"
+    Preset(String),
+    /// Custom ranges
+    Custom(PriceGranularityCustom),
+}
+
+impl Default for PriceGranularity {
+    fn default() -> Self {
+        PriceGranularity::Preset("medium".to_string())
+    }
+}
+
+/// Custom price granularity with explicit ranges
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct PriceGranularityCustom {
+    pub precision: Option<u32>,
+    pub ranges: Vec<GranularityRange>,
+}
+
+/// A single price granularity range
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct GranularityRange {
+    pub min: f64,
+    pub max: f64,
+    pub increment: f64,
+}
+
+/// Media-type-specific price granularity overrides
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct MediaTypePriceGranularity {
+    pub banner: Option<PriceGranularity>,
+    pub video: Option<PriceGranularity>,
+    #[serde(rename = "native")]
+    pub native_type: Option<PriceGranularity>,
+}
+
 // ── Targeting extension ──────────────────────────────────────────────────────
 
 /// ExtRequestTargeting describes targeting options from req.ext.prebid.targeting
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct ExtRequestTargeting {
-    pub pricegranularity: Option<serde_json::Value>,
-    pub mediatypepricegranularity: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pricegranularity: Option<PriceGranularity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mediatypepricegranularity: Option<MediaTypePriceGranularity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub currency: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub includebrandcategory: Option<ExtIncludeBrandCategory>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub includeformat: Option<bool>,
-    pub durationrangeinmssupport: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub durationrangesec: Option<Vec<i32>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub preferdeals: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub includewinners: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub includebidderkeys: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub truncateattrvalue: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub appendbiddernames: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alwaysincludedeals: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<String>,
 }
 
 // ── Response prebid extension structs ────────────────────────────────────────

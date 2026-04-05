@@ -10,11 +10,15 @@ pub mod bidadjustment;
 pub mod cache;
 pub mod currency;
 pub mod dsa;
+pub mod events;
+pub mod first_party_data;
 pub mod floors;
 pub mod gdpr;
 pub mod hooks;
 pub mod macros;
 pub mod privacy;
+pub mod seat_non_bids;
+pub mod tmax;
 pub mod usersync;
 pub mod validation;
 

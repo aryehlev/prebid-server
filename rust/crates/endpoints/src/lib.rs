@@ -314,7 +314,7 @@ pub async fn auction_handler(
 
     // If account requires GDPR consent and none is present, skip the auction
     if let Some(acct) = account_cfg {
-        if acct.gdpr_enabled == Some(true) {
+        if acct.privacy.gdpr.enabled == Some(true) {
             let has_consent = bid_request
                 .user
                 .as_ref()
@@ -426,7 +426,7 @@ pub async fn auction_get_handler(
     let account_cfg = account_id.and_then(|id| state.accounts.get(id));
 
     if let Some(acct) = account_cfg {
-        if acct.gdpr_enabled == Some(true) {
+        if acct.privacy.gdpr.enabled == Some(true) {
             let has_consent = bid_request
                 .user
                 .as_ref()

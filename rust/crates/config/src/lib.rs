@@ -344,13 +344,38 @@ fn default_true() -> bool {
     true
 }
 
-/// Metrics configuration
+/// Metrics configuration.
+///
+/// Maps to the Go `Metrics` struct in config/config.go.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MetricsConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub influxdb: Option<InfluxDBConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prometheus: Option<PrometheusConfig>,
+    /// Granular flags for disabling specific metric groups.
+    #[serde(default)]
+    pub disabled_metrics: DisabledMetricsConfig,
+}
+
+/// Flags that allow selectively disabling expensive metric groups.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DisabledMetricsConfig {
+    /// Stop collecting per-account adapter detail metrics.
+    #[serde(default)]
+    pub account_adapter_details: bool,
+    /// Stop collecting per-account debug request metrics.
+    #[serde(default)]
+    pub account_debug: bool,
+    /// Stop collecting per-account stored-response metrics.
+    #[serde(default)]
+    pub account_stored_responses: bool,
+    /// Stop collecting bidder-connection metrics (created / reused).
+    #[serde(default)]
+    pub adapter_connections_metrics: bool,
+    /// Stop collecting GDPR-request metrics.
+    #[serde(default)]
+    pub adapter_gdpr_request_blocked: bool,
 }
 
 /// InfluxDB metrics configuration
@@ -363,13 +388,16 @@ pub struct InfluxDBConfig {
     pub password: String,
 }
 
-/// Prometheus metrics configuration
+/// Prometheus metrics configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PrometheusConfig {
     #[serde(default = "default_prometheus_port")]
     pub port: u16,
     #[serde(default = "default_prometheus_namespace")]
     pub namespace: String,
+    /// Subsystem prefix applied to all metric names.
+    #[serde(default)]
+    pub subsystem: String,
     #[serde(default = "default_prometheus_path")]
     pub path: String,
     #[serde(default = "default_prometheus_timeout")]
@@ -420,68 +448,156 @@ pub struct CacheTTL {
     pub audio_ttl_secs: u32,
 }
 
-/// Stored request configuration
+/// Stored request / stored data configuration.
+///
+/// Maps to the Go `StoredRequests` struct in config/stored_requests.go.
+/// Configures where stored request JSON is loaded from (filesystem, HTTP,
+/// database) and how it is cached in memory.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StoredRequestConfig {
+    /// Filesystem backend.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filesystem: Option<FilesystemConfig>,
+    /// HTTP backend.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub http: Option<HttpConfig>,
+    pub http: Option<StoredRequestsHttpConfig>,
+    /// Database backend.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub database: Option<StoredRequestsDatabaseConfig>,
+    /// In-memory cache settings.
     #[serde(default)]
     pub in_memory_cache: InMemoryCacheConfig,
+    /// Cache-invalidation event API settings.
+    #[serde(default)]
+    pub cache_events: CacheEventsConfig,
+    /// HTTP-based cache-invalidation event settings.
+    #[serde(default)]
+    pub http_events: HttpEventsConfig,
 }
 
-/// Filesystem stored request configuration
+/// Filesystem backend for stored requests.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct FilesystemConfig {
     #[serde(default)]
     pub enabled: bool,
-    #[serde(default)]
-    pub directorypath: String,
+    /// Path to the directory containing stored-request JSON files.
+    #[serde(default, alias = "directorypath")]
+    pub directory_path: String,
 }
 
-/// HTTP stored request configuration
+/// HTTP backend for stored requests.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct HttpConfig {
+pub struct StoredRequestsHttpConfig {
+    /// Endpoint for fetching stored requests.
     #[serde(default)]
     pub endpoint: String,
+    /// Endpoint for fetching AMP stored requests.
     #[serde(default)]
     pub amp_endpoint: String,
 }
 
-/// In-memory cache configuration for stored requests
+/// Database backend for stored requests.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct InMemoryCacheConfig {
+pub struct StoredRequestsDatabaseConfig {
+    /// Database driver ("postgres", "mysql", etc.).
     #[serde(default)]
-    pub ttl_seconds: i32,
+    pub driver: String,
+    /// Connection string / DSN.
     #[serde(default)]
-    pub request_cache_size_bytes: i32,
+    pub connection_string: String,
+    /// SQL query for fetching stored requests by ID.
     #[serde(default)]
-    pub imp_cache_size_bytes: i32,
+    pub fetch_query: String,
+    /// SQL query for fetching AMP stored requests by ID.
+    #[serde(default)]
+    pub amp_fetch_query: String,
 }
 
-/// GDPR configuration
+/// In-memory cache configuration for stored requests.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct InMemoryCacheConfig {
+    /// Cache type: "none", "unbounded", or "lru".
+    #[serde(default, rename = "type")]
+    pub cache_type: String,
+    /// Time-to-live in seconds. 0 = no expiry.
+    #[serde(default)]
+    pub ttl_seconds: i32,
+    /// Maximum size (in bytes) of the request cache.
+    #[serde(default)]
+    pub request_cache_size_bytes: i32,
+    /// Maximum size (in bytes) of the imp cache.
+    #[serde(default)]
+    pub imp_cache_size_bytes: i32,
+    /// Maximum total size (in bytes). Used when a single limit applies to all cached data.
+    #[serde(default)]
+    pub size_bytes: i32,
+}
+
+/// Cache-invalidation event API endpoint configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CacheEventsConfig {
+    /// Enable the cache-event API.
+    #[serde(default)]
+    pub enabled: bool,
+    /// URL path for the cache-event endpoint.
+    #[serde(default)]
+    pub endpoint: String,
+}
+
+/// HTTP-based cache-invalidation event configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HttpEventsConfig {
+    /// Endpoint to poll for cache invalidation events.
+    #[serde(default)]
+    pub endpoint: String,
+    /// How often (seconds) to poll for new events.
+    #[serde(default)]
+    pub refresh_rate_seconds: u64,
+    /// Timeout in milliseconds for each poll request.
+    #[serde(default)]
+    pub timeout_ms: u64,
+    /// AMP-specific invalidation endpoint.
+    #[serde(default)]
+    pub amp_endpoint: String,
+}
+
+/// Host-level GDPR configuration.
+///
+/// Maps to the Go `GDPR` struct in config/config.go.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GDPRConfig {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default)]
     pub host_vendor_id: u32,
-    /// Default value for gdpr_applies when not specified in request ("0" = no, "1" = yes/enforce)
+    /// Default value for gdpr_applies when not specified in request ("0" = no, "1" = yes/enforce).
     #[serde(default = "default_gdpr_default_value")]
     pub default_value: String,
     #[serde(default = "default_gdpr_host_vendor_list_url")]
     pub host_vendor_list_url: String,
     #[serde(default)]
     pub enforce_vendor_list: bool,
+    /// EEA countries where GDPR is assumed to apply when the flag is absent.
     #[serde(default)]
     pub eea_countries: Vec<String>,
-    /// If true, send all cookies regardless of GDPR consent
+    /// If true, send all cookies regardless of GDPR consent.
     #[serde(default)]
     pub send_all_cookies: bool,
-    /// Bidders exempt from Purpose 1 (storage and access) consent requirement
+    /// Bidders exempt from Purpose 1 (storage and access) consent requirement.
     #[serde(default)]
     pub purpose1_vendor_exceptions: Vec<String>,
+    /// TCF 2.x enforcement sub-configuration.
+    #[serde(default)]
+    pub tcf2: Tcf2Config,
+    /// Non-standard publishers exempt from normal GDPR enforcement.
+    #[serde(default)]
+    pub non_standard_publishers: Vec<String>,
+    /// Seconds between live GVL refreshes. 0 = disabled.
+    #[serde(default)]
+    pub live_gvl_refresh_interval_seconds: u64,
+    /// GDPR active-investigation timeout settings (milliseconds).
+    #[serde(default)]
+    pub timeouts_ms: GdprTimeoutsConfig,
 }
 
 impl Default for GDPRConfig {
@@ -495,8 +611,108 @@ impl Default for GDPRConfig {
             eea_countries: Vec::new(),
             send_all_cookies: false,
             purpose1_vendor_exceptions: Vec::new(),
+            tcf2: Tcf2Config::default(),
+            non_standard_publishers: Vec::new(),
+            live_gvl_refresh_interval_seconds: 0,
+            timeouts_ms: GdprTimeoutsConfig::default(),
         }
     }
+}
+
+/// GDPR timeout configuration (milliseconds).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GdprTimeoutsConfig {
+    /// Timeout for the initial vendor-list fetch.
+    #[serde(default = "default_gdpr_timeout_ms")]
+    pub active_vendor_list_fetch_ms: u64,
+}
+
+impl Default for GdprTimeoutsConfig {
+    fn default() -> Self {
+        Self {
+            active_vendor_list_fetch_ms: default_gdpr_timeout_ms(),
+        }
+    }
+}
+
+fn default_gdpr_timeout_ms() -> u64 {
+    200
+}
+
+// ---------------------------------------------------------------------------
+// TCF 2.x configuration
+// ---------------------------------------------------------------------------
+
+/// TCF 2.x enforcement settings.
+///
+/// Each of the 10 TCF purposes has its own sub-config controlling whether
+/// purpose consent and vendor consent are enforced, plus vendor exceptions.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Tcf2Config {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub purpose1: Tcf2PurposeConfig,
+    #[serde(default)]
+    pub purpose2: Tcf2PurposeConfig,
+    #[serde(default)]
+    pub purpose3: Tcf2PurposeConfig,
+    #[serde(default)]
+    pub purpose4: Tcf2PurposeConfig,
+    #[serde(default)]
+    pub purpose5: Tcf2PurposeConfig,
+    #[serde(default)]
+    pub purpose6: Tcf2PurposeConfig,
+    #[serde(default)]
+    pub purpose7: Tcf2PurposeConfig,
+    #[serde(default)]
+    pub purpose8: Tcf2PurposeConfig,
+    #[serde(default)]
+    pub purpose9: Tcf2PurposeConfig,
+    #[serde(default)]
+    pub purpose10: Tcf2PurposeConfig,
+    /// Special Feature 1 enforcement.
+    #[serde(default)]
+    pub special_feature1: Tcf2SpecialFeatureConfig,
+    /// Purpose One Treatment settings.
+    #[serde(default)]
+    pub purpose_one_treatment: Tcf2PurposeOneTreatmentConfig,
+}
+
+/// Per-purpose TCF 2 enforcement.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Tcf2PurposeConfig {
+    /// Enforcement algorithm ("basic" or "full").
+    #[serde(default)]
+    pub enforce_algo: String,
+    /// Whether purpose consent is enforced.
+    #[serde(default)]
+    pub enforce_purpose: bool,
+    /// Whether vendor consent is enforced.
+    #[serde(default)]
+    pub enforce_vendors: bool,
+    /// Bidders that are exempt from this purpose's enforcement.
+    #[serde(default)]
+    pub vendor_exceptions: Vec<String>,
+}
+
+/// TCF 2 Special Feature 1 enforcement.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Tcf2SpecialFeatureConfig {
+    #[serde(default)]
+    pub enforce: bool,
+    #[serde(default)]
+    pub vendor_exceptions: Vec<String>,
+}
+
+/// TCF 2 Purpose One Treatment settings.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Tcf2PurposeOneTreatmentConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// When true, purpose one is considered consented for EEA traffic.
+    #[serde(default)]
+    pub access_allowed: bool,
 }
 
 fn default_gdpr_host_vendor_list_url() -> String {
@@ -718,30 +934,25 @@ impl Configuration {
 mod tests {
     use super::*;
 
+    // -----------------------------------------------------------------------
+    // Existing tests (preserved)
+    // -----------------------------------------------------------------------
+
     #[test]
     fn test_default_config_values() {
-        // Configuration::load() (no file, no env) returns correct default values.
-        // We clear any conflicting env vars that may be set by parallel tests.
         let cfg = Configuration::load(None).expect("should load default config");
-        // Host/port defaults from set_default
         assert_eq!(cfg.host, "0.0.0.0");
         assert_eq!(cfg.port, 8000);
         assert_eq!(cfg.admin_port, 6060);
-        // Auction timeout defaults
         assert_eq!(cfg.auction_timeouts.default, 1000);
         assert_eq!(cfg.auction_timeouts.max, 5000);
-        // GDPR default
         assert_eq!(cfg.gdpr.default_value, "1");
         assert!(!cfg.gdpr.enabled);
-        // Max request size default (1.5 MB)
         assert_eq!(cfg.max_request_size, 1_572_864);
     }
 
     #[test]
     fn test_default_adapter_config_struct() {
-        // AdapterConfig::default() uses derive(Default); `enabled` starts as false
-        // because `default_true` is only applied during deserialization.
-        // We verify the struct fields are accessible and have their zero values.
         let ac = AdapterConfig::default();
         assert!(ac.endpoint.is_empty());
         assert!(ac.extra_info.is_none());
@@ -750,7 +961,6 @@ mod tests {
 
     #[test]
     fn test_default_gdpr_config() {
-        // GDPRConfig has a custom Default impl.
         let gdpr = GDPRConfig::default();
         assert!(!gdpr.enabled);
         assert_eq!(gdpr.default_value, "1");
@@ -760,15 +970,12 @@ mod tests {
 
     #[test]
     fn test_default_ccpa_config_via_load() {
-        // When loaded from config (no env vars), ccpa.enforce should be true (set_default + serde).
-        // Use Configuration::load to test the actual runtime default.
         let cfg = Configuration::load(None).expect("should load default config");
         assert!(cfg.ccpa_enforce, "ccpa_enforce should default to true via config loading");
     }
 
     #[test]
     fn test_env_override_port() {
-        // Store old value so we can restore it after the test.
         let old = std::env::var("PBS_PORT").ok();
         std::env::set_var("PBS_PORT", "9090");
 
@@ -776,7 +983,6 @@ mod tests {
         cfg.apply_env_overrides();
         assert_eq!(cfg.port, 9090);
 
-        // Restore
         match old {
             Some(v) => std::env::set_var("PBS_PORT", v),
             None => std::env::remove_var("PBS_PORT"),
@@ -867,5 +1073,683 @@ mod tests {
     fn test_configuration_aliases_default_empty() {
         let cfg = Configuration::default();
         assert!(cfg.aliases.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // AccountConfig tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_account_config_from_json() {
+        let json = r#"{
+            "id": "pub-123",
+            "disabled": false,
+            "default_integration": "web",
+            "events": { "enabled": true },
+            "privacy": {
+                "gdpr": {
+                    "enabled": true,
+                    "channel_enabled": { "amp": false, "web": true }
+                },
+                "ccpa": { "enabled": true },
+                "coppa": { "enabled": false }
+            },
+            "price_floors": {
+                "enabled": true,
+                "enforce_floors_rate": 80,
+                "adjust_for_bid_adjustment": true,
+                "enforce_deal_floors": true,
+                "max_rules": 100,
+                "fetch": {
+                    "enabled": true,
+                    "url": "https://floors.example.com",
+                    "timeout_ms": 3000
+                }
+            },
+            "bid_adjustments": {
+                "media_type": {
+                    "banner": {
+                        "bidderA": [{ "adj_type": "cpm", "value": 0.5, "currency": "USD" }]
+                    }
+                }
+            },
+            "debug_allow": true
+        }"#;
+
+        let acct: AccountConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(acct.id, "pub-123");
+        assert!(!acct.disabled);
+        assert_eq!(acct.default_integration, "web");
+        assert!(acct.events.enabled);
+        assert_eq!(acct.privacy.gdpr.enabled, Some(true));
+        assert_eq!(acct.privacy.gdpr.channel_enabled.amp, Some(false));
+        assert_eq!(acct.privacy.gdpr.channel_enabled.web, Some(true));
+        assert_eq!(acct.privacy.ccpa.enabled, Some(true));
+        assert!(!acct.privacy.coppa.enabled);
+        assert!(acct.price_floors.enabled);
+        assert_eq!(acct.price_floors.enforce_floors_rate, 80);
+        assert!(acct.price_floors.adjust_for_bid_adjustment);
+        assert!(acct.price_floors.enforce_deal_floors);
+        assert_eq!(acct.price_floors.max_rules, 100);
+        assert!(acct.price_floors.fetch.enabled);
+        assert_eq!(acct.price_floors.fetch.url, "https://floors.example.com");
+        assert_eq!(acct.price_floors.fetch.timeout_ms, 3000);
+        let adj = acct.bid_adjustments.unwrap();
+        let banner = &adj.media_type["banner"]["bidderA"];
+        assert_eq!(banner.len(), 1);
+        assert_eq!(banner[0].adj_type, "cpm");
+        assert!((banner[0].value - 0.5).abs() < f64::EPSILON);
+        assert!(acct.debug_allow);
+    }
+
+    #[test]
+    fn test_account_config_from_toml() {
+        let toml_str = r#"
+            id = "pub-456"
+            disabled = true
+            default_integration = "app"
+
+            [events]
+            enabled = false
+
+            [privacy.gdpr]
+            enabled = false
+
+            [privacy.ccpa]
+            enabled = false
+
+            [price_floors]
+            enabled = false
+        "#;
+
+        let acct: AccountConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(acct.id, "pub-456");
+        assert!(acct.disabled);
+        assert_eq!(acct.default_integration, "app");
+        assert!(!acct.events.enabled);
+        assert_eq!(acct.privacy.gdpr.enabled, Some(false));
+        assert!(!acct.price_floors.enabled);
+        assert!(acct.bid_adjustments.is_none());
+    }
+
+    #[test]
+    fn test_account_config_defaults() {
+        let acct = AccountConfig::default();
+        assert!(acct.id.is_empty());
+        assert!(!acct.disabled);
+        assert!(!acct.events.enabled);
+        assert!(acct.privacy.gdpr.enabled.is_none());
+        assert!(acct.privacy.ccpa.enabled.is_none());
+        assert!(!acct.price_floors.enabled);
+        assert!(acct.bid_adjustments.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // GDPRConfig / TCF2 tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_gdpr_config_from_json_with_tcf2() {
+        let json = r#"{
+            "enabled": true,
+            "host_vendor_id": 42,
+            "default_value": "0",
+            "eea_countries": ["DE", "FR", "IT"],
+            "tcf2": {
+                "enabled": true,
+                "purpose1": {
+                    "enforce_algo": "full",
+                    "enforce_purpose": true,
+                    "enforce_vendors": true,
+                    "vendor_exceptions": ["bidderX"]
+                },
+                "purpose2": {
+                    "enforce_purpose": false
+                },
+                "special_feature1": {
+                    "enforce": true,
+                    "vendor_exceptions": ["bidderY"]
+                },
+                "purpose_one_treatment": {
+                    "enabled": true,
+                    "access_allowed": true
+                }
+            },
+            "non_standard_publishers": ["pub-legacy"],
+            "timeouts_ms": {
+                "active_vendor_list_fetch_ms": 500
+            }
+        }"#;
+
+        let gdpr: GDPRConfig = serde_json::from_str(json).unwrap();
+        assert!(gdpr.enabled);
+        assert_eq!(gdpr.host_vendor_id, 42);
+        assert_eq!(gdpr.default_value, "0");
+        assert_eq!(gdpr.eea_countries, vec!["DE", "FR", "IT"]);
+        assert!(gdpr.tcf2.enabled);
+        assert_eq!(gdpr.tcf2.purpose1.enforce_algo, "full");
+        assert!(gdpr.tcf2.purpose1.enforce_purpose);
+        assert!(gdpr.tcf2.purpose1.enforce_vendors);
+        assert_eq!(gdpr.tcf2.purpose1.vendor_exceptions, vec!["bidderX"]);
+        assert!(!gdpr.tcf2.purpose2.enforce_purpose);
+        assert!(gdpr.tcf2.special_feature1.enforce);
+        assert_eq!(gdpr.tcf2.special_feature1.vendor_exceptions, vec!["bidderY"]);
+        assert!(gdpr.tcf2.purpose_one_treatment.enabled);
+        assert!(gdpr.tcf2.purpose_one_treatment.access_allowed);
+        assert_eq!(gdpr.non_standard_publishers, vec!["pub-legacy"]);
+        assert_eq!(gdpr.timeouts_ms.active_vendor_list_fetch_ms, 500);
+    }
+
+    #[test]
+    fn test_gdpr_config_from_toml() {
+        let toml_str = r#"
+            enabled = true
+            host_vendor_id = 10
+            default_value = "1"
+
+            [tcf2]
+            enabled = true
+
+            [tcf2.purpose1]
+            enforce_algo = "basic"
+            enforce_purpose = true
+            enforce_vendors = false
+
+            [tcf2.special_feature1]
+            enforce = false
+
+            [timeouts_ms]
+            active_vendor_list_fetch_ms = 300
+        "#;
+
+        let gdpr: GDPRConfig = toml::from_str(toml_str).unwrap();
+        assert!(gdpr.enabled);
+        assert_eq!(gdpr.host_vendor_id, 10);
+        assert!(gdpr.tcf2.enabled);
+        assert_eq!(gdpr.tcf2.purpose1.enforce_algo, "basic");
+        assert!(gdpr.tcf2.purpose1.enforce_purpose);
+        assert!(!gdpr.tcf2.purpose1.enforce_vendors);
+        assert!(!gdpr.tcf2.special_feature1.enforce);
+        assert_eq!(gdpr.timeouts_ms.active_vendor_list_fetch_ms, 300);
+    }
+
+    #[test]
+    fn test_gdpr_default_includes_tcf2() {
+        let gdpr = GDPRConfig::default();
+        assert!(!gdpr.tcf2.enabled);
+        assert!(!gdpr.tcf2.purpose1.enforce_purpose);
+        assert!(gdpr.tcf2.purpose1.vendor_exceptions.is_empty());
+        assert_eq!(gdpr.timeouts_ms.active_vendor_list_fetch_ms, 200);
+    }
+
+    // -----------------------------------------------------------------------
+    // CCPAConfig tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_ccpa_config_from_json() {
+        let json = r#"{ "enforce": false }"#;
+        let ccpa: CCPAConfig = serde_json::from_str(json).unwrap();
+        assert!(!ccpa.enforce);
+    }
+
+    #[test]
+    fn test_ccpa_config_from_toml() {
+        let toml_str = r#"enforce = true"#;
+        let ccpa: CCPAConfig = toml::from_str(toml_str).unwrap();
+        assert!(ccpa.enforce);
+    }
+
+    // -----------------------------------------------------------------------
+    // StoredRequestConfig tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_stored_requests_from_json() {
+        let json = r#"{
+            "filesystem": {
+                "enabled": true,
+                "directory_path": "/data/stored"
+            },
+            "http": {
+                "endpoint": "https://sr.example.com/fetch",
+                "amp_endpoint": "https://sr.example.com/amp"
+            },
+            "in_memory_cache": {
+                "type": "lru",
+                "ttl_seconds": 600,
+                "request_cache_size_bytes": 10485760,
+                "imp_cache_size_bytes": 5242880,
+                "size_bytes": 0
+            },
+            "cache_events": {
+                "enabled": true,
+                "endpoint": "/storedrequests/openrtb2"
+            },
+            "http_events": {
+                "endpoint": "https://sr.example.com/events",
+                "refresh_rate_seconds": 60,
+                "timeout_ms": 2000,
+                "amp_endpoint": "https://sr.example.com/amp-events"
+            }
+        }"#;
+
+        let sr: StoredRequestConfig = serde_json::from_str(json).unwrap();
+        let fs = sr.filesystem.unwrap();
+        assert!(fs.enabled);
+        assert_eq!(fs.directory_path, "/data/stored");
+        let http = sr.http.unwrap();
+        assert_eq!(http.endpoint, "https://sr.example.com/fetch");
+        assert_eq!(http.amp_endpoint, "https://sr.example.com/amp");
+        assert_eq!(sr.in_memory_cache.cache_type, "lru");
+        assert_eq!(sr.in_memory_cache.ttl_seconds, 600);
+        assert_eq!(sr.in_memory_cache.request_cache_size_bytes, 10485760);
+        assert_eq!(sr.in_memory_cache.imp_cache_size_bytes, 5242880);
+        assert!(sr.cache_events.enabled);
+        assert_eq!(sr.cache_events.endpoint, "/storedrequests/openrtb2");
+        assert_eq!(sr.http_events.refresh_rate_seconds, 60);
+        assert_eq!(sr.http_events.timeout_ms, 2000);
+    }
+
+    #[test]
+    fn test_stored_requests_from_toml() {
+        let toml_str = r#"
+            [filesystem]
+            enabled = true
+            directory_path = "/var/stored"
+
+            [http]
+            endpoint = "https://example.com/stored"
+            amp_endpoint = "https://example.com/amp"
+
+            [in_memory_cache]
+            type = "unbounded"
+            ttl_seconds = 300
+            request_cache_size_bytes = 0
+            imp_cache_size_bytes = 0
+        "#;
+
+        let sr: StoredRequestConfig = toml::from_str(toml_str).unwrap();
+        let fs = sr.filesystem.unwrap();
+        assert!(fs.enabled);
+        assert_eq!(fs.directory_path, "/var/stored");
+        assert_eq!(sr.in_memory_cache.cache_type, "unbounded");
+        assert_eq!(sr.in_memory_cache.ttl_seconds, 300);
+    }
+
+    #[test]
+    fn test_stored_requests_filesystem_alias() {
+        // The old Go field was "directorypath"; ensure the alias works.
+        let json = r#"{ "enabled": true, "directorypath": "/legacy/path" }"#;
+        let fs: FilesystemConfig = serde_json::from_str(json).unwrap();
+        assert!(fs.enabled);
+        assert_eq!(fs.directory_path, "/legacy/path");
+    }
+
+    #[test]
+    fn test_stored_requests_defaults() {
+        let sr = StoredRequestConfig::default();
+        assert!(sr.filesystem.is_none());
+        assert!(sr.http.is_none());
+        assert!(sr.database.is_none());
+        assert!(sr.in_memory_cache.cache_type.is_empty());
+        assert_eq!(sr.in_memory_cache.ttl_seconds, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // CurrencyConfig tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_currency_config_from_json() {
+        let json = r#"{
+            "fetch_url": "https://custom.cdn/rates.json",
+            "fetch_interval_seconds": 900,
+            "rates": {
+                "USD": { "EUR": 0.85, "GBP": 0.73 }
+            }
+        }"#;
+
+        let cur: CurrencyConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cur.fetch_url, "https://custom.cdn/rates.json");
+        assert_eq!(cur.fetch_interval_seconds, 900);
+        let usd = &cur.rates["USD"];
+        assert!((usd["EUR"] - 0.85).abs() < f64::EPSILON);
+        assert!((usd["GBP"] - 0.73).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_currency_config_from_toml() {
+        let toml_str = r#"
+            fetch_url = "https://cdn.example.com/rates.json"
+            fetch_interval_seconds = 3600
+
+            [rates.USD]
+            EUR = 0.9
+        "#;
+
+        let cur: CurrencyConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cur.fetch_url, "https://cdn.example.com/rates.json");
+        assert_eq!(cur.fetch_interval_seconds, 3600);
+        assert!((cur.rates["USD"]["EUR"] - 0.9).abs() < f64::EPSILON);
+    }
+
+    // -----------------------------------------------------------------------
+    // CacheConfig tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_cache_config_from_json() {
+        let json = r#"{
+            "scheme": "https",
+            "host": "cache.prebid.org",
+            "port": 443,
+            "path": "/cache",
+            "query": "uuid=",
+            "expected_millis": 50,
+            "default_ttl_secs": {
+                "banner_ttl_secs": 300,
+                "video_ttl_secs": 600,
+                "native_ttl_secs": 150,
+                "audio_ttl_secs": 200
+            }
+        }"#;
+
+        let cache: CacheConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cache.scheme, "https");
+        assert_eq!(cache.host, "cache.prebid.org");
+        assert_eq!(cache.port, 443);
+        assert_eq!(cache.path, "/cache");
+        assert_eq!(cache.query, "uuid=");
+        assert_eq!(cache.expected_millis, 50);
+        assert_eq!(cache.default_ttl_secs.banner_ttl_secs, 300);
+        assert_eq!(cache.default_ttl_secs.video_ttl_secs, 600);
+        assert_eq!(cache.default_ttl_secs.native_ttl_secs, 150);
+        assert_eq!(cache.default_ttl_secs.audio_ttl_secs, 200);
+    }
+
+    #[test]
+    fn test_cache_config_from_toml() {
+        let toml_str = r#"
+            scheme = "http"
+            host = "localhost"
+            port = 8080
+            path = "/cache"
+            query = "uuid="
+            expected_millis = 10
+
+            [default_ttl_secs]
+            banner_ttl_secs = 60
+            video_ttl_secs = 120
+            native_ttl_secs = 30
+            audio_ttl_secs = 45
+        "#;
+
+        let cache: CacheConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cache.scheme, "http");
+        assert_eq!(cache.host, "localhost");
+        assert_eq!(cache.port, 8080);
+        assert_eq!(cache.default_ttl_secs.banner_ttl_secs, 60);
+    }
+
+    #[test]
+    fn test_cache_config_defaults() {
+        let cache = CacheConfig::default();
+        assert!(cache.scheme.is_empty());
+        assert!(cache.host.is_empty());
+        assert_eq!(cache.port, 0);
+        assert_eq!(cache.default_ttl_secs.banner_ttl_secs, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // MetricsConfig / DisabledMetrics tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_metrics_config_from_json() {
+        let json = r#"{
+            "prometheus": {
+                "port": 9090,
+                "namespace": "pbs",
+                "subsystem": "auction",
+                "path": "/metrics",
+                "timeout_ms": 5000
+            },
+            "disabled_metrics": {
+                "account_adapter_details": true,
+                "account_debug": false,
+                "adapter_connections_metrics": true
+            }
+        }"#;
+
+        let m: MetricsConfig = serde_json::from_str(json).unwrap();
+        let prom = m.prometheus.unwrap();
+        assert_eq!(prom.port, 9090);
+        assert_eq!(prom.namespace, "pbs");
+        assert_eq!(prom.subsystem, "auction");
+        assert_eq!(prom.path, "/metrics");
+        assert_eq!(prom.timeout_ms, 5000);
+        assert!(m.disabled_metrics.account_adapter_details);
+        assert!(!m.disabled_metrics.account_debug);
+        assert!(m.disabled_metrics.adapter_connections_metrics);
+    }
+
+    #[test]
+    fn test_metrics_config_from_toml() {
+        let toml_str = r#"
+            [prometheus]
+            port = 9100
+            namespace = "prebid"
+            subsystem = "server"
+            path = "/prom"
+            timeout_ms = 8000
+
+            [disabled_metrics]
+            account_adapter_details = false
+            account_stored_responses = true
+        "#;
+
+        let m: MetricsConfig = toml::from_str(toml_str).unwrap();
+        let prom = m.prometheus.unwrap();
+        assert_eq!(prom.port, 9100);
+        assert_eq!(prom.subsystem, "server");
+        assert!(m.disabled_metrics.account_stored_responses);
+        assert!(!m.disabled_metrics.account_adapter_details);
+    }
+
+    #[test]
+    fn test_metrics_config_defaults() {
+        let m = MetricsConfig::default();
+        assert!(m.prometheus.is_none());
+        assert!(m.influxdb.is_none());
+        assert!(!m.disabled_metrics.account_adapter_details);
+        assert!(!m.disabled_metrics.adapter_connections_metrics);
+    }
+
+    // -----------------------------------------------------------------------
+    // Tcf2Config tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_tcf2_config_defaults() {
+        let tcf2 = Tcf2Config::default();
+        assert!(!tcf2.enabled);
+        assert!(!tcf2.purpose1.enforce_purpose);
+        assert!(!tcf2.purpose10.enforce_vendors);
+        assert!(!tcf2.special_feature1.enforce);
+        assert!(!tcf2.purpose_one_treatment.enabled);
+    }
+
+    #[test]
+    fn test_tcf2_purpose_roundtrip_json() {
+        let p = Tcf2PurposeConfig {
+            enforce_algo: "full".into(),
+            enforce_purpose: true,
+            enforce_vendors: true,
+            vendor_exceptions: vec!["appnexus".into(), "rubicon".into()],
+        };
+        let json = serde_json::to_string(&p).unwrap();
+        let p2: Tcf2PurposeConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(p2.enforce_algo, "full");
+        assert!(p2.enforce_purpose);
+        assert_eq!(p2.vendor_exceptions.len(), 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // AccountPrivacyConfig tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_account_privacy_from_json() {
+        let json = r#"{
+            "gdpr": {
+                "enabled": true,
+                "purpose1": {
+                    "enforce_purpose": true,
+                    "enforce_vendors": true,
+                    "vendor_exceptions": ["bidder1"]
+                }
+            },
+            "ccpa": { "enabled": false },
+            "coppa": { "enabled": true },
+            "ipv4": { "anon_keep_bits": 24 },
+            "ipv6": { "anon_keep_bits": 48 }
+        }"#;
+
+        let p: AccountPrivacyConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(p.gdpr.enabled, Some(true));
+        assert!(p.gdpr.purpose1.enforce_purpose);
+        assert_eq!(p.gdpr.purpose1.vendor_exceptions, vec!["bidder1"]);
+        assert_eq!(p.ccpa.enabled, Some(false));
+        assert!(p.coppa.enabled);
+        assert_eq!(p.ipv4.anon_keep_bits, 24);
+        assert_eq!(p.ipv6.anon_keep_bits, 48);
+    }
+
+    // -----------------------------------------------------------------------
+    // Database backend test
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_stored_requests_database_from_json() {
+        let json = r#"{
+            "database": {
+                "driver": "postgres",
+                "connection_string": "postgres://user:pass@localhost/pbs",
+                "fetch_query": "SELECT data FROM stored_requests WHERE id = $1",
+                "amp_fetch_query": "SELECT data FROM stored_amp_requests WHERE id = $1"
+            }
+        }"#;
+
+        let sr: StoredRequestConfig = serde_json::from_str(json).unwrap();
+        let db = sr.database.unwrap();
+        assert_eq!(db.driver, "postgres");
+        assert!(db.connection_string.contains("localhost"));
+        assert!(db.fetch_query.contains("stored_requests"));
+    }
+
+    // -----------------------------------------------------------------------
+    // BidAdjustments round-trip
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_bid_adjustments_roundtrip() {
+        let adj = BidAdjustmentsConfig {
+            media_type: {
+                let mut mt = HashMap::new();
+                let mut bidders = HashMap::new();
+                bidders.insert(
+                    "appnexus".to_string(),
+                    vec![BidAdjustmentRule {
+                        adj_type: "multiplier".into(),
+                        value: 1.1,
+                        currency: "USD".into(),
+                    }],
+                );
+                mt.insert("banner".to_string(), bidders);
+                mt
+            },
+        };
+        let json = serde_json::to_string(&adj).unwrap();
+        let adj2: BidAdjustmentsConfig = serde_json::from_str(&json).unwrap();
+        let rules = &adj2.media_type["banner"]["appnexus"];
+        assert_eq!(rules.len(), 1);
+        assert!((rules[0].value - 1.1).abs() < f64::EPSILON);
+    }
+
+    // -----------------------------------------------------------------------
+    // Full Configuration with new types (JSON round-trip)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_full_configuration_json_roundtrip() {
+        let cfg = Configuration {
+            host: "127.0.0.1".into(),
+            port: 9000,
+            gdpr: GDPRConfig {
+                enabled: true,
+                host_vendor_id: 5,
+                tcf2: Tcf2Config {
+                    enabled: true,
+                    purpose1: Tcf2PurposeConfig {
+                        enforce_algo: "full".into(),
+                        enforce_purpose: true,
+                        enforce_vendors: true,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ccpa: CCPAConfig { enforce: true },
+            currency: CurrencyConfig {
+                fetch_interval_seconds: 600,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let json = serde_json::to_string(&cfg).unwrap();
+        let cfg2: Configuration = serde_json::from_str(&json).unwrap();
+        assert_eq!(cfg2.host, "127.0.0.1");
+        assert_eq!(cfg2.port, 9000);
+        assert!(cfg2.gdpr.enabled);
+        assert_eq!(cfg2.gdpr.host_vendor_id, 5);
+        assert!(cfg2.gdpr.tcf2.enabled);
+        assert!(cfg2.gdpr.tcf2.purpose1.enforce_purpose);
+        assert!(cfg2.ccpa.enforce);
+        assert_eq!(cfg2.currency.fetch_interval_seconds, 600);
+    }
+
+    // -----------------------------------------------------------------------
+    // InMemoryCacheConfig "type" rename
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_in_memory_cache_type_field_rename() {
+        let json = r#"{ "type": "lru", "ttl_seconds": 120, "size_bytes": 1048576 }"#;
+        let c: InMemoryCacheConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(c.cache_type, "lru");
+        assert_eq!(c.ttl_seconds, 120);
+        assert_eq!(c.size_bytes, 1048576);
+    }
+
+    // -----------------------------------------------------------------------
+    // HttpEventsConfig tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_http_events_config_from_toml() {
+        let toml_str = r#"
+            endpoint = "https://events.example.com"
+            refresh_rate_seconds = 30
+            timeout_ms = 1000
+            amp_endpoint = "https://events.example.com/amp"
+        "#;
+        let he: HttpEventsConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(he.endpoint, "https://events.example.com");
+        assert_eq!(he.refresh_rate_seconds, 30);
+        assert_eq!(he.timeout_ms, 1000);
+        assert_eq!(he.amp_endpoint, "https://events.example.com/amp");
     }
 }
