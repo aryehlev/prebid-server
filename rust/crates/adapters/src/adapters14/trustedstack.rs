@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids, check_response_status};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
 use openrtb_ext::BidType;
 
 pub struct TrustedstackAdapter { pub endpoint: String }
@@ -35,7 +35,17 @@ impl Bidder for TrustedstackAdapter {
 
     fn make_bids(&self, _: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
         if response.status_code == 204 { return Ok(BidderResponse::new()); }
-        if let Err(e) = check_response_status(response.status_code) { return Err(vec![e]); }
+        // Go uses adapters.CheckResponseStatusCodeForErrors which checks for non-200/204 codes
+        if response.status_code == 400 {
+            return Err(vec![BidderError::BadInput(format!(
+                "Unexpected status code: {}. Run with request.debug = 1 for more info", response.status_code
+            ))]);
+        }
+        if response.status_code != 200 {
+            return Err(vec![BidderError::BadServerResponse(format!(
+                "Unexpected status code: {}. Run with request.debug = 1 for more info", response.status_code
+            ))]);
+        }
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
         let mut result = BidderResponse::new();
@@ -49,7 +59,8 @@ impl Bidder for TrustedstackAdapter {
                 }
             }
         }
-        if !errs.is_empty() { return Err(errs); }
+        // Go returns both bidResponse and errs; match by returning Ok with partial results.
+        // Errors are discarded here since the trait can't carry both, but bids are preserved.
         Ok(result)
     }
 }

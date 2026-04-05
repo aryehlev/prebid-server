@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids, check_response_status};
 use openrtb::BidResponse;
 use openrtb_ext::{BidType, ExtBidPrebidVideo};
@@ -54,14 +53,11 @@ impl Bidder for OmsAdapter {
             Ok(b) => b,
             Err(e) => return (vec![], vec![BidderError::BadInput(e.to_string())]),
         };
-        let mut headers = HashMap::new();
-        headers.insert("Content-Type".to_string(), "application/json;charset=utf-8".to_string());
-        headers.insert("Accept".to_string(), "application/json".to_string());
         (vec![RequestData {
             method: "POST".to_string(),
             uri,
             body,
-            headers,
+            headers: std::collections::HashMap::new(),
             imp_ids: get_imp_ids(&request.imp),
         }], vec![])
     }

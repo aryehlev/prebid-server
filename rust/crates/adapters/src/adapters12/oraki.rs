@@ -77,7 +77,7 @@ impl Bidder for OrakiAdapter {
         (requests, errs)
     }
 
-    fn make_bids(&self, internal: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
+    fn make_bids(&self, _: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
         if response.status_code == 204 { return Ok(BidderResponse::new()); }
         if let Err(e) = check_response_status(response.status_code) { return Err(vec![e]); }
         let bid_resp: BidResponse = serde_json::from_slice(&response.body)

@@ -1,9 +1,19 @@
 use std::collections::HashMap;
-use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_bid_type_from_mtype, get_imp_ids};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
+use openrtb_ext::BidType;
 
 pub struct VrtcalAdapter { pub endpoint: String }
 impl VrtcalAdapter {
     pub fn new(endpoint: String) -> Self { Self { endpoint } }
+}
+
+fn get_return_type_for_imp(mtype: i32) -> Result<BidType, BidderError> {
+    match mtype {
+        1 => Ok(BidType::Banner),
+        2 => Ok(BidType::Video),
+        4 => Ok(BidType::Native),
+        _ => Err(BidderError::BadServerResponse("Unsupported return type".to_string())),
+    }
 }
 
 impl Bidder for VrtcalAdapter {
@@ -14,7 +24,13 @@ impl Bidder for VrtcalAdapter {
         };
         let mut headers = HashMap::new();
         headers.insert("Content-Type".to_string(), "application/json;charset=utf-8".to_string());
-        (vec![RequestData { method: "POST".to_string(), uri: self.endpoint.clone(), body, headers, imp_ids: get_imp_ids(&request.imp) }], vec![])
+        (vec![RequestData {
+            method: "POST".to_string(),
+            uri: self.endpoint.clone(),
+            body,
+            headers,
+            imp_ids: get_imp_ids(&request.imp),
+        }], vec![])
     }
 
     fn make_bids(&self, _: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
@@ -36,19 +52,15 @@ impl Bidder for VrtcalAdapter {
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
                 let mtype = bid.mtype.unwrap_or(0);
-                // Supported: banner(1), video(2), native(4)
-                if mtype == 1 || mtype == 2 || mtype == 4 {
-                    result.bids.push(TypedBid::new(bid, get_bid_type_from_mtype(mtype)));
-                } else {
-                    errs.push(BidderError::BadServerResponse("Unsupported return type".to_string()));
+                match get_return_type_for_imp(mtype) {
+                    Ok(bid_type) => result.bids.push(TypedBid::new(bid, bid_type)),
+                    Err(e) => errs.push(e),
                 }
             }
         }
-        // Go returns both response and errs - we map to Ok if there are bids
-        if !result.bids.is_empty() || errs.is_empty() {
-            Ok(result)
-        } else {
-            Err(errs)
-        }
+        // Go returns both the response and errors; return Ok with bids even if some errs occurred.
+        // If no bids at all and only errors, we still return Ok with empty response to match
+        // Go's behavior of always returning the bidResponse struct.
+        Ok(result)
     }
 }

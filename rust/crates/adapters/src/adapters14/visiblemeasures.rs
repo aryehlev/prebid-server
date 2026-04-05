@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid};
 use openrtb_ext::BidType;
 
 pub struct VisiblemeasuresAdapter { pub endpoint: String }
@@ -19,23 +19,25 @@ fn get_media_type_for_imp(imp_id: &str, imps: &[openrtb::Imp]) -> Result<BidType
 impl Bidder for VisiblemeasuresAdapter {
     fn make_requests(&self, request: &openrtb::BidRequest, _: &ExtraRequestInfo) -> (Vec<RequestData>, Vec<BidderError>) {
         let mut requests = Vec::new();
-        let mut errs = Vec::new();
         for imp in &request.imp {
             let bidder = imp.ext.as_ref().and_then(|e| e.get("bidder"));
             let placement_id = bidder.and_then(|b| b.get("placementId")).and_then(|v| v.as_str()).unwrap_or("").to_string();
             let endpoint_id = bidder.and_then(|b| b.get("endpointId")).and_then(|v| v.as_str()).unwrap_or("").to_string();
 
             // Build imp.ext as {"bidder": {"type": ..., "placementId"|"endpointId": ...}}
+            // Matches Go: if placementId set → type=publisher, else if endpointId set → type=network
             let bidder_ext = if !placement_id.is_empty() {
                 serde_json::json!({
                     "type": "publisher",
                     "placementId": placement_id
                 })
-            } else {
+            } else if !endpoint_id.is_empty() {
                 serde_json::json!({
                     "type": "network",
                     "endpointId": endpoint_id
                 })
+            } else {
+                serde_json::json!({ "type": "" })
             };
             let new_imp_ext = serde_json::json!({ "bidder": bidder_ext });
 
@@ -45,14 +47,20 @@ impl Bidder for VisiblemeasuresAdapter {
             req_copy.imp = vec![imp_copy];
             let body = match serde_json::to_vec(&req_copy) {
                 Ok(b) => b,
-                Err(e) => { errs.push(BidderError::BadInput(e.to_string())); continue; }
+                Err(e) => return (vec![], vec![BidderError::BadInput(e.to_string())]),
             };
             let mut headers = HashMap::new();
             headers.insert("Content-Type".to_string(), "application/json;charset=utf-8".to_string());
             headers.insert("Accept".to_string(), "application/json".to_string());
-            requests.push(RequestData { method: "POST".to_string(), uri: self.endpoint.clone(), body, headers, imp_ids: vec![imp.id.clone()] });
+            requests.push(RequestData {
+                method: "POST".to_string(),
+                uri: self.endpoint.clone(),
+                body,
+                headers,
+                imp_ids: vec![imp.id.clone()],
+            });
         }
-        (requests, errs)
+        (requests, vec![])
     }
 
     fn make_bids(&self, internal: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
@@ -71,16 +79,14 @@ impl Bidder for VisiblemeasuresAdapter {
                 result.currency = cur.clone();
             }
         }
-        let mut errs = Vec::new();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
                 match get_media_type_for_imp(&bid.impid, &internal.imp) {
                     Ok(t) => result.bids.push(TypedBid::new(bid, t)),
-                    Err(e) => { return Err(vec![e]); }
+                    Err(e) => return Err(vec![e]),
                 }
             }
         }
-        if !errs.is_empty() && result.bids.is_empty() { return Err(errs); }
         Ok(result)
     }
 }

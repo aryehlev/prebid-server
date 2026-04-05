@@ -15,6 +15,7 @@ impl NobidAdapter {
 fn get_media_type_for_imp(imp_id: &str, imps: &[openrtb::Imp]) -> Result<BidType, BidderError> {
     for imp in imps {
         if imp.id == imp_id {
+            // Go: if banner is nil and video is not nil → video, else → banner
             let bid_type = if imp.banner.is_none() && imp.video.is_some() {
                 BidType::Video
             } else {
@@ -66,8 +67,17 @@ impl Bidder for NobidAdapter {
         if response.status_code == 204 {
             return Ok(BidderResponse::new());
         }
-        if let Err(e) = crate::check_response_status(response.status_code) {
-            return Err(vec![e]);
+        if response.status_code == 400 {
+            return Err(vec![BidderError::BadInput(format!(
+                "Unexpected status code: {}. Run with request.debug = 1 for more info",
+                response.status_code
+            ))]);
+        }
+        if response.status_code != 200 {
+            return Err(vec![BidderError::BadServerResponse(format!(
+                "Unexpected status code: {}. Run with request.debug = 1 for more info",
+                response.status_code
+            ))]);
         }
 
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
@@ -86,6 +96,7 @@ impl Bidder for NobidAdapter {
             }
         }
 
+        // Go returns both bids and errors; return Ok with whatever bids were found.
         Ok(result)
     }
 }
