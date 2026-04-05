@@ -101,38 +101,38 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| ENDP-01 | Unmapped | Pending |
-| ENDP-02 | Unmapped | Pending |
-| ENDP-03 | Unmapped | Pending |
-| ENDP-04 | Unmapped | Pending |
-| ENDP-05 | Unmapped | Pending |
-| ENDP-06 | Unmapped | Pending |
-| CONF-01 | Unmapped | Pending |
-| CONF-02 | Unmapped | Pending |
-| STRD-01 | Unmapped | Pending |
-| STRD-02 | Unmapped | Pending |
-| AUCT-01 | Unmapped | Pending |
-| AUCT-02 | Unmapped | Pending |
-| AUCT-03 | Unmapped | Pending |
-| AUCT-04 | Unmapped | Pending |
-| BIDD-01 | Unmapped | Pending |
-| BIDD-02 | Unmapped | Pending |
-| IDEN-01 | Unmapped | Pending |
-| MODL-01 | Unmapped | Pending |
-| PRIV-01 | Unmapped | Pending |
-| CACH-01 | Unmapped | Pending |
-| CACH-02 | Unmapped | Pending |
-| OPER-01 | Unmapped | Pending |
-| PARI-01 | Unmapped | Pending |
-| PARI-02 | Unmapped | Pending |
-| PARI-03 | Unmapped | Pending |
-| PARI-04 | Unmapped | Pending |
+| ENDP-01 | Phase 5 | Pending |
+| ENDP-02 | Phase 5 | Pending |
+| ENDP-03 | Phase 5 | Pending |
+| ENDP-04 | Phase 8 | Pending |
+| ENDP-05 | Phase 8 | Pending |
+| ENDP-06 | Phase 9 | Pending |
+| CONF-01 | Phase 2 | Pending |
+| CONF-02 | Phase 2 | Pending |
+| STRD-01 | Phase 3 | Pending |
+| STRD-02 | Phase 3 | Pending |
+| AUCT-01 | Phase 4 | Pending |
+| AUCT-02 | Phase 4 | Pending |
+| AUCT-03 | Phase 6 | Pending |
+| AUCT-04 | Phase 5 | Pending |
+| BIDD-01 | Phase 7 | Pending |
+| BIDD-02 | Phase 7 | Pending |
+| IDEN-01 | Phase 6 | Pending |
+| MODL-01 | Phase 8 | Pending |
+| PRIV-01 | Phase 6 | Pending |
+| CACH-01 | Phase 8 | Pending |
+| CACH-02 | Phase 8 | Pending |
+| OPER-01 | Phase 9 | Pending |
+| PARI-01 | Phase 1 | Pending |
+| PARI-02 | Phase 1 | Pending |
+| PARI-03 | Phase 9 | Pending |
+| PARI-04 | Phase 9 | Pending |
 
 **Coverage:**
 - v1 requirements: 26 total
-- Mapped to phases: 0
-- Unmapped: 26 ⚠️
+- Mapped to phases: 26
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-04-05*
-*Last updated: 2026-04-05 after initialization*
+*Last updated: 2026-04-05 after roadmap creation*
