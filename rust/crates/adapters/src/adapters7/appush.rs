@@ -1,8 +1,26 @@
 use std::collections::HashMap;
-use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_bid_type_from_imp, get_imp_ids};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
 use openrtb_ext::BidType;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+/// Mirrors Go's getMediaTypeForImp: banner > video > native priority, BadInput error if not found.
+fn get_media_type_for_imp(imp_id: &str, imps: &[openrtb::Imp]) -> Result<BidType, BidderError> {
+    for imp in imps {
+        if imp.id == imp_id {
+            if imp.banner.is_some() {
+                return Ok(BidType::Banner);
+            }
+            if imp.video.is_some() {
+                return Ok(BidType::Video);
+            }
+            if imp.native.is_some() {
+                return Ok(BidType::Native);
+            }
+        }
+    }
+    Err(BidderError::BadInput(format!("Failed to find impression \"{}\"", imp_id)))
+}
 
 pub struct AppushAdapter {
     pub endpoint: String,
@@ -131,10 +149,11 @@ impl Bidder for AppushAdapter {
         }
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
-                let bid_type = internal.imp.iter()
-                    .find(|i| i.id == bid.impid)
-                    .map(get_bid_type_from_imp)
-                    .unwrap_or(BidType::Banner);
+                // Go checks banner > video > native and returns BadInput error if imp not found
+                let bid_type = match get_media_type_for_imp(&bid.impid, &internal.imp) {
+                    Ok(bt) => bt,
+                    Err(e) => return Err(vec![e]),
+                };
                 result.bids.push(TypedBid::new(bid, bid_type));
             }
         }

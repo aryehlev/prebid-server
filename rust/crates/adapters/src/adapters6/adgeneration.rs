@@ -13,16 +13,81 @@ struct ExtImpBidder { bidder: Value }
 #[derive(Deserialize)]
 struct ExtImpAdgeneration { id: String }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 struct AdgServerResponse {
-    locationid: Option<String>,
-    dealid: Option<String>,
-    ad: Option<String>,
-    cpm: Option<f64>,
-    creativeid: Option<String>,
-    h: Option<u64>,
-    w: Option<u64>,
-    results: Option<Vec<Value>>,
+    #[serde(default)]
+    locationid: String,
+    #[serde(default)]
+    dealid: String,
+    #[serde(default)]
+    ad: String,
+    #[serde(default)]
+    beacon: String,
+    #[serde(default)]
+    beaconurl: String,
+    #[serde(default)]
+    cpm: f64,
+    #[serde(default)]
+    creativeid: String,
+    #[serde(default)]
+    h: u64,
+    #[serde(default)]
+    w: u64,
+    #[serde(default)]
+    vastxml: String,
+    #[serde(default)]
+    landing_url: String,
+    #[serde(default)]
+    results: Vec<Value>,
+}
+
+fn insert_vast_method(bid_id: &str, vastxml: &str) -> String {
+    // Remove newlines from vastxml
+    let replaced = vastxml.replace('\n', "").replace('\r', "");
+    format!(
+        "<script type=\"text/javascript\"> (function(){{ new APV.VideoAd({{s:\"{bid_id}\"}}).load('{replaced}'); }})(); </script>"
+    )
+}
+
+fn append_child_to_body(ad: &str, data: &str) -> String {
+    // Replace </body> or </ body> with data + </body>
+    let re = regex::Regex::new(r"</\s?body>").unwrap();
+    re.replace_all(ad, format!("{data}</body>").as_str()).to_string()
+}
+
+fn remove_wrapper(ad: &str) -> String {
+    let body_start = ad.find("<body>");
+    let body_end = ad.rfind("</body>");
+    match (body_start, body_end) {
+        (Some(start), Some(end)) => {
+            let inner = &ad[start..end];
+            let stripped = inner
+                .replacen("<body>", "", 1)
+                .replace("</body>", "");
+            stripped.trim().to_string()
+        }
+        _ => String::new(),
+    }
+}
+
+fn create_ad(body: &AdgServerResponse, imp_id: &str) -> String {
+    let mut ad = if !body.vastxml.is_empty() {
+        format!(
+            "<body><div id=\"apvad-{imp_id}\"></div>\
+             <script type=\"text/javascript\" id=\"apv\" src=\"https://cdn.apvdr.com/js/VideoAd.min.js\"></script>\
+             {}</body>",
+            insert_vast_method(imp_id, &body.vastxml)
+        )
+    } else {
+        body.ad.clone()
+    };
+    ad = append_child_to_body(&ad, &body.beacon);
+    let unwrapped = remove_wrapper(&ad);
+    if !unwrapped.is_empty() {
+        unwrapped
+    } else {
+        ad
+    }
 }
 
 fn get_sizes(imp: &openrtb::Imp) -> String {

@@ -78,6 +78,14 @@ fn split_multi_format_imp(imp: &openrtb::Imp) -> Vec<openrtb::Imp> {
     split
 }
 
+/// Parse zone_id from impression extension bidder field.
+fn parse_zone_id(imp: &openrtb::Imp) -> Option<i64> {
+    imp.ext.as_ref()
+        .and_then(|e| e.get("bidder"))
+        .and_then(|b| b.get("zoneId").or_else(|| b.get("zone_id")))
+        .and_then(|v| v.as_i64())
+}
+
 impl Bidder for AdkernelAdapter {
     fn make_requests(
         &self,
@@ -90,16 +98,11 @@ impl Bidder for AdkernelAdapter {
 
         let mut errs = Vec::new();
 
-        // Validate impressions and extract zone_id; group by (zone_id) key
-        // zone_id is required to be >= 1
+        // Validate impressions and extract zone_id; group by zone_id
         let mut zone_to_imps: HashMap<i64, Vec<openrtb::Imp>> = HashMap::new();
 
         for imp in &request.imp {
-            let zone_id = imp.ext.as_ref()
-                .and_then(|e| e.get("bidder"))
-                .and_then(|b| b.get("zoneId").or_else(|| b.get("zone_id")))
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
+            let zone_id = parse_zone_id(imp).unwrap_or(0);
 
             if zone_id < 1 {
                 errs.push(BidderError::BadInput(format!(
@@ -132,8 +135,8 @@ impl Bidder for AdkernelAdapter {
 
         let mut requests = Vec::new();
         for (zone_id, imps) in zone_to_imps {
+            // Build per-zone request: clear publisher info from site/app
             let mut req = request.clone();
-            // Clear publisher info per Go implementation
             if let Some(site) = req.site.as_mut() {
                 site.publisher = None;
             }
@@ -150,6 +153,7 @@ impl Bidder for AdkernelAdapter {
                 }
             };
 
+            // Resolve endpoint URL by substituting the zone ID macro
             let uri = self.endpoint.replace("{{.ZoneID}}", &zone_id.to_string());
             let imp_ids = get_imp_ids(&req.imp);
             requests.push(RequestData {
@@ -173,7 +177,6 @@ impl Bidder for AdkernelAdapter {
         if response.status_code == 204 {
             return Ok(BidderResponse::new());
         }
-        // Go uses BadServerResponse for all non-200/204 status codes
         if response.status_code != 200 {
             return Err(vec![BidderError::BadServerResponse(format!(
                 "Unexpected http status code: {}", response.status_code
@@ -183,6 +186,7 @@ impl Bidder for AdkernelAdapter {
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(format!("Bad server response: {}", e))])?;
 
+        // AdKernel always returns exactly one SeatBid
         if bid_resp.seatbid.len() != 1 {
             return Err(vec![BidderError::BadServerResponse(format!(
                 "Invalid SeatBids count: {}", bid_resp.seatbid.len()
@@ -192,6 +196,7 @@ impl Bidder for AdkernelAdapter {
         let seat_bid = &bid_resp.seatbid[0];
         let mut result = BidderResponse::with_capacity(seat_bid.bid.len());
 
+        // Propagate response currency if present
         if let Some(cur) = &bid_resp.cur {
             if !cur.is_empty() {
                 result.currency = cur.clone();

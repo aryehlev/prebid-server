@@ -43,17 +43,13 @@ impl Bidder for AdxcgAdapter {
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
         let mut result = BidderResponse::with_capacity(request.imp.len());
         if let Some(cur) = &bid_resp.cur { result.currency = cur.clone(); }
-        let mut errs = Vec::new();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
                 match mtype_to_bid_type(bid.mtype) {
                     Ok(bt) => result.bids.push(TypedBid::new(bid, bt)),
-                    Err(e) => errs.push(e),
+                    Err(_) => {} // unsupported mtype bids are skipped per Go behavior (return bidderResponse, nil)
                 }
             }
-        }
-        if !errs.is_empty() {
-            return Err(errs);
         }
         Ok(result)
     }
