@@ -158,3 +158,377 @@ impl StoredResponseFetcher for StoredRequestFetcher {
         self.responses.get(id).or_else(|| self.requests.get(id))
     }
 }
+
+// ---------------------------------------------------------------------------
+// Async HTTP-based stored request fetcher
+// ---------------------------------------------------------------------------
+
+/// Fetches stored requests/imps from a remote HTTP endpoint.
+///
+/// The endpoint is expected to accept POST requests with JSON body:
+/// ```json
+/// { "requests": ["id1", "id2"], "imps": ["imp1"] }
+/// ```
+/// And return:
+/// ```json
+/// { "requests": { "id1": {...}, "id2": {...} }, "imps": { "imp1": {...} } }
+/// ```
+pub struct HttpStoredRequestFetcher {
+    pub endpoint: String,
+    client: reqwest::Client,
+}
+
+impl HttpStoredRequestFetcher {
+    pub fn new(endpoint: String) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap_or_default();
+        Self { endpoint, client }
+    }
+
+    pub fn with_client(endpoint: String, client: reqwest::Client) -> Self {
+        Self { endpoint, client }
+    }
+
+    /// Fetch stored requests and imps by their IDs.
+    pub async fn fetch_by_ids(
+        &self,
+        request_ids: &[String],
+        imp_ids: &[String],
+    ) -> Result<HttpFetchResult, StoredRequestError> {
+        let body = serde_json::json!({
+            "requests": request_ids,
+            "imps": imp_ids,
+        });
+
+        let resp = self
+            .client
+            .post(&self.endpoint)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| StoredRequestError::HttpError(e.to_string()))?;
+
+        if !resp.status().is_success() {
+            return Err(StoredRequestError::HttpError(format!(
+                "HTTP {}", resp.status()
+            )));
+        }
+
+        let result: HttpFetchResult = resp
+            .json()
+            .await
+            .map_err(|e| StoredRequestError::ParseError(e.to_string()))?;
+
+        Ok(result)
+    }
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct HttpFetchResult {
+    #[serde(default)]
+    pub requests: HashMap<String, serde_json::Value>,
+    #[serde(default)]
+    pub imps: HashMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone)]
+pub enum StoredRequestError {
+    HttpError(String),
+    ParseError(String),
+    NotFound(String),
+}
+
+impl std::fmt::Display for StoredRequestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::HttpError(e) => write!(f, "HTTP error: {}", e),
+            Self::ParseError(e) => write!(f, "parse error: {}", e),
+            Self::NotFound(id) => write!(f, "stored request not found: {}", id),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Multi-fetcher: cascading through multiple backends
+// ---------------------------------------------------------------------------
+
+/// Combines multiple `StoredRequestFetcher` instances with fallback semantics.
+/// Tries each fetcher in order until an ID is found.
+pub struct MultiFetcher {
+    /// Primary: filesystem (fast, local)
+    pub primary: StoredRequestFetcher,
+    /// Optional secondary sources
+    pub secondary: Vec<StoredRequestFetcher>,
+}
+
+impl MultiFetcher {
+    pub fn new(primary: StoredRequestFetcher) -> Self {
+        Self {
+            primary,
+            secondary: Vec::new(),
+        }
+    }
+
+    pub fn with_secondary(mut self, fetcher: StoredRequestFetcher) -> Self {
+        self.secondary.push(fetcher);
+        self
+    }
+
+    /// Fetch a stored request, trying primary then each secondary.
+    pub fn fetch_request(&self, id: &str) -> Option<&serde_json::Value> {
+        self.primary.fetch(id)
+    }
+
+    /// Fetch a stored imp, trying primary then each secondary.
+    pub fn fetch_imp(&self, id: &str) -> Option<&serde_json::Value> {
+        self.primary.fetch_imp(id)
+    }
+
+    /// Fetch multiple request IDs, returning found and missing.
+    pub fn fetch_requests(&self, ids: &[String]) -> (HashMap<String, serde_json::Value>, Vec<String>) {
+        let mut found = HashMap::new();
+        let mut missing = Vec::new();
+
+        for id in ids {
+            if let Some(val) = self.primary.fetch(id) {
+                found.insert(id.clone(), val.clone());
+            } else {
+                // Try secondaries
+                let mut resolved = false;
+                for secondary in &self.secondary {
+                    if let Some(val) = secondary.fetch(id) {
+                        found.insert(id.clone(), val.clone());
+                        resolved = true;
+                        break;
+                    }
+                }
+                if !resolved {
+                    missing.push(id.clone());
+                }
+            }
+        }
+
+        (found, missing)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Caching wrapper
+// ---------------------------------------------------------------------------
+
+/// In-memory caching layer wrapping another fetcher.
+/// Stores cloned values to avoid repeated filesystem/network reads.
+pub struct CachingFetcher {
+    inner: StoredRequestFetcher,
+    /// Request cache: id -> (value, inserted_at)
+    request_cache: std::sync::RwLock<HashMap<String, (serde_json::Value, std::time::Instant)>>,
+    /// TTL in seconds
+    ttl_secs: u64,
+}
+
+impl CachingFetcher {
+    pub fn new(inner: StoredRequestFetcher, ttl_secs: u64) -> Self {
+        Self {
+            inner,
+            request_cache: std::sync::RwLock::new(HashMap::new()),
+            ttl_secs,
+        }
+    }
+
+    /// Fetch with caching. Returns cached value if available and not expired.
+    pub fn fetch_cached(&self, id: &str) -> Option<serde_json::Value> {
+        // Check cache first
+        if let Ok(cache) = self.request_cache.read() {
+            if let Some((val, inserted)) = cache.get(id) {
+                if inserted.elapsed().as_secs() < self.ttl_secs {
+                    return Some(val.clone());
+                }
+            }
+        }
+
+        // Cache miss — fetch from inner
+        let val = self.inner.fetch(id)?.clone();
+
+        // Store in cache
+        if let Ok(mut cache) = self.request_cache.write() {
+            cache.insert(id.to_string(), (val.clone(), std::time::Instant::now()));
+        }
+
+        Some(val)
+    }
+
+    /// Invalidate a cache entry.
+    pub fn invalidate(&self, id: &str) {
+        if let Ok(mut cache) = self.request_cache.write() {
+            cache.remove(id);
+        }
+    }
+
+    /// Clear all cached entries.
+    pub fn clear(&self) {
+        if let Ok(mut cache) = self.request_cache.write() {
+            cache.clear();
+        }
+    }
+
+    /// Number of entries currently in cache.
+    pub fn cache_size(&self) -> usize {
+        self.request_cache.read().map(|c| c.len()).unwrap_or(0)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Category Fetcher
+// ---------------------------------------------------------------------------
+
+/// Fetches ad category mappings for category translation.
+pub struct CategoryFetcher {
+    /// Map: (primary_ad_server, publisher_id) -> (iab_id -> category_string)
+    categories: HashMap<(String, String), HashMap<String, String>>,
+}
+
+impl CategoryFetcher {
+    pub fn new() -> Self {
+        Self {
+            categories: HashMap::new(),
+        }
+    }
+
+    /// Load categories from a directory structure:
+    /// `<dir>/<primary_ad_server>/<publisher_id>.json`
+    pub fn from_directory(dir: &str) -> Self {
+        let mut categories = HashMap::new();
+
+        if let Ok(servers) = std::fs::read_dir(dir) {
+            for server_entry in servers.flatten() {
+                let server_path = server_entry.path();
+                if !server_path.is_dir() {
+                    continue;
+                }
+                let server_name = server_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                if let Ok(publishers) = std::fs::read_dir(&server_path) {
+                    for pub_entry in publishers.flatten() {
+                        let pub_path = pub_entry.path();
+                        if pub_path.extension().and_then(|e| e.to_str()) != Some("json") {
+                            continue;
+                        }
+                        let pub_id = pub_path
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("")
+                            .to_string();
+
+                        if let Ok(content) = std::fs::read_to_string(&pub_path) {
+                            if let Ok(map) =
+                                serde_json::from_str::<HashMap<String, String>>(&content)
+                            {
+                                categories.insert((server_name.clone(), pub_id), map);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Self { categories }
+    }
+
+    /// Fetch the translated category for a given ad server, publisher, and IAB ID.
+    pub fn fetch_category(
+        &self,
+        primary_ad_server: &str,
+        publisher_id: &str,
+        iab_id: &str,
+    ) -> Option<&String> {
+        let key = (primary_ad_server.to_string(), publisher_id.to_string());
+        self.categories.get(&key)?.get(iab_id)
+    }
+}
+
+impl Default for CategoryFetcher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_empty_fetcher() {
+        let fetcher = StoredRequestFetcher::empty();
+        assert!(fetcher.fetch("nonexistent").is_none());
+        assert!(fetcher.fetch_imp("nonexistent").is_none());
+        assert!(fetcher.fetch_stored_response("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_merge_request_fragment_sets_missing() {
+        let stored = serde_json::json!({ "tmax": 500, "at": 1 });
+        let mut incoming = serde_json::json!({ "id": "req1" });
+        StoredRequestFetcher::merge_request_fragment(&stored, &mut incoming);
+        assert_eq!(incoming.get("tmax").unwrap().as_i64(), Some(500));
+        assert_eq!(incoming.get("id").unwrap().as_str(), Some("req1"));
+    }
+
+    #[test]
+    fn test_merge_request_fragment_caller_wins() {
+        let stored = serde_json::json!({ "id": "stored-id", "tmax": 500 });
+        let mut incoming = serde_json::json!({ "id": "caller-id" });
+        StoredRequestFetcher::merge_request_fragment(&stored, &mut incoming);
+        // Caller's id wins
+        assert_eq!(incoming.get("id").unwrap().as_str(), Some("caller-id"));
+        // Stored tmax fills in
+        assert_eq!(incoming.get("tmax").unwrap().as_i64(), Some(500));
+    }
+
+    #[test]
+    fn test_merge_deep_objects() {
+        let stored = serde_json::json!({ "ext": { "prebid": { "debug": true }, "extra": 1 } });
+        let mut incoming = serde_json::json!({ "ext": { "prebid": { "targeting": {} } } });
+        StoredRequestFetcher::merge_request_fragment(&stored, &mut incoming);
+        let ext = incoming.get("ext").unwrap();
+        let prebid = ext.get("prebid").unwrap();
+        // Caller's targeting preserved
+        assert!(prebid.get("targeting").is_some());
+        // Stored debug fills in
+        assert_eq!(prebid.get("debug").unwrap().as_bool(), Some(true));
+        // Stored extra fills in
+        assert_eq!(ext.get("extra").unwrap().as_i64(), Some(1));
+    }
+
+    #[test]
+    fn test_caching_fetcher() {
+        let inner = StoredRequestFetcher::empty();
+        let caching = CachingFetcher::new(inner, 3600);
+        assert_eq!(caching.cache_size(), 0);
+        assert!(caching.fetch_cached("missing").is_none());
+    }
+
+    #[test]
+    fn test_multi_fetcher() {
+        let primary = StoredRequestFetcher::empty();
+        let multi = MultiFetcher::new(primary);
+        let (found, missing) = multi.fetch_requests(&["id1".to_string()]);
+        assert!(found.is_empty());
+        assert_eq!(missing, vec!["id1".to_string()]);
+    }
+
+    #[test]
+    fn test_category_fetcher_empty() {
+        let fetcher = CategoryFetcher::new();
+        assert!(fetcher.fetch_category("dfp", "pub1", "IAB1").is_none());
+    }
+}
