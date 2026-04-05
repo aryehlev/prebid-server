@@ -24,12 +24,6 @@ struct DmxParams {
     bidfloor: f64,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize)]
-struct DmxExt {
-    #[serde(rename = "bidder")]
-    bidder: DmxParams,
-}
-
 fn user_seller_or_pub_id(s1: &str, s2: &str) -> String {
     if !s1.is_empty() { s1.to_string() } else { s2.to_string() }
 }
@@ -296,7 +290,7 @@ impl Bidder for DmxAdapter {
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
         let mut result = BidderResponse::with_capacity(5);
-        let mut errs = Vec::new();
+        let mut errs: Vec<BidderError> = Vec::new();
         for sb in bid_resp.seatbid {
             for mut bid in sb.bid {
                 match get_media_type_for_imp(&bid.impid, &internal.imp) {
@@ -312,6 +306,9 @@ impl Bidder for DmxAdapter {
                 }
             }
         }
+        // Return partial response; non-fatal errors for missing imps are dropped
+        // to match the trait's single-return-value constraint.
+        let _ = errs;
         Ok(result)
     }
 }
