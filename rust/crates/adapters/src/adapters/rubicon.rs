@@ -176,8 +176,8 @@ fn is_video(imp: &openrtb::Imp) -> bool {
             return true;
         }
         // fully populated video: mimes, protocols, max_duration, linearity all set
-        let fully_populated = !video.mimes.is_empty()
-            && !video.protocols.is_empty()
+        let fully_populated = video.mimes.as_ref().map_or(false, |m| !m.is_empty())
+            && video.protocols.as_ref().map_or(false, |p| !p.is_empty())
             && video.maxduration.unwrap_or(0) != 0
             && video.linearity.unwrap_or(0) != 0;
         return fully_populated;
