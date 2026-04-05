@@ -129,14 +129,19 @@ impl Bidder for CompassAdapter {
         if let Some(cur) = &bid_resp.cur {
             result.currency = cur.clone();
         }
+        let mut errs = Vec::new();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
-                let bid_type = internal.imp.iter()
-                    .find(|i| i.id == bid.impid)
-                    .map(get_bid_type_from_imp)
-                    .unwrap_or(BidType::Banner);
-                result.bids.push(TypedBid::new(bid, bid_type));
+                match internal.imp.iter().find(|i| i.id == bid.impid) {
+                    Some(imp) => result.bids.push(TypedBid::new(bid, get_bid_type_from_imp(imp))),
+                    None => errs.push(BidderError::BadInput(format!(
+                        "Failed to find impression \"{}\"", bid.impid
+                    ))),
+                }
             }
+        }
+        if !errs.is_empty() {
+            return Err(errs);
         }
         Ok(result)
     }
