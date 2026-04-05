@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_bid_type_from_imp, get_imp_ids, check_response_status};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids, check_response_status};
 use openrtb::BidResponse;
 use openrtb_ext::BidType;
 
@@ -59,6 +59,28 @@ fn preprocess_banner(request: &mut openrtb::BidRequest) {
     }
 }
 
+/// Determine bid type from bid.mtype or imp format type, matching Go getBidType logic.
+fn get_bid_type(bid: &openrtb::Bid, imps: &[openrtb::Imp]) -> Result<BidType, BidderError> {
+    match bid.mtype {
+        Some(1) => Ok(BidType::Banner),  // MarkupBanner
+        Some(4) => Ok(BidType::Native),  // MarkupNative
+        _ => {
+            // fallback: find imp by ID and use its format type
+            if let Some(imp) = imps.iter().find(|i| i.id == bid.impid) {
+                if imp.banner.is_some() {
+                    return Ok(BidType::Banner);
+                }
+                if imp.native.is_some() {
+                    return Ok(BidType::Native);
+                }
+            }
+            Err(BidderError::BadServerResponse(
+                format!("Unsupported MType {}", bid.mtype.unwrap_or(0))
+            ))
+        }
+    }
+}
+
 impl Bidder for MediagoAdapter {
     fn make_requests(&self, request: &openrtb::BidRequest, _: &ExtraRequestInfo) -> (Vec<RequestData>, Vec<BidderError>) {
         let (token, region) = match get_token_and_region(request) {
@@ -103,24 +125,13 @@ impl Bidder for MediagoAdapter {
         let mut errs = Vec::new();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
-                // Determine bid type from mtype (in ext) or imp type
-                let mtype = bid.ext.as_ref()
-                    .and_then(|e| e.get("mtype"))
-                    .and_then(|v| v.as_u64());
-                let bid_type = match mtype {
-                    Some(1) => BidType::Banner,
-                    Some(4) => BidType::Native,
-                    _ => {
-                        // fallback to imp type
-                        internal.imp.iter().find(|i| i.id == bid.impid)
-                            .map(get_bid_type_from_imp)
-                            .unwrap_or(BidType::Banner)
-                    }
-                };
-                result.bids.push(TypedBid::new(bid, bid_type));
+                match get_bid_type(&bid, &internal.imp) {
+                    Ok(bid_type) => result.bids.push(TypedBid::new(bid, bid_type)),
+                    Err(e) => errs.push(e),
+                }
             }
         }
-        if !errs.is_empty() { return Err(errs); }
+        if !errs.is_empty() && result.bids.is_empty() { return Err(errs); }
         Ok(result)
     }
 }
