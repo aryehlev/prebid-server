@@ -114,14 +114,216 @@ fn default_max_request_size() -> usize {
     1_572_864 // 1.5 MB
 }
 
-/// Per-account configuration
+/// Per-account configuration with full publisher-level settings.
+///
+/// Maps to the Go `Account` struct in config/account.go. Each publisher can
+/// override host-level defaults for privacy, price floors, bid adjustments, etc.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AccountConfig {
+    /// Publisher account ID.
+    #[serde(default)]
     pub id: String,
+    /// When true, requests for this account are rejected.
+    #[serde(default)]
+    pub disabled: bool,
+    /// Legacy field kept for backward compat; prefer the richer sub-configs.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub price_granularity: Option<String>,
-    pub gdpr_enabled: Option<bool>,
-    pub ccpa_enabled: Option<bool>,
+    /// Default integration channel (e.g. "web", "app", "amp").
+    #[serde(default)]
+    pub default_integration: String,
+    /// Account-level event tracking configuration.
+    #[serde(default)]
+    pub events: AccountEventsConfig,
+    /// Account-level privacy overrides.
+    #[serde(default)]
+    pub privacy: AccountPrivacyConfig,
+    /// Account-level price floors configuration.
+    #[serde(default)]
+    pub price_floors: AccountPriceFloorsConfig,
+    /// Account-level bid adjustments.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bid_adjustments: Option<BidAdjustmentsConfig>,
+    /// Account-level auction timeout override in milliseconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub auction_timeout_ms: Option<u64>,
+    /// Allow debug/test requests for this account.
+    #[serde(default)]
+    pub debug_allow: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Account sub-configs
+// ---------------------------------------------------------------------------
+
+/// Account-level event tracking.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AccountEventsConfig {
+    /// When true, event tracking URLs are included in bid responses.
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+/// Account-level privacy overrides (GDPR, CCPA, COPPA).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AccountPrivacyConfig {
+    #[serde(default)]
+    pub gdpr: AccountGdprConfig,
+    #[serde(default)]
+    pub ccpa: AccountCcpaConfig,
+    #[serde(default)]
+    pub coppa: AccountCoppaConfig,
+    /// IPv4 anonymisation config (number of bits to mask).
+    #[serde(default)]
+    pub ipv4: IpAnonymisationConfig,
+    /// IPv6 anonymisation config (number of bits to mask).
+    #[serde(default)]
+    pub ipv6: IpAnonymisationConfig,
+}
+
+/// IP address anonymisation settings.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct IpAnonymisationConfig {
+    /// Number of leading bits to preserve (remaining bits are zeroed).
+    #[serde(default)]
+    pub anon_keep_bits: u8,
+}
+
+/// Account-level GDPR overrides.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AccountGdprConfig {
+    /// If set, overrides the host-level GDPR enabled flag for this account.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// Per-channel enable flags.
+    #[serde(default)]
+    pub channel_enabled: ChannelEnabledConfig,
+    /// Purpose-level enforcement overrides (keys "purpose1" .. "purpose10").
+    #[serde(default)]
+    pub purpose1: AccountGdprPurposeConfig,
+    #[serde(default)]
+    pub purpose2: AccountGdprPurposeConfig,
+    #[serde(default)]
+    pub purpose3: AccountGdprPurposeConfig,
+    #[serde(default)]
+    pub purpose4: AccountGdprPurposeConfig,
+    #[serde(default)]
+    pub purpose5: AccountGdprPurposeConfig,
+    #[serde(default)]
+    pub purpose6: AccountGdprPurposeConfig,
+    #[serde(default)]
+    pub purpose7: AccountGdprPurposeConfig,
+    #[serde(default)]
+    pub purpose8: AccountGdprPurposeConfig,
+    #[serde(default)]
+    pub purpose9: AccountGdprPurposeConfig,
+    #[serde(default)]
+    pub purpose10: AccountGdprPurposeConfig,
+}
+
+/// Per-purpose GDPR enforcement at the account level.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AccountGdprPurposeConfig {
+    #[serde(default)]
+    pub enforce_purpose: bool,
+    #[serde(default)]
+    pub enforce_vendors: bool,
+    #[serde(default)]
+    pub vendor_exceptions: Vec<String>,
+}
+
+/// Per-channel enable/disable toggles.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ChannelEnabledConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub amp: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub video: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub web: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dooh: Option<bool>,
+}
+
+/// Account-level CCPA overrides.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AccountCcpaConfig {
+    /// If set, overrides the host-level CCPA enforce flag.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// Per-channel enable flags.
+    #[serde(default)]
+    pub channel_enabled: ChannelEnabledConfig,
+}
+
+/// Account-level COPPA overrides.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AccountCoppaConfig {
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+/// Account-level price floors.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AccountPriceFloorsConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Rate at which floors are enforced (0..100).
+    #[serde(default)]
+    pub enforce_floors_rate: u32,
+    #[serde(default)]
+    pub adjust_for_bid_adjustment: bool,
+    #[serde(default)]
+    pub enforce_deal_floors: bool,
+    #[serde(default)]
+    pub use_dynamic_data: bool,
+    #[serde(default)]
+    pub max_rules: u32,
+    #[serde(default)]
+    pub max_schema_dims: u32,
+    #[serde(default)]
+    pub fetch: AccountFloorFetchConfig,
+}
+
+/// Dynamic floor fetching configuration at the account level.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AccountFloorFetchConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub timeout_ms: u32,
+    #[serde(default)]
+    pub max_file_size_kb: u32,
+    #[serde(default)]
+    pub max_rules: u32,
+    #[serde(default)]
+    pub max_age_sec: u32,
+    #[serde(default)]
+    pub period_sec: u32,
+}
+
+/// Bid adjustments configuration.
+///
+/// Keys are media type names; values map bidder -> adjustment rules.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BidAdjustmentsConfig {
+    #[serde(default)]
+    pub media_type: HashMap<String, HashMap<String, Vec<BidAdjustmentRule>>>,
+}
+
+/// A single bid adjustment rule.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BidAdjustmentRule {
+    #[serde(default)]
+    pub adj_type: String,
+    #[serde(default)]
+    pub value: f64,
+    #[serde(default)]
+    pub currency: String,
 }
 
 /// Per-adapter configuration
