@@ -10,6 +10,7 @@ members = [
     "crates/exchange",
     "crates/endpoints",
     "crates/server",
+    "crates/cache",
 ]
 resolver = "2"
 

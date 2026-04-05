@@ -20,6 +20,10 @@ pbs-metrics = { path = "../metrics" }
 base64 = { workspace = true }
 chrono = { workspace = true }
 bytes = { workspace = true }
+async-trait = { workspace = true }
+reqwest = { workspace = true }
+dashmap = { workspace = true }
+futures = { workspace = true }
 
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }
