@@ -134,9 +134,14 @@ impl Bidder for ConnectadAdapter {
     ) -> (Vec<RequestData>, Vec<BidderError>) {
         let (processed_imps, mut errors) = preprocess(request);
 
-        if processed_imps.is_empty() {
+        // If any preprocess errors occurred, return all errors (matching Go behavior).
+        if !errors.is_empty() {
             errors.push(BidderError::BadInput("Error in preprocess of Imp".to_string()));
             return (vec![], errors);
+        }
+
+        if processed_imps.is_empty() {
+            return (vec![], vec![BidderError::BadInput("Error in preprocess of Imp".to_string())]);
         }
 
         // Build a modified request with processed imps

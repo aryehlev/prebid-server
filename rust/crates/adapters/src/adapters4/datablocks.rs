@@ -88,7 +88,11 @@ impl Bidder for DatablocksAdapter {
 
     fn make_bids(&self, internal: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
         if response.status_code == 204 { return Ok(BidderResponse::new()); }
-        if let Err(e) = crate::check_response_status(response.status_code) { return Err(vec![e]); }
+        if response.status_code != 200 {
+            return Err(vec![BidderError::BadServerResponse(format!(
+                "ERR, response with status {}", response.status_code
+            ))]);
+        }
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
         let mut result = BidderResponse::with_capacity(5);

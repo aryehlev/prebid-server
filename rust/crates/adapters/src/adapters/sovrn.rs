@@ -38,12 +38,30 @@ fn get_ext_bid_floor(sovrn_ext: &ExtImpSovrn) -> f64 {
     }
 }
 
-/// URL-decode percent-encoded string (best-effort).
+/// URL-decode percent-encoded string (best-effort), matching Go's url.QueryUnescape.
 fn url_decode(s: &str) -> String {
-    percent_encoding::percent_decode_str(s)
-        .decode_utf8()
-        .map(|c| c.into_owned())
-        .unwrap_or_else(|_| s.to_string())
+    let mut result = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (
+                (bytes[i + 1] as char).to_digit(16),
+                (bytes[i + 2] as char).to_digit(16),
+            ) {
+                result.push((hi * 16 + lo) as u8 as char);
+                i += 3;
+                continue;
+            }
+        } else if bytes[i] == b'+' {
+            result.push(' ');
+            i += 1;
+            continue;
+        }
+        result.push(bytes[i] as char);
+        i += 1;
+    }
+    result
 }
 
 impl Bidder for SovrnAdapter {
@@ -84,8 +102,8 @@ impl Bidder for SovrnAdapter {
 
             // Apply ext bidfloor if imp has no floor set
             let ext_floor = get_ext_bid_floor(sovrn_ext);
-            if imp_copy.bidfloor == 0.0 && ext_floor > 0.0 {
-                imp_copy.bidfloor = ext_floor;
+            if imp_copy.bidfloor.unwrap_or(0.0) == 0.0 && ext_floor > 0.0 {
+                imp_copy.bidfloor = Some(ext_floor);
             }
 
             // Validate video params if video impression

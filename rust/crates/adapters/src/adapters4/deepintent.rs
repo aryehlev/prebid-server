@@ -106,12 +106,11 @@ impl Bidder for DeepintentAdapter {
         let bid_resp: openrtb::BidResponse = serde_json::from_slice(&response.body)
             .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
         let mut result = BidderResponse::with_capacity(1);
-        let mut errs = Vec::new();
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
                 match get_media_type_for_imp(&bid.impid, &internal.imp) {
                     Ok(bid_type) => result.bids.push(TypedBid::new(bid, bid_type)),
-                    Err(e) => errs.push(e),
+                    Err(_) => {} // skip bids for unknown impressions
                 }
             }
         }
