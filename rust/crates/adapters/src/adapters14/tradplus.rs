@@ -81,7 +81,6 @@ impl Bidder for TradplusAdapter {
                 }
             }
         }
-        if !errs.is_empty() { return Err(errs); }
         Ok(result)
     }
 }
