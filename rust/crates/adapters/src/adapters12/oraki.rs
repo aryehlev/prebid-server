@@ -1,7 +1,18 @@
 use std::collections::HashMap;
-use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_bid_type_from_imp, get_imp_ids, check_response_status};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids, check_response_status};
 use openrtb::BidResponse;
 use openrtb_ext::BidType;
+
+fn get_bid_type(mtype: i32, imp_id: &str) -> Result<BidType, BidderError> {
+    match mtype {
+        1 => Ok(BidType::Banner),
+        2 => Ok(BidType::Video),
+        4 => Ok(BidType::Native),
+        _ => Err(BidderError::BadServerResponse(
+            format!("could not define media type for impression: {}", imp_id)
+        )),
+    }
+}
 
 pub struct OrakiAdapter { pub endpoint: String }
 impl OrakiAdapter { pub fn new(endpoint: String) -> Self { Self { endpoint } } }
@@ -77,8 +88,11 @@ impl Bidder for OrakiAdapter {
         }
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
-                let bid_type = internal.imp.iter().find(|i| i.id == bid.impid)
-                    .map(get_bid_type_from_imp).unwrap_or(BidType::Banner);
+                let mtype = bid.mtype.unwrap_or(0);
+                let bid_type = match get_bid_type(mtype, &bid.impid) {
+                    Ok(t) => t,
+                    Err(e) => return Err(vec![e]),
+                };
                 result.bids.push(TypedBid::new(bid, bid_type));
             }
         }

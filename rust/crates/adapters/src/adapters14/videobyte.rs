@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid};
 use openrtb_ext::BidType;
 
 pub struct VideobyteAdapter { pub endpoint: String }
@@ -36,23 +36,34 @@ impl Bidder for VideobyteAdapter {
         let headers = get_headers(request);
         for imp in &original_imps {
             let bidder = imp.ext.as_ref().and_then(|e| e.get("bidder"));
-            // Go ext field is json:"pubId" -> key "pubId"
+            // ExtImpVideoByte: json:"pubId", json:"placementId", json:"nid"
             let publisher_id = bidder.and_then(|b| b.get("pubId")).and_then(|v| v.as_str()).unwrap_or("");
             let placement_id = bidder.and_then(|b| b.get("placementId")).and_then(|v| v.as_str()).unwrap_or("");
-            // Go ext field is json:"nid" -> key "nid"
             let network_id = bidder.and_then(|b| b.get("nid")).and_then(|v| v.as_str()).unwrap_or("");
-            let mut params = vec![("source".to_string(), "pbs".to_string()), ("pid".to_string(), publisher_id.to_string())];
+
+            // Build query params: source=pbs&pid=<publisherId>[&placementId=...][&nid=...]
+            let mut params = vec![
+                ("source".to_string(), "pbs".to_string()),
+                ("pid".to_string(), publisher_id.to_string()),
+            ];
             if !placement_id.is_empty() { params.push(("placementId".to_string(), placement_id.to_string())); }
             if !network_id.is_empty() { params.push(("nid".to_string(), network_id.to_string())); }
             let query: String = params.iter().map(|(k, v)| format!("{}={}", k, v)).collect::<Vec<_>>().join("&");
             let uri = format!("{}?{}", self.endpoint, query);
+
             let mut req_copy = request.clone();
             req_copy.imp = vec![imp.clone()];
             let body = match serde_json::to_vec(&req_copy) {
                 Ok(b) => b,
                 Err(e) => { errs.push(BidderError::BadInput(e.to_string())); continue; }
             };
-            requests.push(RequestData { method: "POST".to_string(), uri, body, headers: headers.clone(), imp_ids: vec![imp.id.clone()] });
+            requests.push(RequestData {
+                method: "POST".to_string(),
+                uri,
+                body,
+                headers: headers.clone(),
+                imp_ids: vec![imp.id.clone()],
+            });
         }
         (requests, errs)
     }
