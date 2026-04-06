@@ -42,6 +42,8 @@ fn build_test_state() -> pbs_endpoints::AppState {
         accounts: HashMap::new(),
         bidder_sync_info: HashMap::new(),
         currency_converter: None,
+        account_required: false,
+        activity_control: pbs_exchange::privacy::ActivityControl::default(),
     })
 }
 

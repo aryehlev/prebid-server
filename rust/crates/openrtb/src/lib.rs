@@ -764,6 +764,12 @@ pub struct Regs {
     pub coppa: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub us_privacy: Option<String>,
+    /// GPP consent string (Global Privacy Platform).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpp: Option<String>,
+    /// GPP Section ID list indicating which regulations apply.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpp_sid: Option<Vec<i8>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dsa: Option<Dsa>,
     #[serde(skip_serializing_if = "Option::is_none")]

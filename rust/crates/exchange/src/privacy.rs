@@ -1,7 +1,118 @@
-/// Privacy enforcement module covering GDPR, CCPA, COPPA, and LMT.
+/// Privacy enforcement module covering GDPR, CCPA, COPPA, LMT, and GPP.
 ///
 /// Provides a unified `AuctionPrivacyConfig` extracted from a `BidRequest` and
 /// a single `check_privacy_for_bidder` function that returns a typed `PrivacyResult`.
+
+// GPP Section ID constants (from IAB Global Privacy Platform spec).
+/// TCF EU v2 section ID.
+pub const GPP_SID_TCF_EU2: i8 = 2;
+/// US Privacy (CCPA) v1 section ID.
+pub const GPP_SID_USP_V1: i8 = 6;
+
+/// Parsed GPP (Global Privacy Platform) policy from `regs.gpp` and `regs.gpp_sid`.
+///
+/// GPP is a newer privacy framework that replaces/supplements GDPR and CCPA signals.
+/// When GPP is present, legacy signals can be derived from the GPP consent string
+/// based on which section IDs are listed in `gpp_sid`.
+#[derive(Debug, Clone, Default)]
+pub struct GppPolicy {
+    /// The raw GPP consent string from `regs.gpp`.
+    pub consent_string: Option<String>,
+    /// Section IDs from `regs.gpp_sid` indicating which regulations apply.
+    pub section_ids: Vec<i8>,
+}
+
+impl GppPolicy {
+    /// Whether the GPP policy has any content.
+    pub fn is_empty(&self) -> bool {
+        self.consent_string.is_none() && self.section_ids.is_empty()
+    }
+
+    /// Whether the given section ID is present in `gpp_sid`.
+    pub fn has_section(&self, sid: i8) -> bool {
+        self.section_ids.contains(&sid)
+    }
+
+    /// Whether TCF EU v2 (GDPR) section is present in `gpp_sid`.
+    pub fn has_tcf_eu2(&self) -> bool {
+        self.has_section(GPP_SID_TCF_EU2)
+    }
+
+    /// Whether US Privacy (CCPA) section is present in `gpp_sid`.
+    pub fn has_usp_v1(&self) -> bool {
+        self.has_section(GPP_SID_USP_V1)
+    }
+}
+
+/// Parse GPP fields from a `BidRequest`.
+///
+/// Extracts `regs.gpp` (consent string) and `regs.gpp_sid` (section IDs).
+pub fn parse_gpp(req: &openrtb::BidRequest) -> GppPolicy {
+    let consent_string = req
+        .regs
+        .as_ref()
+        .and_then(|r| r.gpp.clone())
+        .filter(|s| !s.is_empty());
+
+    let section_ids = req
+        .regs
+        .as_ref()
+        .and_then(|r| r.gpp_sid.clone())
+        .unwrap_or_default();
+
+    GppPolicy {
+        consent_string,
+        section_ids,
+    }
+}
+
+/// Derive legacy GDPR signals from GPP when legacy fields are absent.
+///
+/// Mirrors Go's `setLegacyGDPRFromGPP()`:
+/// - If `regs.ext.gdpr` is not set and `gpp_sid` is present, set `gdpr_applies`
+///   to true only if SID 2 (TCF EU v2) is in the list.
+/// - If `user.consent` is empty, use the GPP consent string when TCF EU v2 is active.
+fn derive_gdpr_from_gpp(
+    gdpr_applies: bool,
+    consent_string: &Option<String>,
+    gpp: &GppPolicy,
+    has_legacy_gdpr: bool,
+) -> (bool, Option<String>) {
+    let mut gdpr = gdpr_applies;
+    let mut consent = consent_string.clone();
+
+    // Only override gdpr_applies when the legacy regs.ext.gdpr field was absent.
+    if !has_legacy_gdpr && !gpp.section_ids.is_empty() {
+        gdpr = gpp.has_tcf_eu2();
+    }
+
+    // If no legacy consent string, derive from GPP when TCF EU v2 is active.
+    if consent.is_none() && gpp.has_tcf_eu2() {
+        if let Some(ref gpp_consent) = gpp.consent_string {
+            consent = Some(gpp_consent.clone());
+        }
+    }
+
+    (gdpr, consent)
+}
+
+/// Derive legacy US Privacy string from GPP when legacy field is absent.
+///
+/// Mirrors Go's `setLegacyUSPFromGPP()`:
+/// - If `regs.us_privacy` is empty and `gpp_sid` contains 6 (USP v1), use the
+///   GPP consent string as the US Privacy value.
+fn derive_usp_from_gpp(us_privacy: &Option<String>, gpp: &GppPolicy) -> Option<String> {
+    if us_privacy.is_some() {
+        return us_privacy.clone();
+    }
+    if gpp.section_ids.is_empty() {
+        return None;
+    }
+    if gpp.has_usp_v1() {
+        return gpp.consent_string.clone();
+    }
+    None
+}
 
 /// Privacy policies applied to a request.
 #[derive(Debug, Clone, Default)]
@@ -13,6 +124,8 @@ pub struct AuctionPrivacyConfig {
     pub lmt: Option<i32>,
     /// Child-directed flag (`regs.coppa`).
     pub coppa: Option<i32>,
+    /// GPP policy parsed from the request.
+    pub gpp: GppPolicy,
 }
 
 /// Result of a per-bidder privacy check.
@@ -33,14 +146,16 @@ pub enum PrivacyResult {
 /// - `lmt` is read from `device.lmt`.
 /// - `coppa` is read from `regs.coppa`.
 pub fn extract_privacy_config(req: &openrtb::BidRequest) -> AuctionPrivacyConfig {
-    let gdpr_applies = req
+    // Check whether the legacy regs.ext.gdpr field is explicitly present.
+    let legacy_gdpr_value = req
         .regs
         .as_ref()
         .and_then(|r| r.ext.as_ref())
         .and_then(|e| e.get("gdpr"))
-        .and_then(|v| v.as_i64())
-        .map(|g| g == 1)
-        .unwrap_or(false);
+        .and_then(|v| v.as_i64());
+
+    let has_legacy_gdpr = legacy_gdpr_value.is_some();
+    let gdpr_applies = legacy_gdpr_value.map(|g| g == 1).unwrap_or(false);
 
     let consent_string = req
         .user
@@ -57,12 +172,19 @@ pub fn extract_privacy_config(req: &openrtb::BidRequest) -> AuctionPrivacyConfig
 
     let coppa = req.regs.as_ref().and_then(|r| r.coppa);
 
+    // Parse GPP and derive legacy signals from it when legacy fields are absent.
+    let gpp = parse_gpp(req);
+    let (gdpr_applies, consent_string) =
+        derive_gdpr_from_gpp(gdpr_applies, &consent_string, &gpp, has_legacy_gdpr);
+    let us_privacy = derive_usp_from_gpp(&us_privacy, &gpp);
+
     AuctionPrivacyConfig {
         gdpr_applies,
         consent_string,
         us_privacy,
         lmt,
         coppa,
+        gpp,
     }
 }
 
@@ -316,6 +438,7 @@ mod tests {
             us_privacy: us_privacy.map(|s| s.to_string()),
             lmt,
             coppa,
+            gpp: GppPolicy::default(),
         }
     }
 
@@ -373,6 +496,8 @@ mod tests {
         req.regs = Some(openrtb::Regs {
             coppa: None,
             us_privacy: None,
+            gpp: None,
+            gpp_sid: None,
             dsa: None,
             ext: Some(serde_json::json!({"gdpr": 1})),
         });
@@ -391,6 +516,8 @@ mod tests {
         req.regs = Some(openrtb::Regs {
             coppa: Some(1),
             us_privacy: None,
+            gpp: None,
+            gpp_sid: None,
             dsa: None,
             ext: None,
         });
@@ -424,5 +551,205 @@ mod tests {
         });
         sanitize_request_for_coppa(&mut req);
         assert_eq!(req.user.as_ref().unwrap().id.as_deref(), Some("user-id-123"));
+    }
+
+    // -----------------------------------------------------------------------
+    // GPP tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_gpp_empty_request() {
+        let req = openrtb::BidRequest::default();
+        let gpp = parse_gpp(&req);
+        assert!(gpp.is_empty());
+        assert!(gpp.consent_string.is_none());
+        assert!(gpp.section_ids.is_empty());
+    }
+
+    #[test]
+    fn test_parse_gpp_with_consent_and_sids() {
+        let mut req = openrtb::BidRequest::default();
+        req.regs = Some(openrtb::Regs {
+            gpp: Some("DBACNYA~CPXxRfAPXxRfAAfKABENB-CgAAAAAAAAAAYgAAAAAAAA~1YNN".to_string()),
+            gpp_sid: Some(vec![2, 6]),
+            ..Default::default()
+        });
+        let gpp = parse_gpp(&req);
+        assert!(!gpp.is_empty());
+        assert!(gpp.has_tcf_eu2());
+        assert!(gpp.has_usp_v1());
+        assert!(!gpp.has_section(7));
+    }
+
+    #[test]
+    fn test_parse_gpp_empty_string_treated_as_none() {
+        let mut req = openrtb::BidRequest::default();
+        req.regs = Some(openrtb::Regs {
+            gpp: Some("".to_string()),
+            gpp_sid: Some(vec![2]),
+            ..Default::default()
+        });
+        let gpp = parse_gpp(&req);
+        assert!(gpp.consent_string.is_none());
+        assert!(gpp.has_tcf_eu2());
+    }
+
+    #[test]
+    fn test_gpp_derives_gdpr_when_legacy_absent() {
+        // No legacy regs.ext.gdpr, but GPP SID contains TCF EU v2 (2).
+        let mut req = openrtb::BidRequest::default();
+        req.regs = Some(openrtb::Regs {
+            gpp: Some("GPP_CONSENT_TCF".to_string()),
+            gpp_sid: Some(vec![GPP_SID_TCF_EU2]),
+            ..Default::default()
+        });
+        let cfg = extract_privacy_config(&req);
+        assert!(cfg.gdpr_applies);
+        // Consent string derived from GPP.
+        assert_eq!(cfg.consent_string.as_deref(), Some("GPP_CONSENT_TCF"));
+    }
+
+    #[test]
+    fn test_gpp_does_not_override_legacy_gdpr() {
+        // Legacy regs.ext.gdpr=0 should NOT be overridden by GPP SID.
+        let mut req = openrtb::BidRequest::default();
+        req.regs = Some(openrtb::Regs {
+            gpp: Some("GPP_CONSENT".to_string()),
+            gpp_sid: Some(vec![GPP_SID_TCF_EU2]),
+            ext: Some(serde_json::json!({"gdpr": 0})),
+            ..Default::default()
+        });
+        let cfg = extract_privacy_config(&req);
+        assert!(!cfg.gdpr_applies);
+    }
+
+    #[test]
+    fn test_gpp_does_not_override_legacy_consent() {
+        // Legacy consent string present should NOT be replaced by GPP.
+        let mut req = openrtb::BidRequest::default();
+        req.regs = Some(openrtb::Regs {
+            gpp: Some("GPP_CONSENT".to_string()),
+            gpp_sid: Some(vec![GPP_SID_TCF_EU2]),
+            ..Default::default()
+        });
+        req.user = Some(openrtb::User {
+            ext: Some(serde_json::json!({"consent": "LEGACY_CONSENT"})),
+            ..Default::default()
+        });
+        let cfg = extract_privacy_config(&req);
+        assert_eq!(cfg.consent_string.as_deref(), Some("LEGACY_CONSENT"));
+    }
+
+    #[test]
+    fn test_gpp_gdpr_not_applied_without_tcf_sid() {
+        // GPP SID present but does NOT contain TCF EU v2 -> gdpr_applies=false.
+        let mut req = openrtb::BidRequest::default();
+        req.regs = Some(openrtb::Regs {
+            gpp: Some("GPP_CONSENT".to_string()),
+            gpp_sid: Some(vec![GPP_SID_USP_V1]),
+            ..Default::default()
+        });
+        let cfg = extract_privacy_config(&req);
+        assert!(!cfg.gdpr_applies);
+        assert!(cfg.consent_string.is_none());
+    }
+
+    #[test]
+    fn test_gpp_derives_usp_when_legacy_absent() {
+        // No legacy us_privacy, but GPP SID contains USP v1 (6).
+        let mut req = openrtb::BidRequest::default();
+        req.regs = Some(openrtb::Regs {
+            gpp: Some("1YYN".to_string()),
+            gpp_sid: Some(vec![GPP_SID_USP_V1]),
+            ..Default::default()
+        });
+        let cfg = extract_privacy_config(&req);
+        assert_eq!(cfg.us_privacy.as_deref(), Some("1YYN"));
+    }
+
+    #[test]
+    fn test_gpp_does_not_override_legacy_usp() {
+        // Legacy us_privacy present should NOT be replaced by GPP.
+        let mut req = openrtb::BidRequest::default();
+        req.regs = Some(openrtb::Regs {
+            us_privacy: Some("1NNN".to_string()),
+            gpp: Some("1YYN".to_string()),
+            gpp_sid: Some(vec![GPP_SID_USP_V1]),
+            ..Default::default()
+        });
+        let cfg = extract_privacy_config(&req);
+        assert_eq!(cfg.us_privacy.as_deref(), Some("1NNN"));
+    }
+
+    #[test]
+    fn test_gpp_usp_not_applied_without_usp_sid() {
+        // GPP SID present but does NOT contain USP v1 -> us_privacy stays None.
+        let mut req = openrtb::BidRequest::default();
+        req.regs = Some(openrtb::Regs {
+            gpp: Some("1YYN".to_string()),
+            gpp_sid: Some(vec![GPP_SID_TCF_EU2]),
+            ..Default::default()
+        });
+        let cfg = extract_privacy_config(&req);
+        assert!(cfg.us_privacy.is_none());
+    }
+
+    #[test]
+    fn test_gpp_no_derive_when_sid_empty() {
+        // GPP consent present but gpp_sid is empty -> no legacy derivation.
+        let mut req = openrtb::BidRequest::default();
+        req.regs = Some(openrtb::Regs {
+            gpp: Some("GPP_CONSENT".to_string()),
+            gpp_sid: None,
+            ..Default::default()
+        });
+        let cfg = extract_privacy_config(&req);
+        assert!(!cfg.gdpr_applies);
+        assert!(cfg.consent_string.is_none());
+        assert!(cfg.us_privacy.is_none());
+    }
+
+    #[test]
+    fn test_gpp_both_tcf_and_usp_sids() {
+        // GPP SID contains both TCF EU v2 and USP v1.
+        let mut req = openrtb::BidRequest::default();
+        req.regs = Some(openrtb::Regs {
+            gpp: Some("GPP_BOTH".to_string()),
+            gpp_sid: Some(vec![GPP_SID_TCF_EU2, GPP_SID_USP_V1]),
+            ..Default::default()
+        });
+        let cfg = extract_privacy_config(&req);
+        assert!(cfg.gdpr_applies);
+        assert_eq!(cfg.consent_string.as_deref(), Some("GPP_BOTH"));
+        assert_eq!(cfg.us_privacy.as_deref(), Some("GPP_BOTH"));
+    }
+
+    #[test]
+    fn test_gpp_policy_struct() {
+        let policy = GppPolicy {
+            consent_string: Some("test".to_string()),
+            section_ids: vec![2, 6],
+        };
+        assert!(!policy.is_empty());
+        assert!(policy.has_tcf_eu2());
+        assert!(policy.has_usp_v1());
+        assert!(!policy.has_section(3));
+
+        let empty = GppPolicy::default();
+        assert!(empty.is_empty());
+        assert!(!empty.has_tcf_eu2());
+    }
+
+    #[test]
+    fn test_gpp_stored_in_config() {
+        let mut req = openrtb::BidRequest::default();
+        req.regs = Some(openrtb::Regs {
+            gpp: Some("GPP_STRING".to_string()),
+            gpp_sid: Some(vec![2, 6]),
+            ..Default::default()
+        });
+        let cfg = extract_privacy_config(&req);
+        assert_eq!(cfg.gpp.consent_string.as_deref(), Some("GPP_STRING"));
+        assert_eq!(cfg.gpp.section_ids, vec![2, 6]);
     }
 }

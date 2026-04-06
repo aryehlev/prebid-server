@@ -1207,6 +1207,8 @@ impl Exchange {
         let mut debug_http_calls: HashMap<String, Vec<openrtb_ext::ExtHttpCall>> = HashMap::new();
         let mut debug_bidder_timing: HashMap<String, u64> = HashMap::new();
         let mut bidder_errors: HashMap<String, Vec<String>> = HashMap::new();
+        // Always-populated map of bidder response times for responsetimemillis.
+        let mut all_bidder_timing: HashMap<String, u64> = HashMap::new();
 
         while let Some(result) = join_set.join_next().await {
             match result {
@@ -1214,6 +1216,12 @@ impl Exchange {
                     if bidder_result.timed_out {
                         timed_out_bidders.push(bidder_result.bidder_name.clone());
                     }
+
+                    // Always record per-bidder response time for responsetimemillis.
+                    all_bidder_timing.insert(
+                        bidder_result.bidder_name.clone(),
+                        bidder_result.duration_ms,
+                    );
 
                     // Collect debug info when test mode is active.
                     if is_test {
@@ -1887,6 +1895,17 @@ impl Exchange {
 
         if !collected_non_bids.is_empty() {
             prebid_obj["seatnonbid"] = serde_json::to_value(&collected_non_bids).unwrap_or_default();
+        }
+
+        // responsetimemillis: map of bidder name -> response time in milliseconds
+        if !all_bidder_timing.is_empty() {
+            prebid_obj["responsetimemillis"] =
+                serde_json::to_value(&all_bidder_timing).unwrap_or_default();
+        }
+
+        // tmaxrequest: the tmax value from the original bid request
+        if let Some(tmax) = bid_request.tmax {
+            prebid_obj["tmaxrequest"] = serde_json::json!(tmax);
         }
 
         let mut ext_obj = serde_json::json!({ "prebid": prebid_obj });

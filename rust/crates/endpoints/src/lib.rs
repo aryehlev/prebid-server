@@ -4,6 +4,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
+use pbs_exchange::privacy::{Activity, ActivityComponent, ActivityControl};
 use pbs_exchange::usersync::{PrebidCookie, Syncer, SyncType};
 use pbs_exchange::validation::ValidationError;
 use pbs_metrics::MetricsEngine as _;
@@ -49,6 +50,10 @@ pub struct AppStateInner {
     pub accounts: std::collections::HashMap<String, pbs_config::AccountConfig>,
     /// Optional shared currency converter for the /currency/rates endpoint
     pub currency_converter: Option<Arc<pbs_exchange::currency::CurrencyConverter>>,
+    /// Whether an account ID is required for cookie_sync / setuid requests
+    pub account_required: bool,
+    /// Activity control for privacy enforcement (SyncUser, etc.)
+    pub activity_control: ActivityControl,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -362,6 +367,9 @@ pub async fn auction_handler(
         }
     }
 
+    // Resolve imp-level stored requests before running the auction.
+    resolve_imp_stored_requests(&mut bid_request, &state.stored_requests);
+
     // Process interstitial impressions (expand banner formats for instl=1).
     process_interstitials(&mut bid_request);
 
@@ -451,6 +459,9 @@ pub async fn auction_get_handler(
             bid_request.tmax = Some(tmax as i64);
         }
     }
+
+    // Resolve imp-level stored requests before running the auction.
+    resolve_imp_stored_requests(&mut bid_request, &state.stored_requests);
 
     let handler_start = std::time::Instant::now();
     let auction_req = pbs_exchange::AuctionRequest {
@@ -609,6 +620,50 @@ pub async fn video_auction_handler(
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Imp-level stored request resolution
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Resolve imp-level stored requests for every imp in `bid_request.imp`.
+///
+/// For each imp whose `imp.ext.prebid.storedrequest.id` is set, fetch the
+/// stored imp fragment via `StoredRequestFetcher::fetch_imp` and deep-merge it
+/// into the imp (the incoming imp's fields win on conflict, matching the Go
+/// server's `jsonpatch.MergePatch(stored, incoming)` semantics).
+fn resolve_imp_stored_requests(
+    bid_request: &mut openrtb::BidRequest,
+    stored_requests: &StoredRequestFetcher,
+) {
+    for imp in &mut bid_request.imp {
+        let stored_imp_id = imp
+            .ext
+            .as_ref()
+            .and_then(|e| e.get("prebid"))
+            .and_then(|p| p.get("storedrequest"))
+            .and_then(|sr| sr.get("id"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        if let Some(id) = stored_imp_id {
+            if let Some(stored_imp_json) = stored_requests.fetch_imp(&id) {
+                // Serialize the current imp to JSON, merge the stored fragment
+                // as the base (stored values fill in missing fields), then
+                // deserialize back.
+                let mut imp_value = match serde_json::to_value(&*imp) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                StoredRequestFetcher::merge_request_fragment(stored_imp_json, &mut imp_value);
+                if let Ok(merged_imp) = serde_json::from_value::<openrtb::Imp>(imp_value) {
+                    *imp = merged_imp;
+                }
+            } else {
+                tracing::warn!(imp_id = %imp.id, stored_imp_id = %id, "stored imp not found");
+            }
+        }
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // GET /openrtb2/amp
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -683,6 +738,9 @@ pub async fn amp_handler(
     if bid_request.id.is_empty() {
         bid_request.id = tag_id.clone();
     }
+
+    // ── 2b. Resolve imp-level stored requests ────────────────────────────────
+    resolve_imp_stored_requests(&mut bid_request, &state.stored_requests);
 
     // ── 3. Apply query-param overrides ────────────────────────────────────────
     // curl → site.page (canonical URL of the AMP page)
@@ -921,6 +979,43 @@ pub async fn set_uid_handler(
 
     tracing::debug!("setuid: bidder={} uid={:?}", bidder, params.uid);
 
+    // ── Account validation ───────────────────────────────────────────────────
+    if state.account_required {
+        match &params.account {
+            Some(acct_id) if !acct_id.is_empty() => {
+                if !state.accounts.contains_key(acct_id) {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        format!("Invalid account '{}': account not found", acct_id),
+                    )
+                        .into_response();
+                }
+            }
+            _ => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "Account is required but was not provided",
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    // ── GDPR enforcement ─────────────────────────────────────────────────────
+    // When GDPR applies (gdpr=1) and no valid consent string is present,
+    // block the sync and return 451 Unavailable For Legal Reasons.
+    if state.gdpr_enabled {
+        let gdpr_signal = params.gdpr.unwrap_or(0);
+        let consent = params.gdpr_consent.as_deref().unwrap_or("");
+        if gdpr_signal == 1 && consent.is_empty() {
+            return (
+                StatusCode::UNAVAILABLE_FOR_LEGAL_REASONS,
+                "The gdpr_consent string prevents cookies from being saved",
+            )
+                .into_response();
+        }
+    }
+
     // Parse existing cookie using PrebidCookie from exchange usersync module
     let raw_cookie_val = extract_cookie_value(&headers, &state.host_cookie.cookie_name);
     let mut prebid_cookie = raw_cookie_val
@@ -1064,7 +1159,26 @@ pub async fn cookie_sync_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(body): Json<CookieSyncRequest>,
-) -> Json<CookieSyncResponse> {
+) -> Response {
+    // ── GDPR enforcement ─────────────────────────────────────────────────────
+    // When GDPR applies (gdpr=1) and no valid consent string is present,
+    // block all syncs and return 451 Unavailable For Legal Reasons.
+    if state.gdpr_enabled {
+        let gdpr_signal = body.gdpr.unwrap_or(0);
+        let consent = body.gdpr_consent.as_deref().unwrap_or("");
+        if gdpr_signal == 1 && consent.is_empty() {
+            return (
+                StatusCode::UNAVAILABLE_FOR_LEGAL_REASONS,
+                Json(serde_json::json!({
+                    "status": "error",
+                    "bidder_status": [],
+                    "error": "The gdpr_consent string prevents cookies from being saved"
+                })),
+            )
+                .into_response();
+        }
+    }
+
     // Parse cookie using PrebidCookie from exchange usersync module
     let raw_cookie_val = extract_cookie_value(&headers, &state.host_cookie.cookie_name);
     let prebid_cookie = raw_cookie_val
@@ -1078,6 +1192,7 @@ pub async fn cookie_sync_handler(
 
     let gdpr = body.gdpr;
     let gdpr_consent = body.gdpr_consent.clone();
+    let coop_sync = body.coop_sync.unwrap_or(false);
 
     // Determine which bidders to check — use requested list or fall back to all known
     let requested: Vec<String> = body.bidders.unwrap_or_default();
@@ -1092,8 +1207,8 @@ pub async fn cookie_sync_handler(
     // supplemented by the static KNOWN_SYNC_BIDDERS list.
     let all_known: std::collections::HashSet<&str> = KNOWN_SYNC_BIDDERS.iter().copied().collect();
 
-    let candidates: Vec<String> = if requested.is_empty() {
-        // All bidders that have usersync configured (from YAML) plus the static list
+    // Helper: build the full set of all known bidders (from YAML + static list).
+    let build_all_bidders = || -> Vec<String> {
         let mut all: Vec<String> = state.bidder_sync_info.keys().cloned().collect();
         for b in KNOWN_SYNC_BIDDERS {
             if !state.bidder_sync_info.contains_key(*b) {
@@ -1101,6 +1216,37 @@ pub async fn cookie_sync_handler(
             }
         }
         all
+    };
+
+    let candidates: Vec<String> = if requested.is_empty() {
+        // When no bidders requested: if coop_sync is true, include all known bidders.
+        // Otherwise also include all known (same behavior, but coop_sync is the
+        // explicit opt-in for cooperative syncing).
+        build_all_bidders()
+    } else if coop_sync {
+        // Cooperative sync: start with the requested bidders, then append all
+        // remaining known bidders that were not explicitly requested.
+        let mut combined = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for name in &requested {
+            let key = name.as_str();
+            if state.bidder_sync_info.contains_key(key)
+                || all_known.contains(key)
+                || state.bidder_info.contains_key(key)
+            {
+                combined.push(name.clone());
+                seen.insert(name.clone());
+            } else {
+                tracing::warn!("cookie_sync: unknown bidder '{}' requested; skipping", name);
+            }
+        }
+        // Append cooperative bidders not already in the list.
+        for b in build_all_bidders() {
+            if !seen.contains(&b) {
+                combined.push(b);
+            }
+        }
+        combined
     } else {
         let mut valid = Vec::new();
         for name in &requested {
@@ -1118,6 +1264,16 @@ pub async fn cookie_sync_handler(
     };
 
     for bidder in &candidates {
+        // ── Activity control: skip bidders where SyncUser is denied ───────
+        let component = ActivityComponent {
+            component_type: "bidder".to_string(),
+            component_name: bidder.clone(),
+        };
+        if !state.activity_control.is_allowed(Activity::SyncUser, &component) {
+            tracing::debug!("cookie_sync: SyncUser activity denied for bidder '{}'", bidder);
+            continue;
+        }
+
         // Already synced — check both TTL-aware cookie and PrebidCookie
         let has_uid_via_prebid = prebid_cookie.get_uid(bidder).is_some();
         if cookie.has_valid_uid(bidder) || has_uid_via_prebid {
@@ -1180,6 +1336,7 @@ pub async fn cookie_sync_handler(
         status: status.to_string(),
         bidder_status,
     })
+    .into_response()
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1679,6 +1836,8 @@ mod tests {
             accounts: std::collections::HashMap::new(),
             bidder_sync_info: std::collections::HashMap::new(),
             currency_converter: None,
+            account_required: false,
+            activity_control: ActivityControl::default(),
         })
     }
 

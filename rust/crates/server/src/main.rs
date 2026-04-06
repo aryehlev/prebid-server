@@ -368,6 +368,8 @@ async fn main() -> anyhow::Result<()> {
         gdpr_enabled: cfg.gdpr_enabled,
         accounts: cfg.accounts.clone(),
         currency_converter: None,
+        account_required: cfg.account_required,
+        activity_control: pbs_exchange::privacy::ActivityControl::default(),
     });
 
     // Build CORS layer: permissive for all origins.

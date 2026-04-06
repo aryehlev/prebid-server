@@ -175,6 +175,78 @@ fn read_bits(data: &[u8], bit_offset: usize, count: usize) -> Option<u64> {
     Some(value)
 }
 
+/// Parse range-encoded vendor entries from a consent string bitfield.
+///
+/// If `default_consent` is true (TCF v1 only), all vendors up to `max_vendor_id`
+/// are assumed consented and the ranges *remove* consent. If false, the ranges
+/// *add* consent.
+fn parse_range_entries(
+    data: &[u8],
+    start_bit: usize,
+    max_vendor_id: u32,
+    default_consent: bool,
+    vendors: &mut HashSet<u32>,
+) {
+    // If default consent, pre-fill all vendors
+    if default_consent {
+        for vid in 1..=max_vendor_id {
+            vendors.insert(vid);
+        }
+    }
+
+    let num_entries = match read_bits(data, start_bit, 12) {
+        Some(v) => v as usize,
+        None => return,
+    };
+
+    let mut offset = start_bit + 12;
+
+    for _ in 0..num_entries {
+        let is_range = match read_bit(data, offset) {
+            Some(v) => v,
+            None => return,
+        };
+        offset += 1;
+
+        if is_range {
+            // StartVendorId (16 bits) + EndVendorId (16 bits)
+            let start_id = match read_bits(data, offset, 16) {
+                Some(v) => v as u32,
+                None => return,
+            };
+            offset += 16;
+            let end_id = match read_bits(data, offset, 16) {
+                Some(v) => v as u32,
+                None => return,
+            };
+            offset += 16;
+
+            for vid in start_id..=end_id.min(max_vendor_id) {
+                if default_consent {
+                    vendors.remove(&vid);
+                } else {
+                    vendors.insert(vid);
+                }
+            }
+        } else {
+            // Single VendorId (16 bits)
+            let vid = match read_bits(data, offset, 16) {
+                Some(v) => v as u32,
+                None => return,
+            };
+            offset += 16;
+
+            if vid <= max_vendor_id {
+                if default_consent {
+                    vendors.remove(&vid);
+                } else {
+                    vendors.insert(vid);
+                }
+            }
+        }
+    }
+}
+
 // -- TCF v1 helpers --
 
 fn extract_purpose_consents_v1(decoded: &[u8]) -> Option<u64> {
@@ -204,8 +276,12 @@ fn extract_vendor_consents_v1(decoded: &[u8]) -> HashSet<u32> {
                 vendors.insert(vid);
             }
         }
+    } else {
+        // Range encoding: starts at bit 193
+        // V1 has a "default consent" bit before the num_entries
+        let default_consent = read_bit(decoded, 193).unwrap_or(false);
+        parse_range_entries(decoded, 194, max_vendor_id, default_consent, &mut vendors);
     }
-    // Range encoding parsing is complex; skip for simplified implementation.
     vendors
 }
 
@@ -241,8 +317,10 @@ fn extract_vendor_consents_v2(decoded: &[u8]) -> HashSet<u32> {
                 vendors.insert(vid);
             }
         }
+    } else {
+        // Range encoding: starts at bit 277 (no default consent bit in v2)
+        parse_range_entries(decoded, 277, max_vendor_id, false, &mut vendors);
     }
-    // Range encoding: skip for simplified implementation
     vendors
 }
 
@@ -883,5 +961,263 @@ mod tests {
             Some("BOEFEAyOEFEAyAHABDENAI4AAAB9vABAASA"),
             "appnexus"
         ));
+    }
+
+    // -- Helper to set bits in a byte array --
+
+    fn set_bit(data: &mut [u8], bit_offset: usize, value: bool) {
+        let byte_index = bit_offset / 8;
+        let bit_index = 7 - (bit_offset % 8);
+        if value {
+            data[byte_index] |= 1 << bit_index;
+        } else {
+            data[byte_index] &= !(1 << bit_index);
+        }
+    }
+
+    fn set_bits(data: &mut [u8], bit_offset: usize, count: usize, value: u64) {
+        for i in 0..count {
+            let bit = (value >> (count - 1 - i)) & 1 == 1;
+            set_bit(data, bit_offset + i, bit);
+        }
+    }
+
+    // -- Range encoding tests --
+
+    #[test]
+    fn test_v1_range_encoding_single_vendor() {
+        // Build a TCF v1 consent string with range encoding
+        // containing a single vendor entry (vendor 5).
+        let mut data = vec![0u8; 40];
+
+        // Version = 1 at bits 0..6
+        set_bits(&mut data, 0, 6, 1);
+        // Purpose consents at bits 152..176: set purpose 1 and 2
+        set_bit(&mut data, 152, true); // purpose 1
+        set_bit(&mut data, 153, true); // purpose 2
+        // Max vendor ID at bits 176..192 = 20
+        set_bits(&mut data, 176, 16, 20);
+        // Encoding type at bit 192 = 1 (range)
+        set_bit(&mut data, 192, true);
+        // Default consent at bit 193 = 0
+        set_bit(&mut data, 193, false);
+        // Num entries at bits 194..206 = 1
+        set_bits(&mut data, 194, 12, 1);
+        // Entry 1: is_range = 0 at bit 206
+        set_bit(&mut data, 206, false);
+        // Vendor ID = 5 at bits 207..223
+        set_bits(&mut data, 207, 16, 5);
+
+        let vendors = extract_vendor_consents_v1(&data);
+        assert!(vendors.contains(&5), "vendor 5 should have consent");
+        assert!(!vendors.contains(&1), "vendor 1 should not have consent");
+        assert!(!vendors.contains(&20), "vendor 20 should not have consent");
+        assert_eq!(vendors.len(), 1);
+    }
+
+    #[test]
+    fn test_v1_range_encoding_range_entry() {
+        // Build a TCF v1 consent string with a range entry (vendors 10-15).
+        let mut data = vec![0u8; 40];
+
+        set_bits(&mut data, 0, 6, 1); // version 1
+        set_bit(&mut data, 152, true); // purpose 1
+        set_bits(&mut data, 176, 16, 20); // max vendor id = 20
+        set_bit(&mut data, 192, true); // range encoding
+        set_bit(&mut data, 193, false); // default consent = false
+        set_bits(&mut data, 194, 12, 1); // num entries = 1
+        // Entry: is_range = 1
+        set_bit(&mut data, 206, true);
+        // Start vendor ID = 10 at bits 207..223
+        set_bits(&mut data, 207, 16, 10);
+        // End vendor ID = 15 at bits 223..239
+        set_bits(&mut data, 223, 16, 15);
+
+        let vendors = extract_vendor_consents_v1(&data);
+        for vid in 10..=15 {
+            assert!(vendors.contains(&vid), "vendor {} should have consent", vid);
+        }
+        assert!(!vendors.contains(&9));
+        assert!(!vendors.contains(&16));
+        assert_eq!(vendors.len(), 6);
+    }
+
+    #[test]
+    fn test_v1_range_encoding_default_consent() {
+        // With default_consent=true, all vendors are consented except those in ranges.
+        let mut data = vec![0u8; 40];
+
+        set_bits(&mut data, 0, 6, 1); // version 1
+        set_bit(&mut data, 152, true); // purpose 1
+        set_bits(&mut data, 176, 16, 10); // max vendor id = 10
+        set_bit(&mut data, 192, true); // range encoding
+        set_bit(&mut data, 193, true); // default consent = true
+        set_bits(&mut data, 194, 12, 1); // num entries = 1
+        // Remove vendor 3 (single entry)
+        set_bit(&mut data, 206, false); // is_range = 0
+        set_bits(&mut data, 207, 16, 3); // vendor 3
+
+        let vendors = extract_vendor_consents_v1(&data);
+        // All vendors 1-10 except 3 should be present
+        for vid in 1..=10 {
+            if vid == 3 {
+                assert!(!vendors.contains(&vid), "vendor 3 should be removed");
+            } else {
+                assert!(vendors.contains(&vid), "vendor {} should have consent", vid);
+            }
+        }
+        assert_eq!(vendors.len(), 9);
+    }
+
+    #[test]
+    fn test_v1_range_encoding_multiple_entries() {
+        // Two entries: single vendor 2 and range 7-9
+        let mut data = vec![0u8; 48];
+
+        set_bits(&mut data, 0, 6, 1); // version 1
+        set_bit(&mut data, 152, true); // purpose 1
+        set_bits(&mut data, 176, 16, 20); // max vendor id = 20
+        set_bit(&mut data, 192, true); // range encoding
+        set_bit(&mut data, 193, false); // default consent = false
+        set_bits(&mut data, 194, 12, 2); // num entries = 2
+
+        // Entry 1: single vendor 2
+        set_bit(&mut data, 206, false); // is_range = 0
+        set_bits(&mut data, 207, 16, 2); // vendor 2
+        // After entry 1: offset = 206 + 1 + 16 = 223
+
+        // Entry 2: range 7-9
+        set_bit(&mut data, 223, true); // is_range = 1
+        set_bits(&mut data, 224, 16, 7); // start = 7
+        set_bits(&mut data, 240, 16, 9); // end = 9
+
+        let vendors = extract_vendor_consents_v1(&data);
+        assert!(vendors.contains(&2));
+        assert!(vendors.contains(&7));
+        assert!(vendors.contains(&8));
+        assert!(vendors.contains(&9));
+        assert!(!vendors.contains(&1));
+        assert!(!vendors.contains(&3));
+        assert!(!vendors.contains(&6));
+        assert!(!vendors.contains(&10));
+        assert_eq!(vendors.len(), 4);
+    }
+
+    #[test]
+    fn test_v2_range_encoding_single_vendor() {
+        // Build a TCF v2 consent string with range encoding
+        let mut data = vec![0u8; 48];
+
+        set_bits(&mut data, 0, 6, 2); // version 2
+        set_bit(&mut data, 152, true); // purpose 1
+        // Max vendor ID at bits 260..276 = 20
+        set_bits(&mut data, 260, 16, 20);
+        // Encoding type at bit 276 = 1 (range)
+        set_bit(&mut data, 276, true);
+        // Num entries at bits 277..289 = 1
+        set_bits(&mut data, 277, 12, 1);
+        // Entry: is_range = 0 at bit 289
+        set_bit(&mut data, 289, false);
+        // Vendor ID = 7 at bits 290..306
+        set_bits(&mut data, 290, 16, 7);
+
+        let vendors = extract_vendor_consents_v2(&data);
+        assert!(vendors.contains(&7), "vendor 7 should have consent");
+        assert!(!vendors.contains(&1));
+        assert_eq!(vendors.len(), 1);
+    }
+
+    #[test]
+    fn test_v2_range_encoding_range_entry() {
+        // Build a TCF v2 consent string with a range entry (vendors 3-8)
+        let mut data = vec![0u8; 48];
+
+        set_bits(&mut data, 0, 6, 2); // version 2
+        set_bit(&mut data, 152, true); // purpose 1
+        set_bits(&mut data, 260, 16, 20); // max vendor id = 20
+        set_bit(&mut data, 276, true); // range encoding
+        set_bits(&mut data, 277, 12, 1); // num entries = 1
+        // Entry: is_range = 1
+        set_bit(&mut data, 289, true);
+        set_bits(&mut data, 290, 16, 3); // start = 3
+        set_bits(&mut data, 306, 16, 8); // end = 8
+
+        let vendors = extract_vendor_consents_v2(&data);
+        for vid in 3..=8 {
+            assert!(vendors.contains(&vid), "vendor {} should have consent", vid);
+        }
+        assert!(!vendors.contains(&2));
+        assert!(!vendors.contains(&9));
+        assert_eq!(vendors.len(), 6);
+    }
+
+    #[test]
+    fn test_v2_range_encoding_multiple_entries() {
+        // Two entries: single vendor 1 and range 10-12
+        let mut data = vec![0u8; 52];
+
+        set_bits(&mut data, 0, 6, 2); // version 2
+        set_bit(&mut data, 152, true); // purpose 1
+        set_bits(&mut data, 260, 16, 20); // max vendor id = 20
+        set_bit(&mut data, 276, true); // range encoding
+        set_bits(&mut data, 277, 12, 2); // num entries = 2
+
+        // Entry 1: single vendor 1
+        set_bit(&mut data, 289, false);
+        set_bits(&mut data, 290, 16, 1);
+        // After: 289 + 1 + 16 = 306
+
+        // Entry 2: range 10-12
+        set_bit(&mut data, 306, true);
+        set_bits(&mut data, 307, 16, 10);
+        set_bits(&mut data, 323, 16, 12);
+
+        let vendors = extract_vendor_consents_v2(&data);
+        assert!(vendors.contains(&1));
+        assert!(vendors.contains(&10));
+        assert!(vendors.contains(&11));
+        assert!(vendors.contains(&12));
+        assert!(!vendors.contains(&2));
+        assert!(!vendors.contains(&9));
+        assert!(!vendors.contains(&13));
+        assert_eq!(vendors.len(), 4);
+    }
+
+    #[test]
+    fn test_parse_range_entries_empty() {
+        // Zero entries should produce no vendors
+        let mut data = vec![0u8; 30];
+        let mut vendors = HashSet::new();
+        // num_entries = 0
+        set_bits(&mut data, 0, 12, 0);
+        parse_range_entries(&data, 0, 100, false, &mut vendors);
+        assert!(vendors.is_empty());
+    }
+
+    #[test]
+    fn test_v1_full_parse_range_encoding() {
+        // Build a complete TCF v1 byte array and parse via TcfConsent::parse_v1
+        let mut data = vec![0u8; 40];
+
+        set_bits(&mut data, 0, 6, 1); // version
+        set_bit(&mut data, 152, true); // purpose 1
+        set_bit(&mut data, 153, true); // purpose 2
+        set_bits(&mut data, 176, 16, 10); // max vendor = 10
+        set_bit(&mut data, 192, true); // range encoding
+        set_bit(&mut data, 193, false); // default consent = false
+        set_bits(&mut data, 194, 12, 1); // 1 entry
+        set_bit(&mut data, 206, true); // is_range = 1
+        set_bits(&mut data, 207, 16, 4); // start = 4
+        set_bits(&mut data, 223, 16, 6); // end = 6
+
+        let tcf = TcfConsent::parse_v1(&data).unwrap();
+        assert_eq!(tcf.version, 1);
+        assert!(tcf.has_purpose_consent(1));
+        assert!(tcf.has_purpose_consent(2));
+        assert!(tcf.has_vendor_consent(4));
+        assert!(tcf.has_vendor_consent(5));
+        assert!(tcf.has_vendor_consent(6));
+        assert!(!tcf.has_vendor_consent(3));
+        assert!(!tcf.has_vendor_consent(7));
     }
 }
