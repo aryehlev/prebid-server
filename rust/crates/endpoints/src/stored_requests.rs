@@ -459,6 +459,229 @@ impl Default for CategoryFetcher {
 }
 
 // ---------------------------------------------------------------------------
+// Database fetcher stub
+// ---------------------------------------------------------------------------
+
+/// Database-backed stored request fetcher.
+///
+/// Queries stored requests from a SQL database (PostgreSQL compatible).
+/// Uses parameterized queries for the requests and imps tables.
+pub struct DatabaseFetcher {
+    /// Connection string for the database.
+    pub connection_string: String,
+    /// SQL query template for fetching requests. Must have a $1 placeholder.
+    pub request_query: String,
+    /// SQL query template for fetching imps. Must have a $1 placeholder.
+    pub imp_query: String,
+}
+
+impl DatabaseFetcher {
+    pub fn new(connection_string: String, request_query: String, imp_query: String) -> Self {
+        Self {
+            connection_string,
+            request_query,
+            imp_query,
+        }
+    }
+
+    /// Fetch stored requests by IDs. Returns found entries and missing IDs.
+    pub async fn fetch_requests(
+        &self,
+        ids: &[String],
+    ) -> Result<(HashMap<String, serde_json::Value>, Vec<String>), StoredRequestError> {
+        // TODO: implement actual database query using sqlx or similar
+        // For now return all as missing
+        Ok((HashMap::new(), ids.to_vec()))
+    }
+
+    /// Fetch stored imps by IDs.
+    pub async fn fetch_imps(
+        &self,
+        ids: &[String],
+    ) -> Result<(HashMap<String, serde_json::Value>, Vec<String>), StoredRequestError> {
+        Ok((HashMap::new(), ids.to_vec()))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Polling updater — periodically refreshes stored request cache
+// ---------------------------------------------------------------------------
+
+/// Periodically fetches updates from an HTTP endpoint and refreshes the
+/// stored request cache. Mirrors Go stored_requests/events/http/http.go.
+pub struct PollingUpdater {
+    /// HTTP endpoint to poll for updates.
+    pub endpoint: String,
+    /// Poll interval in seconds.
+    pub interval_secs: u64,
+    /// Timestamp of the last successful fetch.
+    pub last_updated: std::sync::RwLock<Option<std::time::Instant>>,
+    client: reqwest::Client,
+}
+
+impl PollingUpdater {
+    pub fn new(endpoint: String, interval_secs: u64) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap_or_default();
+        Self {
+            endpoint,
+            interval_secs,
+            last_updated: std::sync::RwLock::new(None),
+            client,
+        }
+    }
+
+    /// Fetch updates since the last poll. Returns request and imp changes.
+    pub async fn fetch_updates(&self) -> Result<HttpFetchResult, StoredRequestError> {
+        let url = if let Ok(guard) = self.last_updated.read() {
+            if let Some(last) = *guard {
+                format!("{}?last-modified={}", self.endpoint, last.elapsed().as_secs())
+            } else {
+                self.endpoint.clone()
+            }
+        } else {
+            self.endpoint.clone()
+        };
+
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| StoredRequestError::HttpError(e.to_string()))?;
+
+        if !resp.status().is_success() {
+            return Err(StoredRequestError::HttpError(format!(
+                "HTTP {}", resp.status()
+            )));
+        }
+
+        let result: HttpFetchResult = resp
+            .json()
+            .await
+            .map_err(|e| StoredRequestError::ParseError(e.to_string()))?;
+
+        // Update last_updated timestamp
+        if let Ok(mut guard) = self.last_updated.write() {
+            *guard = Some(std::time::Instant::now());
+        }
+
+        Ok(result)
+    }
+
+    /// Apply updates to a `StoredRequestFetcher` by merging fetched data.
+    pub fn apply_updates(fetcher: &mut StoredRequestFetcher, updates: &HttpFetchResult) {
+        for (id, val) in &updates.requests {
+            fetcher.requests.insert(id.clone(), val.clone());
+        }
+        for (id, val) in &updates.imps {
+            fetcher.imps.insert(id.clone(), val.clone());
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ComposedFetcher — chains multiple backends with async support
+// ---------------------------------------------------------------------------
+
+/// A composed fetcher that checks cache first, then filesystem, then HTTP.
+/// This replaces MultiFetcher with proper async and fallback semantics.
+pub struct ComposedFetcher {
+    /// Fast in-memory cache (checked first).
+    pub cache: Option<CachingFetcher>,
+    /// Filesystem fetcher (checked second).
+    pub filesystem: Option<StoredRequestFetcher>,
+    /// HTTP fetcher (checked last, async).
+    pub http: Option<HttpStoredRequestFetcher>,
+}
+
+impl ComposedFetcher {
+    pub fn new() -> Self {
+        Self {
+            cache: None,
+            filesystem: None,
+            http: None,
+        }
+    }
+
+    pub fn with_cache(mut self, cache: CachingFetcher) -> Self {
+        self.cache = Some(cache);
+        self
+    }
+
+    pub fn with_filesystem(mut self, fs: StoredRequestFetcher) -> Self {
+        self.filesystem = Some(fs);
+        self
+    }
+
+    pub fn with_http(mut self, http: HttpStoredRequestFetcher) -> Self {
+        self.http = Some(http);
+        self
+    }
+
+    /// Fetch a stored request by ID, trying each backend in order.
+    pub async fn fetch_request(&self, id: &str) -> Option<serde_json::Value> {
+        // Try cache first
+        if let Some(cache) = &self.cache {
+            if let Some(val) = cache.fetch_cached(id) {
+                return Some(val);
+            }
+        }
+
+        // Try filesystem
+        if let Some(fs) = &self.filesystem {
+            if let Some(val) = fs.fetch(id) {
+                // Populate cache on hit
+                if let Some(cache) = &self.cache {
+                    if let Ok(mut c) = cache.request_cache.write() {
+                        c.insert(id.to_string(), (val.clone(), std::time::Instant::now()));
+                    }
+                }
+                return Some(val.clone());
+            }
+        }
+
+        // Try HTTP
+        if let Some(http) = &self.http {
+            if let Ok(result) = http.fetch_by_ids(&[id.to_string()], &[]).await {
+                if let Some(val) = result.requests.get(id) {
+                    return Some(val.clone());
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Fetch a stored imp by ID, trying each backend in order.
+    pub async fn fetch_imp(&self, id: &str) -> Option<serde_json::Value> {
+        if let Some(fs) = &self.filesystem {
+            if let Some(val) = fs.fetch_imp(id) {
+                return Some(val.clone());
+            }
+        }
+
+        if let Some(http) = &self.http {
+            if let Ok(result) = http.fetch_by_ids(&[], &[id.to_string()]).await {
+                if let Some(val) = result.imps.get(id) {
+                    return Some(val.clone());
+                }
+            }
+        }
+
+        None
+    }
+}
+
+impl Default for ComposedFetcher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

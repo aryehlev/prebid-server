@@ -504,6 +504,187 @@ impl GdprPermissions for ConsentPermissions {
 }
 
 // ---------------------------------------------------------------------------
+// PurposeEnforcer — per-purpose enforcement (mirrors Go purpose_enforcer.go)
+// ---------------------------------------------------------------------------
+
+/// Per-purpose enforcement configuration.
+#[derive(Debug, Clone)]
+pub struct PurposeConfig {
+    /// Whether to check the purpose consent bit.
+    pub enforce_purpose: bool,
+    /// Whether to check the vendor consent bit for this purpose.
+    pub enforce_vendors: bool,
+    /// Vendors exempt from this purpose's enforcement.
+    pub vendor_exceptions: HashSet<u32>,
+    /// Enforcement algorithm: "basic" (consent only) or "full" (consent + LI).
+    pub enforce_algo: String,
+}
+
+impl Default for PurposeConfig {
+    fn default() -> Self {
+        Self {
+            enforce_purpose: true,
+            enforce_vendors: true,
+            vendor_exceptions: HashSet::new(),
+            enforce_algo: "basic".to_string(),
+        }
+    }
+}
+
+/// Per-purpose enforcer that checks consent for each of the 10 TCF purposes.
+/// Mirrors Go's `gdpr/purpose_enforcer.go`.
+#[derive(Debug, Clone)]
+pub struct PurposeEnforcer {
+    /// Configuration for each purpose (1-10).
+    pub purposes: [PurposeConfig; 10],
+}
+
+impl Default for PurposeEnforcer {
+    fn default() -> Self {
+        Self {
+            purposes: std::array::from_fn(|_| PurposeConfig::default()),
+        }
+    }
+}
+
+impl PurposeEnforcer {
+    /// Check whether a vendor has consent for a specific purpose.
+    pub fn is_allowed(
+        &self,
+        purpose_id: u32,
+        consent: &TcfConsent,
+        vendor_id: u32,
+    ) -> bool {
+        if purpose_id == 0 || purpose_id > 10 {
+            return false;
+        }
+        let cfg = &self.purposes[(purpose_id - 1) as usize];
+
+        // Check vendor exceptions first
+        if cfg.vendor_exceptions.contains(&vendor_id) {
+            return true;
+        }
+
+        let purpose_ok = if cfg.enforce_purpose {
+            consent.has_purpose_consent(purpose_id)
+        } else {
+            true
+        };
+
+        let vendor_ok = if cfg.enforce_vendors {
+            consent.has_vendor_consent(vendor_id)
+        } else {
+            true
+        };
+
+        purpose_ok && vendor_ok
+    }
+
+    /// Check if a vendor is allowed for all required purposes.
+    pub fn is_allowed_for_purposes(
+        &self,
+        purpose_ids: &[u32],
+        consent: &TcfConsent,
+        vendor_id: u32,
+    ) -> bool {
+        purpose_ids.iter().all(|&pid| self.is_allowed(pid, consent, vendor_id))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// VendorList — vendor-to-purpose mapping (mirrors Go vendorlist-fetching.go)
+// ---------------------------------------------------------------------------
+
+/// A vendor entry from the GVL (Global Vendor List).
+#[derive(Debug, Clone, Default)]
+pub struct VendorInfo {
+    pub id: u32,
+    /// Purposes for which this vendor has declared consent.
+    pub purposes: HashSet<u32>,
+    /// Legitimate interest purposes.
+    pub leg_int_purposes: HashSet<u32>,
+    /// Special purposes.
+    pub special_purposes: HashSet<u32>,
+    /// Flexible purposes (can be consent or LI).
+    pub flexible_purposes: HashSet<u32>,
+}
+
+/// In-memory vendor list (typically loaded from GVL JSON).
+#[derive(Debug, Clone, Default)]
+pub struct VendorList {
+    pub version: u32,
+    pub vendors: std::collections::HashMap<u32, VendorInfo>,
+}
+
+impl VendorList {
+    /// Parse a vendor list from GVL JSON.
+    pub fn from_json(data: &[u8]) -> Option<Self> {
+        let val: serde_json::Value = serde_json::from_slice(data).ok()?;
+        let version = val.get("vendorListVersion")?.as_u64()? as u32;
+        let vendors_obj = val.get("vendors")?.as_object()?;
+
+        let mut vendors = std::collections::HashMap::new();
+        for (id_str, vendor_val) in vendors_obj {
+            let id: u32 = id_str.parse().ok()?;
+            let purposes: HashSet<u32> = vendor_val
+                .get("purposes")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_u64().map(|n| n as u32)).collect())
+                .unwrap_or_default();
+            let leg_int: HashSet<u32> = vendor_val
+                .get("legIntPurposes")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_u64().map(|n| n as u32)).collect())
+                .unwrap_or_default();
+            let special: HashSet<u32> = vendor_val
+                .get("specialPurposes")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_u64().map(|n| n as u32)).collect())
+                .unwrap_or_default();
+            let flexible: HashSet<u32> = vendor_val
+                .get("flexiblePurposes")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_u64().map(|n| n as u32)).collect())
+                .unwrap_or_default();
+
+            vendors.insert(id, VendorInfo {
+                id,
+                purposes,
+                leg_int_purposes: leg_int,
+                special_purposes: special,
+                flexible_purposes: flexible,
+            });
+        }
+
+        Some(VendorList { version, vendors })
+    }
+
+    /// Check if a vendor declares a given purpose.
+    pub fn vendor_has_purpose(&self, vendor_id: u32, purpose_id: u32) -> bool {
+        self.vendors
+            .get(&vendor_id)
+            .map_or(false, |v| v.purposes.contains(&purpose_id))
+    }
+}
+
+/// Trait for fetching vendor lists. Implementations may use HTTP, filesystem, etc.
+pub trait VendorListFetcher: Send + Sync {
+    /// Fetch the vendor list for a specific TCF version. Returns None on failure.
+    fn fetch(&self, tcf_version: u32) -> Option<VendorList>;
+}
+
+/// A simple in-memory vendor list fetcher with a cached list.
+pub struct StaticVendorListFetcher {
+    pub list: VendorList,
+}
+
+impl VendorListFetcher for StaticVendorListFetcher {
+    fn fetch(&self, _tcf_version: u32) -> Option<VendorList> {
+        Some(self.list.clone())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Legacy public helpers (kept for backward compatibility with existing callers)
 // ---------------------------------------------------------------------------
 

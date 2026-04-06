@@ -441,6 +441,209 @@ impl AnalyticsBackend for FileLogger {
 }
 
 // ---------------------------------------------------------------------------
+// HttpAnalytics — batch events and POST to HTTP endpoint
+// ---------------------------------------------------------------------------
+
+/// HTTP analytics backend that batches events and POSTs them to a configurable
+/// endpoint. Mirrors Go analytics/pubstack/pubstack_module.go pattern.
+pub struct HttpAnalytics {
+    sender: mpsc::UnboundedSender<HttpAnalyticsMessage>,
+}
+
+enum HttpAnalyticsMessage {
+    Event(String),
+    Shutdown(tokio::sync::oneshot::Sender<()>),
+}
+
+/// Configuration for the HTTP analytics backend.
+#[derive(Debug, Clone)]
+pub struct HttpAnalyticsConfig {
+    /// HTTP endpoint to POST events to.
+    pub endpoint: String,
+    /// Maximum number of events to batch before sending.
+    pub batch_size: usize,
+    /// Maximum time (ms) to wait before flushing a partial batch.
+    pub flush_interval_ms: u64,
+    /// HTTP request timeout in ms.
+    pub timeout_ms: u64,
+}
+
+impl Default for HttpAnalyticsConfig {
+    fn default() -> Self {
+        Self {
+            endpoint: String::new(),
+            batch_size: 100,
+            flush_interval_ms: 5000,
+            timeout_ms: 10000,
+        }
+    }
+}
+
+impl HttpAnalytics {
+    /// Create a new HTTP analytics backend. Spawns a background task for batching.
+    pub fn new(config: HttpAnalyticsConfig) -> Self {
+        let (tx, mut rx) = mpsc::unbounded_channel::<HttpAnalyticsMessage>();
+
+        tokio::spawn(async move {
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_millis(config.timeout_ms))
+                .build()
+                .unwrap_or_default();
+
+            let mut batch: Vec<String> = Vec::with_capacity(config.batch_size);
+            let flush_interval = tokio::time::Duration::from_millis(config.flush_interval_ms);
+            let mut timer = tokio::time::interval(flush_interval);
+
+            loop {
+                tokio::select! {
+                    msg = rx.recv() => {
+                        match msg {
+                            Some(HttpAnalyticsMessage::Event(json)) => {
+                                batch.push(json);
+                                if batch.len() >= config.batch_size {
+                                    Self::flush_batch(&client, &config.endpoint, &mut batch).await;
+                                }
+                            }
+                            Some(HttpAnalyticsMessage::Shutdown(done)) => {
+                                if !batch.is_empty() {
+                                    Self::flush_batch(&client, &config.endpoint, &mut batch).await;
+                                }
+                                let _ = done.send(());
+                                break;
+                            }
+                            None => break,
+                        }
+                    }
+                    _ = timer.tick() => {
+                        if !batch.is_empty() {
+                            Self::flush_batch(&client, &config.endpoint, &mut batch).await;
+                        }
+                    }
+                }
+            }
+        });
+
+        Self { sender: tx }
+    }
+
+    async fn flush_batch(client: &reqwest::Client, endpoint: &str, batch: &mut Vec<String>) {
+        if endpoint.is_empty() || batch.is_empty() {
+            batch.clear();
+            return;
+        }
+        let payload = format!("[{}]", batch.join(","));
+        batch.clear();
+
+        // Retry with backoff
+        for attempt in 0..3u32 {
+            match client.post(endpoint).body(payload.clone()).send().await {
+                Ok(resp) if resp.status().is_success() => return,
+                Ok(resp) => {
+                    tracing::warn!(
+                        status = %resp.status(), attempt, "HTTP analytics flush failed"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, attempt, "HTTP analytics flush error");
+                }
+            }
+            if attempt < 2 {
+                tokio::time::sleep(tokio::time::Duration::from_millis(100 * (1 << attempt))).await;
+            }
+        }
+    }
+
+    fn enqueue<T: Serialize>(&self, request_type: RequestType, payload: &T) {
+        let envelope = LogEnvelope { request_type, payload };
+        match serde_json::to_string(&envelope) {
+            Ok(json) => {
+                let _ = self.sender.send(HttpAnalyticsMessage::Event(json));
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "failed to serialize analytics event for HTTP");
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl AnalyticsModule for HttpAnalytics {
+    async fn log_auction_object(&self, ao: &AuctionObject) {
+        self.enqueue(RequestType::Auction, ao);
+    }
+    async fn log_video_object(&self, vo: &VideoObject) {
+        self.enqueue(RequestType::Video, vo);
+    }
+    async fn log_cookie_sync_object(&self, cso: &CookieSyncObject) {
+        self.enqueue(RequestType::CookieSync, cso);
+    }
+    async fn log_setuid_object(&self, so: &SetUIDObject) {
+        self.enqueue(RequestType::SetUid, so);
+    }
+    async fn log_amp_object(&self, ao: &AmpObject) {
+        self.enqueue(RequestType::Amp, ao);
+    }
+    async fn log_notification_event(&self, ne: &NotificationEvent) {
+        self.enqueue(RequestType::NotificationEvent, ne);
+    }
+    async fn shutdown(&self) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if self.sender.send(HttpAnalyticsMessage::Shutdown(tx)).is_ok() {
+            let _ = rx.await;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// LogAnalytics — structured logging backend using tracing
+// ---------------------------------------------------------------------------
+
+/// A simple analytics backend that emits events using the `tracing` crate.
+pub struct LogAnalytics {
+    /// Log level to use (e.g. "info", "debug").
+    pub level: String,
+}
+
+impl LogAnalytics {
+    pub fn new(level: &str) -> Self {
+        Self { level: level.to_string() }
+    }
+
+    fn log_json<T: Serialize>(&self, request_type: RequestType, payload: &T) {
+        if let Ok(json) = serde_json::to_string(payload) {
+            match self.level.as_str() {
+                "debug" => tracing::debug!(request_type = ?request_type, payload = %json, "analytics"),
+                "trace" => tracing::trace!(request_type = ?request_type, payload = %json, "analytics"),
+                _ => tracing::info!(request_type = ?request_type, payload = %json, "analytics"),
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl AnalyticsModule for LogAnalytics {
+    async fn log_auction_object(&self, ao: &AuctionObject) {
+        self.log_json(RequestType::Auction, ao);
+    }
+    async fn log_video_object(&self, vo: &VideoObject) {
+        self.log_json(RequestType::Video, vo);
+    }
+    async fn log_cookie_sync_object(&self, cso: &CookieSyncObject) {
+        self.log_json(RequestType::CookieSync, cso);
+    }
+    async fn log_setuid_object(&self, so: &SetUIDObject) {
+        self.log_json(RequestType::SetUid, so);
+    }
+    async fn log_amp_object(&self, ao: &AmpObject) {
+        self.log_json(RequestType::Amp, ao);
+    }
+    async fn log_notification_event(&self, ne: &NotificationEvent) {
+        self.log_json(RequestType::NotificationEvent, ne);
+    }
+    async fn shutdown(&self) {}
+}
+
+// ---------------------------------------------------------------------------
 // LogAggregator
 // ---------------------------------------------------------------------------
 

@@ -105,6 +105,174 @@ pub fn check_privacy_for_bidder(config: &AuctionPrivacyConfig, _bidder: &str) ->
     PrivacyResult::Allow
 }
 
+// ---------------------------------------------------------------------------
+// CcpaPolicy — CCPA/US Privacy string enforcement (mirrors Go privacy/ccpa/)
+// ---------------------------------------------------------------------------
+
+/// Parsed CCPA/US Privacy policy from the `regs.us_privacy` string.
+///
+/// The US Privacy string has 4 characters: Version, Notice, OptOutSale, LSPA.
+/// Format: `1YNN` where position 3 (index 2) is the opt-out-of-sale flag.
+#[derive(Debug, Clone, Default)]
+pub struct CcpaPolicy {
+    /// Full US Privacy string (e.g. "1YNN").
+    pub consent_string: String,
+    /// Whether the user opted out of sale (third char == 'Y').
+    pub opt_out_sale: bool,
+}
+
+impl CcpaPolicy {
+    /// Parse a US Privacy string.
+    pub fn parse(us_privacy: &str) -> Self {
+        let chars: Vec<char> = us_privacy.chars().collect();
+        let opt_out = chars.len() >= 3 && chars[2] == 'Y';
+        Self {
+            consent_string: us_privacy.to_string(),
+            opt_out_sale: opt_out,
+        }
+    }
+
+    /// Whether the request should be blocked under CCPA.
+    pub fn should_block(&self) -> bool {
+        self.opt_out_sale
+    }
+}
+
+// ---------------------------------------------------------------------------
+// LmtPolicy — Limit Ad Tracking enforcement (mirrors Go privacy/lmt/)
+// ---------------------------------------------------------------------------
+
+/// LMT (Limit Ad Tracking) policy from `device.lmt`.
+#[derive(Debug, Clone, Default)]
+pub struct LmtPolicy {
+    /// The raw LMT value from device.lmt.
+    pub lmt: Option<i32>,
+}
+
+impl LmtPolicy {
+    pub fn new(lmt: Option<i32>) -> Self {
+        Self { lmt }
+    }
+
+    /// Whether LMT is enabled (device.lmt == 1).
+    pub fn is_enabled(&self) -> bool {
+        self.lmt == Some(1)
+    }
+
+    /// Whether the request should be blocked under LMT.
+    pub fn should_block(&self) -> bool {
+        self.is_enabled()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ActivityControl — activity-based privacy (mirrors Go privacy/activitycontrol.go)
+// ---------------------------------------------------------------------------
+
+/// Activity types that can be controlled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Activity {
+    SyncUser,
+    FetchBids,
+    EnrichUserFPD,
+    ReportAnalytics,
+    TransmitUserFPD,
+    TransmitPreciseGeo,
+    TransmitUniqueIds,
+    TransmitTid,
+}
+
+/// Result of an activity control check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActivityResult {
+    Allow,
+    Deny,
+    Abstain,
+}
+
+/// A component (bidder, analytics, etc.) that is subject to activity rules.
+#[derive(Debug, Clone)]
+pub struct ActivityComponent {
+    pub component_type: String,  // "bidder", "analytics", "rtd"
+    pub component_name: String,  // e.g. "appnexus"
+}
+
+/// A single activity rule with conditions and an allow/deny result.
+#[derive(Debug, Clone)]
+pub struct ActivityRule {
+    /// Whether this rule allows or denies the activity.
+    pub allow: bool,
+    /// Conditions that must match for this rule to apply.
+    pub conditions: Vec<ActivityCondition>,
+}
+
+/// A condition within an activity rule.
+#[derive(Debug, Clone)]
+pub struct ActivityCondition {
+    /// Component names that match (empty = match all).
+    pub component_name: Vec<String>,
+    /// Component types that match (empty = match all).
+    pub component_type: Vec<String>,
+}
+
+impl ActivityCondition {
+    /// Check if a component matches this condition.
+    pub fn matches(&self, component: &ActivityComponent) -> bool {
+        let name_ok = self.component_name.is_empty()
+            || self.component_name.contains(&component.component_name);
+        let type_ok = self.component_type.is_empty()
+            || self.component_type.contains(&component.component_type);
+        name_ok && type_ok
+    }
+}
+
+/// Activity control configuration for a specific activity.
+#[derive(Debug, Clone, Default)]
+pub struct ActivityConfig {
+    /// Default result when no rules match.
+    pub default_result: bool,
+    /// Ordered rules evaluated top-to-bottom.
+    pub rules: Vec<ActivityRule>,
+}
+
+impl ActivityConfig {
+    /// Evaluate whether the activity is allowed for the given component.
+    pub fn evaluate(&self, component: &ActivityComponent) -> ActivityResult {
+        for rule in &self.rules {
+            let matches = rule.conditions.is_empty()
+                || rule.conditions.iter().any(|c| c.matches(component));
+            if matches {
+                return if rule.allow {
+                    ActivityResult::Allow
+                } else {
+                    ActivityResult::Deny
+                };
+            }
+        }
+        if self.default_result {
+            ActivityResult::Allow
+        } else {
+            ActivityResult::Abstain
+        }
+    }
+}
+
+/// Full activity control map for all activities.
+#[derive(Debug, Clone, Default)]
+pub struct ActivityControl {
+    pub activities: std::collections::HashMap<Activity, ActivityConfig>,
+}
+
+impl ActivityControl {
+    /// Check if an activity is allowed for a component.
+    pub fn is_allowed(&self, activity: Activity, component: &ActivityComponent) -> bool {
+        match self.activities.get(&activity) {
+            Some(config) => config.evaluate(component) != ActivityResult::Deny,
+            None => true, // No config = allowed
+        }
+    }
+}
+
 /// Sanitize a `BidRequest` for COPPA compliance by stripping user and device
 /// identifiers before the request is forwarded to bidders.
 ///
