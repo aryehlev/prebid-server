@@ -3,6 +3,10 @@ name = "pbs-endpoints"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "parity_auction"
+path = "src/bin/parity_auction.rs"
+
 [dependencies]
 axum = { workspace = true }
 serde = { workspace = true }
@@ -24,8 +28,8 @@ async-trait = { workspace = true }
 reqwest = { workspace = true }
 dashmap = { workspace = true }
 futures = { workspace = true }
+tower = { version = "0.4", features = ["util"] }
 
 [dev-dependencies]
-tower = { version = "0.4", features = ["util"] }
 tokio = { workspace = true }
 pbs-config = { path = "../config" }

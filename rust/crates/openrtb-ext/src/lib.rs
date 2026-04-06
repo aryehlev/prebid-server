@@ -326,6 +326,20 @@ impl Default for BidType {
     }
 }
 
+impl BidType {
+    /// Convert an OpenRTB mtype integer to a BidType.
+    /// mtype: 1=banner, 2=video, 3=audio, 4=native
+    pub fn from_mtype(mtype: i32) -> Self {
+        match mtype {
+            1 => BidType::Banner,
+            2 => BidType::Video,
+            3 => BidType::Audio,
+            4 => BidType::Native,
+            _ => BidType::Banner,
+        }
+    }
+}
+
 impl std::fmt::Display for BidType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

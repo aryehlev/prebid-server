@@ -535,6 +535,112 @@ fn validate_bids(bids: Vec<pbs_adapters::TypedBid>, imps: &[openrtb::Imp]) -> Ve
         .collect()
 }
 
+/// Split impressions per bidder, extracting each bidder's params from
+/// `imp.ext.prebid.bidder.<name>` and creating sanitized imp copies where
+/// the ext only contains that bidder's params.
+///
+/// This mirrors Go `exchange/utils.go` `splitImps()`.
+///
+/// For each imp:
+///   1. Parse `imp.ext.prebid.bidder` to find which bidders have params
+///   2. For each bidder found, create a copy of the imp with sanitized ext:
+///      - Remove `imp.ext.prebid.bidder` (all bidder params)
+///      - Set `imp.ext.bidder` to only this bidder's params
+///      - Preserve other imp.ext fields (e.g. `data`, `gpid`, `tid`)
+///      - Preserve allowed prebid fields (`is_rewarded_inventory`, `options`)
+fn split_imps_for_bidders(
+    imps: &[openrtb::Imp],
+    known_bidders: &[String],
+) -> HashMap<String, Vec<openrtb::Imp>> {
+    let mut bidder_imps: HashMap<String, Vec<openrtb::Imp>> = HashMap::new();
+
+    for imp in imps {
+        let ext = match &imp.ext {
+            Some(ext) => ext,
+            None => continue,
+        };
+
+        // Extract bidder params from imp.ext.prebid.bidder.<name>
+        let prebid_bidder_map: Option<&serde_json::Map<String, serde_json::Value>> = ext
+            .get("prebid")
+            .and_then(|p| p.get("bidder"))
+            .and_then(|b| b.as_object());
+
+        // Also check for top-level imp.ext.<bidder> (legacy format)
+        let ext_obj = ext.as_object();
+
+        // Collect bidder names and their params for this imp
+        let mut bidder_params: Vec<(String, serde_json::Value)> = Vec::new();
+
+        if let Some(bidder_map) = prebid_bidder_map {
+            for (bidder_name, params) in bidder_map {
+                bidder_params.push((bidder_name.clone(), params.clone()));
+            }
+        }
+
+        // Also pick up legacy top-level ext.<bidder> format
+        if let Some(ext_map) = ext_obj {
+            for (key, val) in ext_map {
+                if key == "prebid" || key == "data" || key == "gpid" || key == "tid"
+                    || key == "skadn" || key == "context"
+                {
+                    continue; // skip known non-bidder keys
+                }
+                if known_bidders.contains(key) {
+                    // Only add if not already found in prebid.bidder
+                    if !bidder_params.iter().any(|(n, _)| n == key) {
+                        bidder_params.push((key.clone(), val.clone()));
+                    }
+                }
+            }
+        }
+
+        for (bidder_name, params) in bidder_params {
+            let mut imp_copy = imp.clone();
+
+            // Build sanitized ext: keep non-bidder fields, set bidder key to this bidder's params only
+            let mut sanitized_ext = serde_json::Map::new();
+
+            if let Some(ext_map) = ext_obj {
+                // Copy non-bidder, non-prebid fields (e.g. data, gpid, tid, skadn, context)
+                for (key, val) in ext_map {
+                    if key == "prebid" {
+                        continue; // handled separately below
+                    }
+                    if known_bidders.contains(key) {
+                        continue; // skip other bidders' top-level params
+                    }
+                    sanitized_ext.insert(key.clone(), val.clone());
+                }
+            }
+
+            // Build sanitized prebid object: keep is_rewarded_inventory and options
+            if let Some(prebid) = ext.get("prebid") {
+                let mut sanitized_prebid = serde_json::Map::new();
+                for allowed_key in &["is_rewarded_inventory", "options"] {
+                    if let Some(val) = prebid.get(*allowed_key) {
+                        sanitized_prebid.insert(allowed_key.to_string(), val.clone());
+                    }
+                }
+                if !sanitized_prebid.is_empty() {
+                    sanitized_ext.insert(
+                        "prebid".to_string(),
+                        serde_json::Value::Object(sanitized_prebid),
+                    );
+                }
+            }
+
+            // Set the bidder key to this bidder's params
+            sanitized_ext.insert("bidder".to_string(), params);
+
+            imp_copy.ext = Some(serde_json::Value::Object(sanitized_ext));
+            bidder_imps.entry(bidder_name).or_default().push(imp_copy);
+        }
+    }
+
+    bidder_imps
+}
+
 /// Trait for fetching stored auction responses by ID.
 ///
 /// Implementors return a pre-built `BidResponse` JSON value for a given stored-response ID,
@@ -560,6 +666,10 @@ pub struct Exchange {
     pub aliases: HashMap<String, String>,
     /// Optional host-level SChain node to prepend to every outgoing request.
     pub schain_node: Option<openrtb::SupplyChainNode>,
+    /// Optional Prebid Cache client for caching bid creatives.
+    /// When configured and `req.ext.prebid.cache` is set, winning bids are
+    /// written to the cache and cache IDs are added to targeting.
+    pub cache_client: Option<Arc<dyn cache::CacheClient>>,
 }
 
 impl Exchange {
@@ -577,6 +687,7 @@ impl Exchange {
             stored_responses: None,
             aliases: HashMap::new(),
             schain_node: None,
+            cache_client: None,
         }
     }
 
@@ -701,6 +812,34 @@ impl Exchange {
             }
         }
 
+        // --- Stored bid responses (per-imp, per-bidder) ---
+        // Parse imp.ext.prebid.storedbidresponse entries. For each matching imp+bidder,
+        // inject stored bids directly instead of calling the adapter.
+        // Structure: imp.ext.prebid.storedbidresponse = [{"bidder": "appnexus", "id": "stored-resp-1"}, ...]
+        let mut stored_bid_responses: HashMap<String, HashMap<String, serde_json::Value>> = HashMap::new();
+        for imp in &bid_request.imp {
+            if let Some(entries) = imp.ext.as_ref()
+                .and_then(|e| e.get("prebid"))
+                .and_then(|p| p.get("storedbidresponse"))
+                .and_then(|s| s.as_array())
+            {
+                for entry in entries {
+                    let bidder = entry.get("bidder").and_then(|b| b.as_str()).unwrap_or("");
+                    let resp_id = entry.get("id").and_then(|i| i.as_str()).unwrap_or("");
+                    if !bidder.is_empty() && !resp_id.is_empty() {
+                        if let Some(fetcher) = &self.stored_responses {
+                            if let Some(stored_json) = fetcher.fetch(resp_id) {
+                                stored_bid_responses
+                                    .entry(bidder.to_string())
+                                    .or_default()
+                                    .insert(imp.id.clone(), stored_json.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Validate impression count
         if bid_request.imp.is_empty() {
             return Err(anyhow::anyhow!("request.imp must contain at least one impression"));
@@ -789,35 +928,22 @@ impl Exchange {
         // Extract unified privacy config (GDPR, CCPA, COPPA, LMT) from the request.
         let privacy_config = privacy::extract_privacy_config(bid_request);
 
-        // Determine which bidders are active for this request by inspecting imp.ext.
-        // This includes both canonical adapter names and configured alias names.
+        // Split impressions per bidder: extract imp.ext.prebid.bidder.<name> params
+        // and create sanitized imp copies where each bidder only sees its own params.
+        // This mirrors Go exchange/utils.go splitImps().
         let all_bidder_names: Vec<String> = {
             let mut names: Vec<String> = self.adapters.keys().cloned().collect();
             for alias_name in self.aliases.keys() {
-                names.push(alias_name.clone());
+                if !names.contains(alias_name) {
+                    names.push(alias_name.clone());
+                }
             }
             names
         };
 
-        let active_bidders: Vec<String> = all_bidder_names
-            .into_iter()
-            .filter(|name| {
-                bid_request.imp.iter().any(|imp| {
-                    if let Some(ext) = &imp.ext {
-                        // Support both `ext.<bidder>` and `ext.prebid.bidder.<bidder>` formats.
-                        ext.get(name.as_str()).is_some()
-                            || ext
-                                .get("prebid")
-                                .and_then(|p| p.get("bidder"))
-                                .and_then(|b| b.as_object())
-                                .map(|o| o.contains_key(name.as_str()))
-                                .unwrap_or(false)
-                    } else {
-                        false
-                    }
-                })
-            })
-            .collect();
+        let bidder_imps: HashMap<String, Vec<openrtb::Imp>> =
+            split_imps_for_bidders(&bid_request.imp, &all_bidder_names);
+        let active_bidders: Vec<String> = bidder_imps.keys().cloned().collect();
 
         // --- SChain: apply host node to each bidder request ---
         // Build a modified base request with the host schain node prepended if configured.
@@ -889,6 +1015,47 @@ impl Exchange {
                 continue;
             }
 
+            // --- Stored bid response short-circuit (per-imp, per-bidder) ---
+            // If this bidder has stored bid responses for any imps, inject them
+            // directly as BidderResults without calling the adapter.
+            if let Some(imp_responses) = stored_bid_responses.get(&bidder_name) {
+                let mut typed_bids: Vec<pbs_adapters::TypedBid> = Vec::new();
+                for (imp_id, stored_json) in imp_responses {
+                    // Parse stored response as array of SeatBid or a single BidResponse.
+                    if let Some(seat_bids) = stored_json.as_array() {
+                        for sb in seat_bids {
+                            if let Some(bids) = sb.get("bid").and_then(|b| b.as_array()) {
+                                for bid_val in bids {
+                                    if let Ok(mut bid) = serde_json::from_value::<openrtb::Bid>(bid_val.clone()) {
+                                        bid.impid = imp_id.clone();
+                                        let bid_type = openrtb_ext::BidType::from_mtype(bid.mtype.unwrap_or(0));
+                                        typed_bids.push(pbs_adapters::TypedBid::new(bid, bid_type));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if !typed_bids.is_empty() {
+                    // Push directly as a result — skip the adapter call for these imps.
+                    let name_clone = bidder_name.clone();
+                    join_set.spawn(async move {
+                        BidderResult {
+                            bidder_name: name_clone,
+                            response: Ok(BidderResponse {
+                                bids: typed_bids,
+                                currency: "USD".to_string(),
+                                fledge_auction_configs: Vec::new(),
+                            }),
+                            duration_ms: 0,
+                            http_calls: Vec::new(),
+                            timed_out: false,
+                        }
+                    });
+                    continue; // skip the live adapter call
+                }
+            }
+
             // Resolve alias: if bidder_name is an alias, look up the canonical adapter name.
             // The SeatBid in the response will use the original (alias) name.
             let canonical_name = self.aliases.get(&bidder_name)
@@ -919,6 +1086,12 @@ impl Exchange {
                     .as_ref()
                     .unwrap_or(bid_request)
                     .clone();
+
+                // Replace request imps with only this bidder's sanitized imps.
+                if let Some(bidder_specific_imps) = bidder_imps.get(&bidder_name) {
+                    req.imp = bidder_specific_imps.clone();
+                }
+
                 apply_fpd_for_bidder(&mut req, &bidder_name);
                 // COPPA sanitization: strip user/device identifiers for child-directed requests.
                 privacy::sanitize_request_for_coppa(&mut req);
@@ -1482,6 +1655,44 @@ impl Exchange {
                                         "unknown bid adjustment type; skipping"
                                     );
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- Cache bids (doCache equivalent) ---
+        // If req.ext.prebid.cache.bids is set and a cache client is configured,
+        // write winning bids to Prebid Cache and set hb_cache_id targeting keys.
+        let cache_bids_enabled = bid_request.ext.as_ref()
+            .and_then(|e| e.get("prebid"))
+            .and_then(|p| p.get("cache"))
+            .and_then(|c| c.get("bids"))
+            .is_some();
+
+        if cache_bids_enabled {
+            if let Some(cache) = &self.cache_client {
+                // Cache each winning bid.
+                for (imp_id, (_, bidder_name, _)) in &winners {
+                    // Find the winning bid's full data.
+                    let winning_bid = bidder_results.iter()
+                        .find(|(bn, _)| bn == bidder_name)
+                        .and_then(|(_, bids)| bids.iter().find(|b| &b.bid.impid == imp_id));
+
+                    if let Some(typed_bid) = winning_bid {
+                        let bid_json = serde_json::to_value(&typed_bid.bid).unwrap_or_default();
+                        if let Some(cache_id) = cache.put_json(&bid_json, 300) {
+                            let keys = targeting.entry(imp_id.clone()).or_default();
+                            keys.insert("hb_cache_id".to_string(), cache_id.clone());
+                            keys.insert(
+                                format!("hb_cache_id_{}", bidder_name),
+                                cache_id.clone(),
+                            );
+                            // Also provide the cache host/path for the winning bid.
+                            let cache_url = cache.get_url(&cache_id);
+                            if !cache_url.is_empty() {
+                                keys.insert("hb_cache_host".to_string(), cache_url.clone());
                             }
                         }
                     }
