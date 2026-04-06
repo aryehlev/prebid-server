@@ -294,17 +294,17 @@ compareWarnings(t, expectedBidResponse.Ext, actualBidResponse.Ext, "warnings.gen
 
 All claims in this research were verified or cited during this session. No user-confirmation assumptions are currently open.
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Should Phase 1 include only executable auction diffs, or should the matrix also ship placeholder rows for non-auction domains?**
    - What we know: The first working oracle slice must be the main auction flow, but the matrix must start at the full domain/surface level. [VERIFIED: /Users/aryehlev/Documents/prebid-server/.planning/phases/01-parity-oracle-and-coverage-matrix/01-CONTEXT.md]
-   - What's unclear: Whether non-auction domains need executable checks in Phase 1 or only explicit `not-yet-instrumented` rows.
-   - Recommendation: Ship all domain rows immediately, mark non-executable rows as `not-yet-instrumented`, and attach evidence links only for the auction-first slice. [VERIFIED: /Users/aryehlev/Documents/prebid-server/.planning/ROADMAP.md]
+   - Resolution: Phase 1 should ship all domain rows immediately, even though only the main auction flow has executable coverage at first.
+   - Decision: Mark the non-auction domains as `not-yet-instrumented` and attach evidence links only for the auction-first slice until later phases widen execution coverage. [VERIFIED: /Users/aryehlev/Documents/prebid-server/.planning/ROADMAP.md]
 
 2. **Should side-by-side execution stay in-process for Phase 1, or also expose a CLI mode?**
    - What we know: Both Go and Rust already support in-process execution seams. [VERIFIED: /Users/aryehlev/Documents/prebid-server/endpoints/openrtb2/auction_test.go] [VERIFIED: /Users/aryehlev/Documents/prebid-server/rust/crates/endpoints/src/lib.rs]
-   - What's unclear: Whether planners want a standalone command that produces artifacts outside the test runner.
-   - Recommendation: Build the core oracle as library code used by tests first, then add a thin CLI wrapper only if planning needs artifact generation outside `go test` or `cargo test`.
+   - Resolution: Phase 1 should keep side-by-side execution in-process and should not require a standalone CLI mode.
+   - Decision: Build the core oracle as library code used by tests first, then add a thin CLI wrapper only if later planning or execution requires artifact generation outside `go test` or `cargo test`.
 
 ## Environment Availability
 
