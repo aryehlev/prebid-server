@@ -609,6 +609,44 @@ pub struct ExtIncludeBrandCategory {
     pub translate_categories: Option<bool>,
 }
 
+/// AdjustmentsByDealID maps a dealID to a slice of bid adjustments
+pub type AdjustmentsByDealID = HashMap<String, Vec<AdjustmentEntry>>;
+
+/// MediaTypeAdjustments defines per-media-type bid adjustments, keyed by bidder name then deal ID
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MediaTypeAdjustments {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub banner: Option<HashMap<String, AdjustmentsByDealID>>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "video-instream")]
+    pub video_instream: Option<HashMap<String, AdjustmentsByDealID>>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "video-outstream")]
+    pub video_outstream: Option<HashMap<String, AdjustmentsByDealID>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio: Option<HashMap<String, AdjustmentsByDealID>>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "native")]
+    pub native_type: Option<HashMap<String, AdjustmentsByDealID>>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "*")]
+    pub wildcard: Option<HashMap<String, AdjustmentsByDealID>>,
+}
+
+/// AdjustmentEntry is a single bid adjustment entry
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AdjustmentEntry {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub adjtype: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
+}
+
+/// ExtRequestPrebidBidAdjustments defines the contract for bidrequest.ext.prebid.bidadjustments
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExtRequestPrebidBidAdjustments {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mediatype: Option<MediaTypeAdjustments>,
+}
+
 /// DealTier describes minimum deal tier configuration for an imp.pmp.deal extension.
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct DealTier {
@@ -1522,7 +1560,7 @@ pub struct ExtRequestPrebid {
 
     /// New-style bid adjustment rules
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub bidadjustments: Option<serde_json::Value>,
+    pub bidadjustments: Option<ExtRequestPrebidBidAdjustments>,
 
     /// Per-bidder params (raw JSON, keyed by bidder name)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1611,6 +1649,26 @@ pub struct ExtRequestPrebid {
     /// Experiment configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub experiment: Option<serde_json::Value>,
+
+    /// Custom macros for tracker URL substitution
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub macros: Option<HashMap<String, String>>,
+
+    /// Bidders with a legal relationship where passing PII doesn't constitute a sale per CCPA
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nosale: Option<Vec<String>>,
+
+    /// If true, populates bidresponse.ext.prebid.seatnonbid with rejected/nobid bids
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub returnallbidstatus: Option<bool>,
+
+    /// Controls the level of detail in hook execution output (verbose/basic)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trace: Option<String>,
+
+    /// Per-bidder control settings
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub biddercontrols: Option<HashMap<String, serde_json::Value>>,
 }
 
 // ── Imp-level Prebid extension (ExtImpPrebid) ─────────────────────────────
