@@ -30,6 +30,8 @@ pub mod exchange_utils;
 pub mod injector;
 pub mod json_merge;
 pub mod ortb_version;
+pub mod request_splitter;
+pub mod vendorlist;
 pub mod price_granularity;
 pub mod privacysandbox;
 pub mod request_validator;
