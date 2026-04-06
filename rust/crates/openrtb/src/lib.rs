@@ -12,6 +12,8 @@ pub struct BidRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app: Option<App>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub dooh: Option<DOOH>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub device: Option<Device>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user: Option<User>,
@@ -22,6 +24,8 @@ pub struct BidRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tmax: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub allimps: Option<i8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub wseat: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bseat: Option<Vec<String>>,
@@ -30,7 +34,13 @@ pub struct BidRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wlang: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub wlangb: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub acat: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub bcat: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cattax: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub badv: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -54,6 +64,8 @@ pub struct BidResponse {
     pub bidid: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cur: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub customdata: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nbr: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -98,9 +110,13 @@ pub struct Bid {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub crid: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub cattax: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cat: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attr: Option<Vec<i32>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub apis: Option<Vec<i32>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -109,6 +125,8 @@ pub struct Bid {
     pub qagmediarating: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub langb: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dealid: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -120,7 +138,7 @@ pub struct Bid {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hratio: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub exp: Option<i32>,
+    pub exp: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub burl: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -133,6 +151,8 @@ pub struct Bid {
     pub mtype: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dur: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slotinpod: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ext: Option<serde_json::Value>,
 }
@@ -175,6 +195,14 @@ pub struct Imp {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ssai: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub exp: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub qty: Option<Qty>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dt: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refresh: Option<Refresh>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub metric: Option<Vec<Metric>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ext: Option<serde_json::Value>,
@@ -190,6 +218,14 @@ pub struct Banner {
     pub w: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub h: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wmax: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hmax: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wmin: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hmin: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub btype: Option<Vec<i32>>,
     #[serde(skip_serializing_if = "Option::is_none")]
