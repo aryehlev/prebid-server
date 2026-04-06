@@ -1,0 +1,11 @@
+[
+  "endpoints",
+  "config_bootstrap",
+  "stored_data",
+  "auction_lifecycle",
+  "policy_privacy_identity",
+  "bidders_adapters",
+  "hooks_modules",
+  "cache_support_flows",
+  "cutover_proof"
+]

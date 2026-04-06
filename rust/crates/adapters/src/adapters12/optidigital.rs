@@ -1,0 +1,44 @@
+use std::collections::HashMap;
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids, check_response_status};
+use openrtb::BidResponse;
+use openrtb_ext::BidType;
+
+pub struct OptidigitalAdapter { pub endpoint: String }
+impl OptidigitalAdapter { pub fn new(endpoint: String) -> Self { Self { endpoint } } }
+
+impl Bidder for OptidigitalAdapter {
+    fn make_requests(&self, request: &openrtb::BidRequest, _: &ExtraRequestInfo) -> (Vec<RequestData>, Vec<BidderError>) {
+        let body = match serde_json::to_vec(request) {
+            Ok(b) => b,
+            Err(e) => return (vec![], vec![BidderError::BadInput(e.to_string())]),
+        };
+        let mut headers = HashMap::new();
+        headers.insert("Content-Type".to_string(), "application/json;charset=utf-8".to_string());
+        headers.insert("Accept".to_string(), "application/json".to_string());
+        (vec![RequestData {
+            method: "POST".to_string(),
+            uri: self.endpoint.clone(),
+            body,
+            headers,
+            imp_ids: get_imp_ids(&request.imp),
+        }], vec![])
+    }
+
+    fn make_bids(&self, _: &openrtb::BidRequest, _: &RequestData, response: &ResponseData) -> Result<BidderResponse, Vec<BidderError>> {
+        if response.status_code == 204 { return Ok(BidderResponse::new()); }
+        if let Err(e) = check_response_status(response.status_code) { return Err(vec![e]); }
+        let bid_resp: BidResponse = serde_json::from_slice(&response.body)
+            .map_err(|_| vec![BidderError::BadServerResponse("Bad Server Response".to_string())])?;
+        let mut result = BidderResponse::with_capacity(5);
+        if let Some(cur) = &bid_resp.cur {
+            result.currency = cur.clone();
+        }
+        for sb in bid_resp.seatbid {
+            for bid in sb.bid {
+                // optidigital always returns banner type
+                result.bids.push(TypedBid::new(bid, BidType::Banner));
+            }
+        }
+        Ok(result)
+    }
+}

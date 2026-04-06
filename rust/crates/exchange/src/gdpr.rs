@@ -1,0 +1,1223 @@
+/// GDPR/TCF consent string parsing, validation, and enforcement.
+///
+/// Implements basic TCF v1 and v2 consent string parsing without external crates.
+/// Provides types for GDPR signal, policy configuration, enforcement, and
+/// a permissions trait for vendor/purpose consent checking.
+
+use base64::Engine as _;
+use std::collections::HashSet;
+
+// ---------------------------------------------------------------------------
+// GdprSignal
+// ---------------------------------------------------------------------------
+
+/// Represents the GDPR applicability signal found in `regs.ext.gdpr`.
+///
+/// * `Ambiguous` (default) -- the publisher did not provide a signal.
+/// * `No` -- GDPR does **not** apply to this request.
+/// * `Yes` -- GDPR **does** apply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum GdprSignal {
+    #[default]
+    Ambiguous,
+    No,
+    Yes,
+}
+
+impl GdprSignal {
+    /// Parse from the integer value found in `regs.ext.gdpr`.
+    pub fn from_i64(value: i64) -> Self {
+        match value {
+            0 => Self::No,
+            1 => Self::Yes,
+            _ => Self::Ambiguous,
+        }
+    }
+
+    /// Convert to an optional integer (for writing back into requests).
+    pub fn as_opt_i8(&self) -> Option<i8> {
+        match self {
+            Self::Ambiguous => None,
+            Self::No => Some(0),
+            Self::Yes => Some(1),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TCF consent string parsing
+// ---------------------------------------------------------------------------
+
+/// Decoded fields from a TCF consent string.
+#[derive(Debug, Clone)]
+pub struct TcfConsent {
+    /// TCF version (1 or 2).
+    pub version: u8,
+    /// Bitmask of consented purpose IDs (bits 1..=24 for TCF v2).
+    /// Bit N is set if purpose N has consent.
+    pub purpose_consents: u64,
+    /// Set of vendor IDs that have consent (from the consent section).
+    pub vendor_consents: HashSet<u32>,
+    /// Raw decoded bytes (kept for advanced use).
+    #[allow(dead_code)]
+    raw: Vec<u8>,
+}
+
+impl TcfConsent {
+    /// Attempt to parse a base64url-encoded TCF consent string.
+    pub fn parse(consent_string: &str) -> Option<Self> {
+        if consent_string.is_empty() {
+            return None;
+        }
+
+        let decoded = decode_base64url(consent_string)?;
+        if decoded.len() < 8 {
+            return None;
+        }
+
+        // Bits 0..5: version (6 bits)
+        let version = (decoded[0] >> 2) & 0x3F;
+
+        match version {
+            1 => Self::parse_v1(&decoded),
+            2 => Self::parse_v2(&decoded),
+            _ => None,
+        }
+    }
+
+    /// Check if a specific purpose (1-based) has consent.
+    pub fn has_purpose_consent(&self, purpose_id: u32) -> bool {
+        if purpose_id == 0 || purpose_id > 64 {
+            return false;
+        }
+        (self.purpose_consents >> (purpose_id - 1)) & 1 == 1
+    }
+
+    /// Check if a specific vendor has consent.
+    pub fn has_vendor_consent(&self, vendor_id: u32) -> bool {
+        self.vendor_consents.contains(&vendor_id)
+    }
+
+    // -- TCF v1 parsing (simplified) --
+
+    fn parse_v1(decoded: &[u8]) -> Option<Self> {
+        // TCF v1: purpose consents start at bit 152, 24 bits
+        let purpose_consents = extract_purpose_consents_v1(decoded)?;
+        let vendor_consents = extract_vendor_consents_v1(decoded);
+
+        Some(TcfConsent {
+            version: 1,
+            purpose_consents,
+            vendor_consents,
+            raw: decoded.to_vec(),
+        })
+    }
+
+    // -- TCF v2 parsing --
+
+    fn parse_v2(decoded: &[u8]) -> Option<Self> {
+        // TCF v2: purpose consents start at bit 152, 24 bits
+        let purpose_consents = extract_purpose_consents_v2(decoded)?;
+        let vendor_consents = extract_vendor_consents_v2(decoded);
+
+        Some(TcfConsent {
+            version: 2,
+            purpose_consents,
+            vendor_consents,
+            raw: decoded.to_vec(),
+        })
+    }
+}
+
+/// Decode a base64url string (with or without padding).
+fn decode_base64url(input: &str) -> Option<Vec<u8>> {
+    // Normalise URL-safe characters to standard base64.
+    let normalized: String = input
+        .chars()
+        .map(|c| match c {
+            '-' => '+',
+            '_' => '/',
+            other => other,
+        })
+        .collect();
+
+    let padded = match normalized.len() % 4 {
+        2 => format!("{}==", normalized),
+        3 => format!("{}=", normalized),
+        _ => normalized,
+    };
+
+    base64::engine::general_purpose::STANDARD
+        .decode(&padded)
+        .ok()
+}
+
+/// Read a single bit from a byte slice at the given bit offset.
+fn read_bit(data: &[u8], bit_offset: usize) -> Option<bool> {
+    let byte_index = bit_offset / 8;
+    let bit_index = 7 - (bit_offset % 8);
+    if byte_index >= data.len() {
+        return None;
+    }
+    Some((data[byte_index] >> bit_index) & 1 == 1)
+}
+
+/// Read `count` bits starting at `bit_offset` and return as u64 (big-endian).
+fn read_bits(data: &[u8], bit_offset: usize, count: usize) -> Option<u64> {
+    if count > 64 {
+        return None;
+    }
+    let mut value: u64 = 0;
+    for i in 0..count {
+        let bit = read_bit(data, bit_offset + i)?;
+        value = (value << 1) | (bit as u64);
+    }
+    Some(value)
+}
+
+/// Parse range-encoded vendor entries from a consent string bitfield.
+///
+/// If `default_consent` is true (TCF v1 only), all vendors up to `max_vendor_id`
+/// are assumed consented and the ranges *remove* consent. If false, the ranges
+/// *add* consent.
+fn parse_range_entries(
+    data: &[u8],
+    start_bit: usize,
+    max_vendor_id: u32,
+    default_consent: bool,
+    vendors: &mut HashSet<u32>,
+) {
+    // If default consent, pre-fill all vendors
+    if default_consent {
+        for vid in 1..=max_vendor_id {
+            vendors.insert(vid);
+        }
+    }
+
+    let num_entries = match read_bits(data, start_bit, 12) {
+        Some(v) => v as usize,
+        None => return,
+    };
+
+    let mut offset = start_bit + 12;
+
+    for _ in 0..num_entries {
+        let is_range = match read_bit(data, offset) {
+            Some(v) => v,
+            None => return,
+        };
+        offset += 1;
+
+        if is_range {
+            // StartVendorId (16 bits) + EndVendorId (16 bits)
+            let start_id = match read_bits(data, offset, 16) {
+                Some(v) => v as u32,
+                None => return,
+            };
+            offset += 16;
+            let end_id = match read_bits(data, offset, 16) {
+                Some(v) => v as u32,
+                None => return,
+            };
+            offset += 16;
+
+            for vid in start_id..=end_id.min(max_vendor_id) {
+                if default_consent {
+                    vendors.remove(&vid);
+                } else {
+                    vendors.insert(vid);
+                }
+            }
+        } else {
+            // Single VendorId (16 bits)
+            let vid = match read_bits(data, offset, 16) {
+                Some(v) => v as u32,
+                None => return,
+            };
+            offset += 16;
+
+            if vid <= max_vendor_id {
+                if default_consent {
+                    vendors.remove(&vid);
+                } else {
+                    vendors.insert(vid);
+                }
+            }
+        }
+    }
+}
+
+// -- TCF v1 helpers --
+
+fn extract_purpose_consents_v1(decoded: &[u8]) -> Option<u64> {
+    // TCF v1: purposes allowed start at bit 152, 24 bits
+    let mut consents: u64 = 0;
+    for i in 0..24 {
+        if read_bit(decoded, 152 + i)? {
+            consents |= 1u64 << i;
+        }
+    }
+    Some(consents)
+}
+
+fn extract_vendor_consents_v1(decoded: &[u8]) -> HashSet<u32> {
+    // TCF v1: max vendor ID at bit 176 (16 bits), then encoding type at bit 192
+    let mut vendors = HashSet::new();
+    let max_vendor_id = match read_bits(decoded, 176, 16) {
+        Some(v) => v as u32,
+        None => return vendors,
+    };
+    let is_range_encoding = read_bit(decoded, 192).unwrap_or(false);
+
+    if !is_range_encoding {
+        // Bitfield encoding: one bit per vendor starting at bit 193
+        for vid in 1..=max_vendor_id {
+            if read_bit(decoded, 193 + (vid as usize - 1)).unwrap_or(false) {
+                vendors.insert(vid);
+            }
+        }
+    } else {
+        // Range encoding: starts at bit 193
+        // V1 has a "default consent" bit before the num_entries
+        let default_consent = read_bit(decoded, 193).unwrap_or(false);
+        parse_range_entries(decoded, 194, max_vendor_id, default_consent, &mut vendors);
+    }
+    vendors
+}
+
+// -- TCF v2 helpers --
+
+fn extract_purpose_consents_v2(decoded: &[u8]) -> Option<u64> {
+    // TCF v2: purpose consents start at bit 152, 24 bits
+    let mut consents: u64 = 0;
+    for i in 0..24 {
+        if read_bit(decoded, 152 + i)? {
+            consents |= 1u64 << i;
+        }
+    }
+    Some(consents)
+}
+
+fn extract_vendor_consents_v2(decoded: &[u8]) -> HashSet<u32> {
+    // TCF v2: after purpose fields at bit 260, vendor consent section begins
+    // Max vendor ID at bit 230 (16 bits) for the consent section
+    // (Purpose LI transparency: 24 bits at 176+24=200..224; special feature at 224..236)
+    // Vendor consent section: max vendor ID (16 bits) at bit 260, encoding type bit 276
+    let mut vendors = HashSet::new();
+    let max_vendor_id = match read_bits(decoded, 260, 16) {
+        Some(v) => v as u32,
+        None => return vendors,
+    };
+    let is_range_encoding = read_bit(decoded, 276).unwrap_or(false);
+
+    if !is_range_encoding {
+        // Bitfield encoding
+        for vid in 1..=max_vendor_id.min(2048) {
+            if read_bit(decoded, 277 + (vid as usize - 1)).unwrap_or(false) {
+                vendors.insert(vid);
+            }
+        }
+    } else {
+        // Range encoding: starts at bit 277 (no default consent bit in v2)
+        parse_range_entries(decoded, 277, max_vendor_id, false, &mut vendors);
+    }
+    vendors
+}
+
+// ---------------------------------------------------------------------------
+// GdprPolicy -- configuration for GDPR enforcement
+// ---------------------------------------------------------------------------
+
+/// TCF purpose IDs relevant to programmatic advertising.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u32)]
+pub enum TcfPurpose {
+    /// Store and/or access information on a device.
+    DeviceAccess = 1,
+    /// Select basic ads.
+    BasicAds = 2,
+    /// Create a personalised ads profile.
+    PersonalisedAdsProfile = 3,
+    /// Select personalised ads.
+    PersonalisedAds = 4,
+    /// Create a personalised content profile.
+    PersonalisedContentProfile = 5,
+    /// Select personalised content.
+    PersonalisedContent = 6,
+    /// Measure ad performance.
+    MeasureAdPerformance = 7,
+    /// Measure content performance.
+    MeasureContentPerformance = 8,
+    /// Apply market research to generate audience insights.
+    MarketResearch = 9,
+    /// Develop and improve products.
+    DevelopProducts = 10,
+}
+
+/// Configuration that governs how GDPR/TCF is enforced.
+#[derive(Debug, Clone)]
+pub struct GdprPolicy {
+    /// Whether GDPR enforcement is enabled at all.
+    pub enabled: bool,
+    /// Default GDPR signal when the publisher does not specify one.
+    pub default_value: GdprSignal,
+    /// Set of TCF purposes that must have consent for a bidder to proceed.
+    pub enforce_purposes: HashSet<u32>,
+    /// Whether full vendor consent (not just purpose consent) is required.
+    pub require_vendor_consent: bool,
+    /// Bidders that are exempt from GDPR enforcement (e.g. first-party).
+    pub bidder_exceptions: HashSet<String>,
+}
+
+impl Default for GdprPolicy {
+    fn default() -> Self {
+        let mut enforce = HashSet::new();
+        // By default enforce purpose 1 (device access) and 2 (basic ads).
+        enforce.insert(1);
+        enforce.insert(2);
+
+        Self {
+            enabled: true,
+            default_value: GdprSignal::Ambiguous,
+            enforce_purposes: enforce,
+            require_vendor_consent: true,
+            bidder_exceptions: HashSet::new(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GdprEnforcer
+// ---------------------------------------------------------------------------
+
+/// Outcome of a GDPR enforcement check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GdprEnforcementResult {
+    /// Whether the bidder is allowed to participate.
+    pub allow: bool,
+    /// Whether personal data (geo, device IDs) should be masked.
+    pub mask_personal_data: bool,
+    /// Specific purposes that lack consent.
+    pub denied_purposes: Vec<u32>,
+}
+
+/// Enforces GDPR/TCF rules against a consent string and policy configuration.
+#[derive(Debug)]
+pub struct GdprEnforcer {
+    pub policy: GdprPolicy,
+}
+
+impl GdprEnforcer {
+    pub fn new(policy: GdprPolicy) -> Self {
+        Self { policy }
+    }
+
+    /// Determine the effective GDPR signal for a request, falling back to the
+    /// policy default when the publisher signal is ambiguous.
+    pub fn effective_signal(&self, signal: GdprSignal) -> GdprSignal {
+        match signal {
+            GdprSignal::Ambiguous => self.policy.default_value,
+            other => other,
+        }
+    }
+
+    /// Check whether a bidder is permitted to receive the request under GDPR.
+    pub fn check_bidder(
+        &self,
+        signal: GdprSignal,
+        consent_string: Option<&str>,
+        bidder_name: &str,
+        vendor_id: Option<u32>,
+    ) -> GdprEnforcementResult {
+        // If enforcement is disabled, allow everything.
+        if !self.policy.enabled {
+            return GdprEnforcementResult {
+                allow: true,
+                mask_personal_data: false,
+                denied_purposes: vec![],
+            };
+        }
+
+        // If the bidder is exempt, allow.
+        if self.policy.bidder_exceptions.contains(bidder_name) {
+            return GdprEnforcementResult {
+                allow: true,
+                mask_personal_data: false,
+                denied_purposes: vec![],
+            };
+        }
+
+        let effective = self.effective_signal(signal);
+
+        // If GDPR doesn't apply, allow.
+        if effective != GdprSignal::Yes {
+            return GdprEnforcementResult {
+                allow: true,
+                mask_personal_data: false,
+                denied_purposes: vec![],
+            };
+        }
+
+        // GDPR applies -- parse consent.
+        let parsed = consent_string.and_then(|s| TcfConsent::parse(s));
+
+        match parsed {
+            None => {
+                // No valid consent string while GDPR applies: block.
+                GdprEnforcementResult {
+                    allow: false,
+                    mask_personal_data: true,
+                    denied_purposes: self.policy.enforce_purposes.iter().copied().collect(),
+                }
+            }
+            Some(tcf) => {
+                let mut denied = Vec::new();
+
+                for &purpose_id in &self.policy.enforce_purposes {
+                    if !tcf.has_purpose_consent(purpose_id) {
+                        denied.push(purpose_id);
+                    }
+                }
+
+                // Check vendor consent if required.
+                let vendor_ok = if self.policy.require_vendor_consent {
+                    match vendor_id {
+                        Some(vid) => tcf.has_vendor_consent(vid),
+                        None => true, // No vendor ID registered -- skip vendor check.
+                    }
+                } else {
+                    true
+                };
+
+                let allow = denied.is_empty() && vendor_ok;
+
+                GdprEnforcementResult {
+                    allow,
+                    mask_personal_data: !allow,
+                    denied_purposes: denied,
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GdprPermissions trait
+// ---------------------------------------------------------------------------
+
+/// Trait for querying GDPR/TCF consent permissions.
+///
+/// Implementations may be backed by a full TCF vendor list, an in-memory
+/// consent string parser, or an external service.
+pub trait GdprPermissions: Send + Sync {
+    /// Whether the host has a valid consent mechanism configured.
+    fn can_enforce(&self) -> bool;
+
+    /// Whether a specific purpose has consent.
+    fn has_purpose_consent(&self, purpose_id: u32) -> bool;
+
+    /// Whether a specific vendor has consent.
+    fn has_vendor_consent(&self, vendor_id: u32) -> bool;
+
+    /// Whether a bidder (by name) is allowed to receive personal data.
+    fn bidder_allowed(&self, bidder_name: &str, vendor_id: Option<u32>) -> bool;
+}
+
+/// A concrete implementation backed by a parsed TCF consent string.
+pub struct ConsentPermissions {
+    pub signal: GdprSignal,
+    pub consent: Option<TcfConsent>,
+    pub enforcer: GdprEnforcer,
+}
+
+impl GdprPermissions for ConsentPermissions {
+    fn can_enforce(&self) -> bool {
+        self.enforcer.policy.enabled && self.enforcer.effective_signal(self.signal) == GdprSignal::Yes
+    }
+
+    fn has_purpose_consent(&self, purpose_id: u32) -> bool {
+        match &self.consent {
+            Some(tcf) => tcf.has_purpose_consent(purpose_id),
+            None => false,
+        }
+    }
+
+    fn has_vendor_consent(&self, vendor_id: u32) -> bool {
+        match &self.consent {
+            Some(tcf) => tcf.has_vendor_consent(vendor_id),
+            None => false,
+        }
+    }
+
+    fn bidder_allowed(&self, bidder_name: &str, vendor_id: Option<u32>) -> bool {
+        let result = self
+            .enforcer
+            .check_bidder(self.signal, None, bidder_name, vendor_id);
+        // Re-check with actual consent data.
+        if !self.can_enforce() {
+            return true;
+        }
+        if self.enforcer.policy.bidder_exceptions.contains(bidder_name) {
+            return true;
+        }
+        match &self.consent {
+            None => false,
+            Some(tcf) => {
+                let purposes_ok = self
+                    .enforcer
+                    .policy
+                    .enforce_purposes
+                    .iter()
+                    .all(|&p| tcf.has_purpose_consent(p));
+                let vendor_ok = if self.enforcer.policy.require_vendor_consent {
+                    vendor_id.map_or(true, |vid| tcf.has_vendor_consent(vid))
+                } else {
+                    true
+                };
+                let _ = result; // suppress unused warning
+                purposes_ok && vendor_ok
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PurposeEnforcer — per-purpose enforcement (mirrors Go purpose_enforcer.go)
+// ---------------------------------------------------------------------------
+
+/// Per-purpose enforcement configuration.
+#[derive(Debug, Clone)]
+pub struct PurposeConfig {
+    /// Whether to check the purpose consent bit.
+    pub enforce_purpose: bool,
+    /// Whether to check the vendor consent bit for this purpose.
+    pub enforce_vendors: bool,
+    /// Vendors exempt from this purpose's enforcement.
+    pub vendor_exceptions: HashSet<u32>,
+    /// Enforcement algorithm: "basic" (consent only) or "full" (consent + LI).
+    pub enforce_algo: String,
+}
+
+impl Default for PurposeConfig {
+    fn default() -> Self {
+        Self {
+            enforce_purpose: true,
+            enforce_vendors: true,
+            vendor_exceptions: HashSet::new(),
+            enforce_algo: "basic".to_string(),
+        }
+    }
+}
+
+/// Per-purpose enforcer that checks consent for each of the 10 TCF purposes.
+/// Mirrors Go's `gdpr/purpose_enforcer.go`.
+#[derive(Debug, Clone)]
+pub struct PurposeEnforcer {
+    /// Configuration for each purpose (1-10).
+    pub purposes: [PurposeConfig; 10],
+}
+
+impl Default for PurposeEnforcer {
+    fn default() -> Self {
+        Self {
+            purposes: std::array::from_fn(|_| PurposeConfig::default()),
+        }
+    }
+}
+
+impl PurposeEnforcer {
+    /// Check whether a vendor has consent for a specific purpose.
+    pub fn is_allowed(
+        &self,
+        purpose_id: u32,
+        consent: &TcfConsent,
+        vendor_id: u32,
+    ) -> bool {
+        if purpose_id == 0 || purpose_id > 10 {
+            return false;
+        }
+        let cfg = &self.purposes[(purpose_id - 1) as usize];
+
+        // Check vendor exceptions first
+        if cfg.vendor_exceptions.contains(&vendor_id) {
+            return true;
+        }
+
+        let purpose_ok = if cfg.enforce_purpose {
+            consent.has_purpose_consent(purpose_id)
+        } else {
+            true
+        };
+
+        let vendor_ok = if cfg.enforce_vendors {
+            consent.has_vendor_consent(vendor_id)
+        } else {
+            true
+        };
+
+        purpose_ok && vendor_ok
+    }
+
+    /// Check if a vendor is allowed for all required purposes.
+    pub fn is_allowed_for_purposes(
+        &self,
+        purpose_ids: &[u32],
+        consent: &TcfConsent,
+        vendor_id: u32,
+    ) -> bool {
+        purpose_ids.iter().all(|&pid| self.is_allowed(pid, consent, vendor_id))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// VendorList — vendor-to-purpose mapping (mirrors Go vendorlist-fetching.go)
+// ---------------------------------------------------------------------------
+
+/// A vendor entry from the GVL (Global Vendor List).
+#[derive(Debug, Clone, Default)]
+pub struct VendorInfo {
+    pub id: u32,
+    /// Purposes for which this vendor has declared consent.
+    pub purposes: HashSet<u32>,
+    /// Legitimate interest purposes.
+    pub leg_int_purposes: HashSet<u32>,
+    /// Special purposes.
+    pub special_purposes: HashSet<u32>,
+    /// Flexible purposes (can be consent or LI).
+    pub flexible_purposes: HashSet<u32>,
+}
+
+/// In-memory vendor list (typically loaded from GVL JSON).
+#[derive(Debug, Clone, Default)]
+pub struct VendorList {
+    pub version: u32,
+    pub vendors: std::collections::HashMap<u32, VendorInfo>,
+}
+
+impl VendorList {
+    /// Parse a vendor list from GVL JSON.
+    pub fn from_json(data: &[u8]) -> Option<Self> {
+        let val: serde_json::Value = serde_json::from_slice(data).ok()?;
+        let version = val.get("vendorListVersion")?.as_u64()? as u32;
+        let vendors_obj = val.get("vendors")?.as_object()?;
+
+        let mut vendors = std::collections::HashMap::new();
+        for (id_str, vendor_val) in vendors_obj {
+            let id: u32 = id_str.parse().ok()?;
+            let purposes: HashSet<u32> = vendor_val
+                .get("purposes")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_u64().map(|n| n as u32)).collect())
+                .unwrap_or_default();
+            let leg_int: HashSet<u32> = vendor_val
+                .get("legIntPurposes")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_u64().map(|n| n as u32)).collect())
+                .unwrap_or_default();
+            let special: HashSet<u32> = vendor_val
+                .get("specialPurposes")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_u64().map(|n| n as u32)).collect())
+                .unwrap_or_default();
+            let flexible: HashSet<u32> = vendor_val
+                .get("flexiblePurposes")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_u64().map(|n| n as u32)).collect())
+                .unwrap_or_default();
+
+            vendors.insert(id, VendorInfo {
+                id,
+                purposes,
+                leg_int_purposes: leg_int,
+                special_purposes: special,
+                flexible_purposes: flexible,
+            });
+        }
+
+        Some(VendorList { version, vendors })
+    }
+
+    /// Check if a vendor declares a given purpose.
+    pub fn vendor_has_purpose(&self, vendor_id: u32, purpose_id: u32) -> bool {
+        self.vendors
+            .get(&vendor_id)
+            .map_or(false, |v| v.purposes.contains(&purpose_id))
+    }
+}
+
+/// Trait for fetching vendor lists. Implementations may use HTTP, filesystem, etc.
+pub trait VendorListFetcher: Send + Sync {
+    /// Fetch the vendor list for a specific TCF version. Returns None on failure.
+    fn fetch(&self, tcf_version: u32) -> Option<VendorList>;
+}
+
+/// A simple in-memory vendor list fetcher with a cached list.
+pub struct StaticVendorListFetcher {
+    pub list: VendorList,
+}
+
+impl VendorListFetcher for StaticVendorListFetcher {
+    fn fetch(&self, _tcf_version: u32) -> Option<VendorList> {
+        Some(self.list.clone())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Legacy public helpers (kept for backward compatibility with existing callers)
+// ---------------------------------------------------------------------------
+
+/// Parse purpose consents from a TCF consent string (base64url encoded).
+/// Returns a bitmask of consented purpose IDs, or None if parsing fails.
+pub fn parse_purpose_consents(consent_string: &str) -> Option<u64> {
+    TcfConsent::parse(consent_string).map(|tcf| tcf.purpose_consents)
+}
+
+/// Check if a vendor has consent for a specific purpose.
+pub fn vendor_has_consent(consent_string: &str, vendor_id: u32, purpose_id: u32) -> bool {
+    match TcfConsent::parse(consent_string) {
+        Some(tcf) => tcf.has_purpose_consent(purpose_id) && tcf.has_vendor_consent(vendor_id),
+        None => false,
+    }
+}
+
+/// Check if GDPR enforcement should block a bidder.
+pub fn should_block_bidder_gdpr(
+    gdpr_applies: bool,
+    consent_string: Option<&str>,
+    _bidder_name: &str,
+) -> bool {
+    if !gdpr_applies {
+        return false;
+    }
+    match consent_string {
+        None | Some("") => true,
+        Some(s) => parse_purpose_consents(s).is_none(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_gdpr_signal_from_i64() {
+        assert_eq!(GdprSignal::from_i64(0), GdprSignal::No);
+        assert_eq!(GdprSignal::from_i64(1), GdprSignal::Yes);
+        assert_eq!(GdprSignal::from_i64(2), GdprSignal::Ambiguous);
+        assert_eq!(GdprSignal::from_i64(-1), GdprSignal::Ambiguous);
+    }
+
+    #[test]
+    fn test_gdpr_signal_default() {
+        assert_eq!(GdprSignal::default(), GdprSignal::Ambiguous);
+    }
+
+    #[test]
+    fn test_gdpr_signal_as_opt_i8() {
+        assert_eq!(GdprSignal::Ambiguous.as_opt_i8(), None);
+        assert_eq!(GdprSignal::No.as_opt_i8(), Some(0));
+        assert_eq!(GdprSignal::Yes.as_opt_i8(), Some(1));
+    }
+
+    #[test]
+    fn test_parse_empty_consent_string() {
+        assert!(TcfConsent::parse("").is_none());
+    }
+
+    #[test]
+    fn test_parse_short_consent_string() {
+        assert!(TcfConsent::parse("AA").is_none());
+    }
+
+    #[test]
+    fn test_parse_purpose_consents_empty() {
+        assert!(parse_purpose_consents("").is_none());
+    }
+
+    #[test]
+    fn test_parse_purpose_consents_valid() {
+        // BOEFEAyOEFEAyAHABDENAI4AAAB9vABAASA is a known TCF v1 string
+        let result = parse_purpose_consents("BOEFEAyOEFEAyAHABDENAI4AAAB9vABAASA");
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_read_bit() {
+        let data = [0b10110000u8];
+        assert_eq!(read_bit(&data, 0), Some(true));
+        assert_eq!(read_bit(&data, 1), Some(false));
+        assert_eq!(read_bit(&data, 2), Some(true));
+        assert_eq!(read_bit(&data, 3), Some(true));
+        assert_eq!(read_bit(&data, 4), Some(false));
+    }
+
+    #[test]
+    fn test_read_bits() {
+        let data = [0b11001010u8, 0b11110000u8];
+        // First 4 bits: 1100 = 12
+        assert_eq!(read_bits(&data, 0, 4), Some(12));
+        // Bits 4..8: 1010 = 10
+        assert_eq!(read_bits(&data, 4, 4), Some(10));
+    }
+
+    #[test]
+    fn test_tcf_consent_has_purpose_consent_zero() {
+        // Purpose 0 is out of range.
+        let tcf = TcfConsent {
+            version: 2,
+            purpose_consents: 0b111,
+            vendor_consents: HashSet::new(),
+            raw: vec![],
+        };
+        assert!(!tcf.has_purpose_consent(0));
+    }
+
+    #[test]
+    fn test_tcf_consent_has_purpose_consent_in_range() {
+        let tcf = TcfConsent {
+            version: 2,
+            purpose_consents: 0b101, // purposes 1 and 3
+            vendor_consents: HashSet::new(),
+            raw: vec![],
+        };
+        assert!(tcf.has_purpose_consent(1));
+        assert!(!tcf.has_purpose_consent(2));
+        assert!(tcf.has_purpose_consent(3));
+    }
+
+    #[test]
+    fn test_enforcer_disabled() {
+        let policy = GdprPolicy {
+            enabled: false,
+            ..Default::default()
+        };
+        let enforcer = GdprEnforcer::new(policy);
+        let result = enforcer.check_bidder(GdprSignal::Yes, None, "appnexus", None);
+        assert!(result.allow);
+        assert!(!result.mask_personal_data);
+    }
+
+    #[test]
+    fn test_enforcer_gdpr_no() {
+        let enforcer = GdprEnforcer::new(GdprPolicy::default());
+        let result = enforcer.check_bidder(GdprSignal::No, None, "appnexus", None);
+        assert!(result.allow);
+    }
+
+    #[test]
+    fn test_enforcer_gdpr_yes_no_consent() {
+        let enforcer = GdprEnforcer::new(GdprPolicy::default());
+        let result = enforcer.check_bidder(GdprSignal::Yes, None, "appnexus", None);
+        assert!(!result.allow);
+        assert!(result.mask_personal_data);
+    }
+
+    #[test]
+    fn test_enforcer_bidder_exception() {
+        let mut policy = GdprPolicy::default();
+        policy.bidder_exceptions.insert("trusted".to_string());
+        let enforcer = GdprEnforcer::new(policy);
+        let result = enforcer.check_bidder(GdprSignal::Yes, None, "trusted", None);
+        assert!(result.allow);
+    }
+
+    #[test]
+    fn test_enforcer_ambiguous_defaults_to_no() {
+        let mut policy = GdprPolicy::default();
+        policy.default_value = GdprSignal::No;
+        let enforcer = GdprEnforcer::new(policy);
+        let result = enforcer.check_bidder(GdprSignal::Ambiguous, None, "appnexus", None);
+        assert!(result.allow);
+    }
+
+    #[test]
+    fn test_enforcer_ambiguous_defaults_to_yes() {
+        let mut policy = GdprPolicy::default();
+        policy.default_value = GdprSignal::Yes;
+        let enforcer = GdprEnforcer::new(policy);
+        let result = enforcer.check_bidder(GdprSignal::Ambiguous, None, "appnexus", None);
+        assert!(!result.allow);
+    }
+
+    #[test]
+    fn test_should_block_bidder_gdpr_no_gdpr() {
+        assert!(!should_block_bidder_gdpr(false, None, "appnexus"));
+    }
+
+    #[test]
+    fn test_should_block_bidder_gdpr_no_consent() {
+        assert!(should_block_bidder_gdpr(true, None, "appnexus"));
+        assert!(should_block_bidder_gdpr(true, Some(""), "appnexus"));
+    }
+
+    #[test]
+    fn test_should_block_bidder_gdpr_valid_consent() {
+        assert!(!should_block_bidder_gdpr(
+            true,
+            Some("BOEFEAyOEFEAyAHABDENAI4AAAB9vABAASA"),
+            "appnexus"
+        ));
+    }
+
+    // -- Helper to set bits in a byte array --
+
+    fn set_bit(data: &mut [u8], bit_offset: usize, value: bool) {
+        let byte_index = bit_offset / 8;
+        let bit_index = 7 - (bit_offset % 8);
+        if value {
+            data[byte_index] |= 1 << bit_index;
+        } else {
+            data[byte_index] &= !(1 << bit_index);
+        }
+    }
+
+    fn set_bits(data: &mut [u8], bit_offset: usize, count: usize, value: u64) {
+        for i in 0..count {
+            let bit = (value >> (count - 1 - i)) & 1 == 1;
+            set_bit(data, bit_offset + i, bit);
+        }
+    }
+
+    // -- Range encoding tests --
+
+    #[test]
+    fn test_v1_range_encoding_single_vendor() {
+        // Build a TCF v1 consent string with range encoding
+        // containing a single vendor entry (vendor 5).
+        let mut data = vec![0u8; 40];
+
+        // Version = 1 at bits 0..6
+        set_bits(&mut data, 0, 6, 1);
+        // Purpose consents at bits 152..176: set purpose 1 and 2
+        set_bit(&mut data, 152, true); // purpose 1
+        set_bit(&mut data, 153, true); // purpose 2
+        // Max vendor ID at bits 176..192 = 20
+        set_bits(&mut data, 176, 16, 20);
+        // Encoding type at bit 192 = 1 (range)
+        set_bit(&mut data, 192, true);
+        // Default consent at bit 193 = 0
+        set_bit(&mut data, 193, false);
+        // Num entries at bits 194..206 = 1
+        set_bits(&mut data, 194, 12, 1);
+        // Entry 1: is_range = 0 at bit 206
+        set_bit(&mut data, 206, false);
+        // Vendor ID = 5 at bits 207..223
+        set_bits(&mut data, 207, 16, 5);
+
+        let vendors = extract_vendor_consents_v1(&data);
+        assert!(vendors.contains(&5), "vendor 5 should have consent");
+        assert!(!vendors.contains(&1), "vendor 1 should not have consent");
+        assert!(!vendors.contains(&20), "vendor 20 should not have consent");
+        assert_eq!(vendors.len(), 1);
+    }
+
+    #[test]
+    fn test_v1_range_encoding_range_entry() {
+        // Build a TCF v1 consent string with a range entry (vendors 10-15).
+        let mut data = vec![0u8; 40];
+
+        set_bits(&mut data, 0, 6, 1); // version 1
+        set_bit(&mut data, 152, true); // purpose 1
+        set_bits(&mut data, 176, 16, 20); // max vendor id = 20
+        set_bit(&mut data, 192, true); // range encoding
+        set_bit(&mut data, 193, false); // default consent = false
+        set_bits(&mut data, 194, 12, 1); // num entries = 1
+        // Entry: is_range = 1
+        set_bit(&mut data, 206, true);
+        // Start vendor ID = 10 at bits 207..223
+        set_bits(&mut data, 207, 16, 10);
+        // End vendor ID = 15 at bits 223..239
+        set_bits(&mut data, 223, 16, 15);
+
+        let vendors = extract_vendor_consents_v1(&data);
+        for vid in 10..=15 {
+            assert!(vendors.contains(&vid), "vendor {} should have consent", vid);
+        }
+        assert!(!vendors.contains(&9));
+        assert!(!vendors.contains(&16));
+        assert_eq!(vendors.len(), 6);
+    }
+
+    #[test]
+    fn test_v1_range_encoding_default_consent() {
+        // With default_consent=true, all vendors are consented except those in ranges.
+        let mut data = vec![0u8; 40];
+
+        set_bits(&mut data, 0, 6, 1); // version 1
+        set_bit(&mut data, 152, true); // purpose 1
+        set_bits(&mut data, 176, 16, 10); // max vendor id = 10
+        set_bit(&mut data, 192, true); // range encoding
+        set_bit(&mut data, 193, true); // default consent = true
+        set_bits(&mut data, 194, 12, 1); // num entries = 1
+        // Remove vendor 3 (single entry)
+        set_bit(&mut data, 206, false); // is_range = 0
+        set_bits(&mut data, 207, 16, 3); // vendor 3
+
+        let vendors = extract_vendor_consents_v1(&data);
+        // All vendors 1-10 except 3 should be present
+        for vid in 1..=10 {
+            if vid == 3 {
+                assert!(!vendors.contains(&vid), "vendor 3 should be removed");
+            } else {
+                assert!(vendors.contains(&vid), "vendor {} should have consent", vid);
+            }
+        }
+        assert_eq!(vendors.len(), 9);
+    }
+
+    #[test]
+    fn test_v1_range_encoding_multiple_entries() {
+        // Two entries: single vendor 2 and range 7-9
+        let mut data = vec![0u8; 48];
+
+        set_bits(&mut data, 0, 6, 1); // version 1
+        set_bit(&mut data, 152, true); // purpose 1
+        set_bits(&mut data, 176, 16, 20); // max vendor id = 20
+        set_bit(&mut data, 192, true); // range encoding
+        set_bit(&mut data, 193, false); // default consent = false
+        set_bits(&mut data, 194, 12, 2); // num entries = 2
+
+        // Entry 1: single vendor 2
+        set_bit(&mut data, 206, false); // is_range = 0
+        set_bits(&mut data, 207, 16, 2); // vendor 2
+        // After entry 1: offset = 206 + 1 + 16 = 223
+
+        // Entry 2: range 7-9
+        set_bit(&mut data, 223, true); // is_range = 1
+        set_bits(&mut data, 224, 16, 7); // start = 7
+        set_bits(&mut data, 240, 16, 9); // end = 9
+
+        let vendors = extract_vendor_consents_v1(&data);
+        assert!(vendors.contains(&2));
+        assert!(vendors.contains(&7));
+        assert!(vendors.contains(&8));
+        assert!(vendors.contains(&9));
+        assert!(!vendors.contains(&1));
+        assert!(!vendors.contains(&3));
+        assert!(!vendors.contains(&6));
+        assert!(!vendors.contains(&10));
+        assert_eq!(vendors.len(), 4);
+    }
+
+    #[test]
+    fn test_v2_range_encoding_single_vendor() {
+        // Build a TCF v2 consent string with range encoding
+        let mut data = vec![0u8; 48];
+
+        set_bits(&mut data, 0, 6, 2); // version 2
+        set_bit(&mut data, 152, true); // purpose 1
+        // Max vendor ID at bits 260..276 = 20
+        set_bits(&mut data, 260, 16, 20);
+        // Encoding type at bit 276 = 1 (range)
+        set_bit(&mut data, 276, true);
+        // Num entries at bits 277..289 = 1
+        set_bits(&mut data, 277, 12, 1);
+        // Entry: is_range = 0 at bit 289
+        set_bit(&mut data, 289, false);
+        // Vendor ID = 7 at bits 290..306
+        set_bits(&mut data, 290, 16, 7);
+
+        let vendors = extract_vendor_consents_v2(&data);
+        assert!(vendors.contains(&7), "vendor 7 should have consent");
+        assert!(!vendors.contains(&1));
+        assert_eq!(vendors.len(), 1);
+    }
+
+    #[test]
+    fn test_v2_range_encoding_range_entry() {
+        // Build a TCF v2 consent string with a range entry (vendors 3-8)
+        let mut data = vec![0u8; 48];
+
+        set_bits(&mut data, 0, 6, 2); // version 2
+        set_bit(&mut data, 152, true); // purpose 1
+        set_bits(&mut data, 260, 16, 20); // max vendor id = 20
+        set_bit(&mut data, 276, true); // range encoding
+        set_bits(&mut data, 277, 12, 1); // num entries = 1
+        // Entry: is_range = 1
+        set_bit(&mut data, 289, true);
+        set_bits(&mut data, 290, 16, 3); // start = 3
+        set_bits(&mut data, 306, 16, 8); // end = 8
+
+        let vendors = extract_vendor_consents_v2(&data);
+        for vid in 3..=8 {
+            assert!(vendors.contains(&vid), "vendor {} should have consent", vid);
+        }
+        assert!(!vendors.contains(&2));
+        assert!(!vendors.contains(&9));
+        assert_eq!(vendors.len(), 6);
+    }
+
+    #[test]
+    fn test_v2_range_encoding_multiple_entries() {
+        // Two entries: single vendor 1 and range 10-12
+        let mut data = vec![0u8; 52];
+
+        set_bits(&mut data, 0, 6, 2); // version 2
+        set_bit(&mut data, 152, true); // purpose 1
+        set_bits(&mut data, 260, 16, 20); // max vendor id = 20
+        set_bit(&mut data, 276, true); // range encoding
+        set_bits(&mut data, 277, 12, 2); // num entries = 2
+
+        // Entry 1: single vendor 1
+        set_bit(&mut data, 289, false);
+        set_bits(&mut data, 290, 16, 1);
+        // After: 289 + 1 + 16 = 306
+
+        // Entry 2: range 10-12
+        set_bit(&mut data, 306, true);
+        set_bits(&mut data, 307, 16, 10);
+        set_bits(&mut data, 323, 16, 12);
+
+        let vendors = extract_vendor_consents_v2(&data);
+        assert!(vendors.contains(&1));
+        assert!(vendors.contains(&10));
+        assert!(vendors.contains(&11));
+        assert!(vendors.contains(&12));
+        assert!(!vendors.contains(&2));
+        assert!(!vendors.contains(&9));
+        assert!(!vendors.contains(&13));
+        assert_eq!(vendors.len(), 4);
+    }
+
+    #[test]
+    fn test_parse_range_entries_empty() {
+        // Zero entries should produce no vendors
+        let mut data = vec![0u8; 30];
+        let mut vendors = HashSet::new();
+        // num_entries = 0
+        set_bits(&mut data, 0, 12, 0);
+        parse_range_entries(&data, 0, 100, false, &mut vendors);
+        assert!(vendors.is_empty());
+    }
+
+    #[test]
+    fn test_v1_full_parse_range_encoding() {
+        // Build a complete TCF v1 byte array and parse via TcfConsent::parse_v1
+        let mut data = vec![0u8; 40];
+
+        set_bits(&mut data, 0, 6, 1); // version
+        set_bit(&mut data, 152, true); // purpose 1
+        set_bit(&mut data, 153, true); // purpose 2
+        set_bits(&mut data, 176, 16, 10); // max vendor = 10
+        set_bit(&mut data, 192, true); // range encoding
+        set_bit(&mut data, 193, false); // default consent = false
+        set_bits(&mut data, 194, 12, 1); // 1 entry
+        set_bit(&mut data, 206, true); // is_range = 1
+        set_bits(&mut data, 207, 16, 4); // start = 4
+        set_bits(&mut data, 223, 16, 6); // end = 6
+
+        let tcf = TcfConsent::parse_v1(&data).unwrap();
+        assert_eq!(tcf.version, 1);
+        assert!(tcf.has_purpose_consent(1));
+        assert!(tcf.has_purpose_consent(2));
+        assert!(tcf.has_vendor_consent(4));
+        assert!(tcf.has_vendor_consent(5));
+        assert!(tcf.has_vendor_consent(6));
+        assert!(!tcf.has_vendor_consent(3));
+        assert!(!tcf.has_vendor_consent(7));
+    }
+}

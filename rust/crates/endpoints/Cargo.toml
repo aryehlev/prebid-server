@@ -1,0 +1,35 @@
+[package]
+name = "pbs-endpoints"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "parity_auction"
+path = "src/bin/parity_auction.rs"
+
+[dependencies]
+axum = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+openrtb = { path = "../openrtb" }
+openrtb-ext = { path = "../openrtb-ext" }
+pbs-adapters = { path = "../adapters" }
+pbs-exchange = { path = "../exchange" }
+pbs-config = { path = "../config" }
+pbs-metrics = { path = "../metrics" }
+base64 = { workspace = true }
+chrono = { workspace = true }
+bytes = { workspace = true }
+async-trait = { workspace = true }
+reqwest = { workspace = true }
+dashmap = { workspace = true }
+futures = { workspace = true }
+tower = { version = "0.4", features = ["util"] }
+
+[dev-dependencies]
+tokio = { workspace = true }
+pbs-config = { path = "../config" }

@@ -1,0 +1,26 @@
+[package]
+name = "prebid-server"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "prebid-server"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+axum = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+openrtb = { path = "../openrtb" }
+openrtb-ext = { path = "../openrtb-ext" }
+pbs-adapters = { path = "../adapters" }
+pbs-exchange = { path = "../exchange" }
+pbs-endpoints = { path = "../endpoints" }
+pbs-config = { path = "../config" }
+pbs-metrics = { path = "../metrics" }
+reqwest = { workspace = true }
+tower-http = { workspace = true }
+uuid = { workspace = true }
