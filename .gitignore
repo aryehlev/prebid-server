@@ -54,3 +54,6 @@ prebid-server.iml
 *~
 *.swp
 *.swo
+
+# Parity oracle output artifacts
+parity/out/

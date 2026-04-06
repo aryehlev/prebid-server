@@ -1,0 +1,56 @@
+[
+  {
+    "domain": "endpoints",
+    "status": "not-yet-instrumented",
+    "summary": "No oracle evidence yet for this domain.",
+    "evidence_links": null
+  },
+  {
+    "domain": "config_bootstrap",
+    "status": "not-yet-instrumented",
+    "summary": "No oracle evidence yet for this domain.",
+    "evidence_links": null
+  },
+  {
+    "domain": "stored_data",
+    "status": "not-yet-instrumented",
+    "summary": "No oracle evidence yet for this domain.",
+    "evidence_links": null
+  },
+  {
+    "domain": "auction_lifecycle",
+    "status": "not-yet-instrumented",
+    "summary": "No oracle evidence yet for this domain.",
+    "evidence_links": null
+  },
+  {
+    "domain": "policy_privacy_identity",
+    "status": "not-yet-instrumented",
+    "summary": "No oracle evidence yet for this domain.",
+    "evidence_links": null
+  },
+  {
+    "domain": "bidders_adapters",
+    "status": "not-yet-instrumented",
+    "summary": "No oracle evidence yet for this domain.",
+    "evidence_links": null
+  },
+  {
+    "domain": "hooks_modules",
+    "status": "not-yet-instrumented",
+    "summary": "No oracle evidence yet for this domain.",
+    "evidence_links": null
+  },
+  {
+    "domain": "cache_support_flows",
+    "status": "not-yet-instrumented",
+    "summary": "No oracle evidence yet for this domain.",
+    "evidence_links": null
+  },
+  {
+    "domain": "cutover_proof",
+    "status": "not-yet-instrumented",
+    "summary": "No oracle evidence yet for this domain.",
+    "evidence_links": null
+  }
+]
