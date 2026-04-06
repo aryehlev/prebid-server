@@ -198,6 +198,29 @@ pub trait MetricsEngine: Send + Sync {
     /// Record a `/setuid` call.
     fn record_setuid(&self, labels: &SetUidLabels);
 
+    /// Record a `/setuid` call by status (simplified form matching Go interface).
+    fn record_set_uid(&self, status: SetUidStatus);
+
+    /// Record adapter connection metrics (reuse, idle).
+    fn record_adapter_connections(
+        &self,
+        labels: &AdapterLabels,
+        reused: bool,
+        was_idle: bool,
+    );
+
+    /// Record prebid cache request time.
+    fn record_prebid_cache_request_time(&self, success: bool, duration: Duration);
+
+    /// Record an account-level request.
+    fn record_account_request(&self, account_id: &str);
+
+    /// Record a connection accept event.
+    fn record_connection_accept(&self, success: bool);
+
+    /// Record a connection close event.
+    fn record_connection_close(&self, success: bool);
+
     /// Record a stored-request cache lookup (hit = found, miss = !found).
     fn record_stored_request(&self, found: bool);
 
@@ -259,6 +282,11 @@ const PRICE_BUCKETS: &[f64] = &[
     0.1, 0.25, 0.5, 1.0, 2.0, 3.0, 5.0, 10.0, 15.0, 20.0, 50.0,
 ];
 
+/// Bucket boundaries (ms) for prebid cache request durations.
+const CACHE_DURATION_BUCKETS: &[f64] = &[
+    5.0, 10.0, 25.0, 50.0, 100.0, 200.0, 400.0, 800.0,
+];
+
 // ---------------------------------------------------------------------------
 // PrometheusMetrics
 // ---------------------------------------------------------------------------
@@ -298,9 +326,20 @@ pub struct PrometheusMetrics {
     auction_duration_ms: HistogramVec,
     http_request_duration_ms: HistogramVec,
 
-    // -- connections (legacy, kept for backward compat) --
+    // -- adapter connections --
+    adapter_connections_total: IntCounterVec,
+
+    // -- prebid cache --
+    prebid_cache_request_time_ms: HistogramVec,
+
+    // -- account requests --
+    account_requests_total: IntCounterVec,
+
+    // -- connections --
     connections_accepted: prometheus::IntCounter,
     connections_closed: prometheus::IntCounter,
+    connection_accept_total: IntCounterVec,
+    connection_close_total: IntCounterVec,
 }
 
 impl PrometheusMetrics {
@@ -475,6 +514,60 @@ impl PrometheusMetrics {
             &["request_type", "status_code"],
         )?;
 
+        // -- adapter connections ------------------------------------------------
+
+        let adapter_connections_total = IntCounterVec::new(
+            Opts::new(
+                "adapter_connections_total",
+                "Total adapter connections by reuse and idle status",
+            )
+            .namespace(namespace),
+            &["adapter", "reused", "was_idle"],
+        )?;
+
+        // -- prebid cache -------------------------------------------------------
+
+        let prebid_cache_request_time_ms = HistogramVec::new(
+            HistogramOpts::new(
+                "prebid_cache_request_time_ms",
+                "Prebid cache request time in milliseconds",
+            )
+            .namespace(namespace)
+            .buckets(CACHE_DURATION_BUCKETS.to_vec()),
+            &["success"],
+        )?;
+
+        // -- account requests ---------------------------------------------------
+
+        let account_requests_total = IntCounterVec::new(
+            Opts::new(
+                "account_requests_total",
+                "Total requests by account ID",
+            )
+            .namespace(namespace),
+            &["account_id"],
+        )?;
+
+        // -- connections --------------------------------------------------------
+
+        let connection_accept_total = IntCounterVec::new(
+            Opts::new(
+                "connection_accept_total",
+                "Total connection accept events by success",
+            )
+            .namespace(namespace),
+            &["success"],
+        )?;
+
+        let connection_close_total = IntCounterVec::new(
+            Opts::new(
+                "connection_close_total",
+                "Total connection close events by success",
+            )
+            .namespace(namespace),
+            &["success"],
+        )?;
+
         // -- connections (legacy) ------------------------------------------------
 
         let connections_accepted = prometheus::IntCounter::with_opts(
@@ -511,6 +604,11 @@ impl PrometheusMetrics {
         registry.register(Box::new(bidder_errors_total.clone()))?;
         registry.register(Box::new(auction_duration_ms.clone()))?;
         registry.register(Box::new(http_request_duration_ms.clone()))?;
+        registry.register(Box::new(adapter_connections_total.clone()))?;
+        registry.register(Box::new(prebid_cache_request_time_ms.clone()))?;
+        registry.register(Box::new(account_requests_total.clone()))?;
+        registry.register(Box::new(connection_accept_total.clone()))?;
+        registry.register(Box::new(connection_close_total.clone()))?;
         registry.register(Box::new(connections_accepted.clone()))?;
         registry.register(Box::new(connections_closed.clone()))?;
 
@@ -535,6 +633,11 @@ impl PrometheusMetrics {
             bidder_errors_total,
             auction_duration_ms,
             http_request_duration_ms,
+            adapter_connections_total,
+            prebid_cache_request_time_ms,
+            account_requests_total,
+            connection_accept_total,
+            connection_close_total,
             connections_accepted,
             connections_closed,
         })
@@ -658,6 +761,52 @@ impl MetricsEngine for PrometheusMetrics {
             .inc();
     }
 
+    fn record_set_uid(&self, status: SetUidStatus) {
+        self.setuid_total
+            .with_label_values(&["", status.as_str()])
+            .inc();
+    }
+
+    fn record_adapter_connections(
+        &self,
+        labels: &AdapterLabels,
+        reused: bool,
+        was_idle: bool,
+    ) {
+        let reused_str = if reused { "true" } else { "false" };
+        let idle_str = if was_idle { "true" } else { "false" };
+        self.adapter_connections_total
+            .with_label_values(&[&labels.adapter, reused_str, idle_str])
+            .inc();
+    }
+
+    fn record_prebid_cache_request_time(&self, success: bool, duration: Duration) {
+        let success_str = if success { "true" } else { "false" };
+        self.prebid_cache_request_time_ms
+            .with_label_values(&[success_str])
+            .observe(duration.as_millis() as f64);
+    }
+
+    fn record_account_request(&self, account_id: &str) {
+        self.account_requests_total
+            .with_label_values(&[account_id])
+            .inc();
+    }
+
+    fn record_connection_accept(&self, success: bool) {
+        let success_str = if success { "true" } else { "false" };
+        self.connection_accept_total
+            .with_label_values(&[success_str])
+            .inc();
+    }
+
+    fn record_connection_close(&self, success: bool) {
+        let success_str = if success { "true" } else { "false" };
+        self.connection_close_total
+            .with_label_values(&[success_str])
+            .inc();
+    }
+
     fn record_stored_request(&self, found: bool) {
         if found {
             self.stored_request_hit_total.inc();
@@ -745,6 +894,18 @@ impl MetricsEngine for NoopMetrics {
     fn record_adapter_time(&self, _labels: &AdapterLabels, _duration: Duration) {}
     fn record_cookie_sync(&self, _status: CookieSyncStatus) {}
     fn record_setuid(&self, _labels: &SetUidLabels) {}
+    fn record_set_uid(&self, _status: SetUidStatus) {}
+    fn record_adapter_connections(
+        &self,
+        _labels: &AdapterLabels,
+        _reused: bool,
+        _was_idle: bool,
+    ) {
+    }
+    fn record_prebid_cache_request_time(&self, _success: bool, _duration: Duration) {}
+    fn record_account_request(&self, _account_id: &str) {}
+    fn record_connection_accept(&self, _success: bool) {}
+    fn record_connection_close(&self, _success: bool) {}
     fn record_stored_request(&self, _found: bool) {}
     fn to_text(&self) -> String {
         String::new()
@@ -769,6 +930,12 @@ pub struct DummyMetricsEngine {
     pub adapter_time_count: AtomicU64,
     pub cookie_sync_count: AtomicU64,
     pub setuid_count: AtomicU64,
+    pub set_uid_count: AtomicU64,
+    pub adapter_connections_count: AtomicU64,
+    pub prebid_cache_request_time_count: AtomicU64,
+    pub account_request_count: AtomicU64,
+    pub connection_accept_count: AtomicU64,
+    pub connection_close_count: AtomicU64,
     pub stored_request_found_count: AtomicU64,
     pub stored_request_miss_count: AtomicU64,
 }
@@ -785,6 +952,12 @@ impl DummyMetricsEngine {
             adapter_time_count: AtomicU64::new(0),
             cookie_sync_count: AtomicU64::new(0),
             setuid_count: AtomicU64::new(0),
+            set_uid_count: AtomicU64::new(0),
+            adapter_connections_count: AtomicU64::new(0),
+            prebid_cache_request_time_count: AtomicU64::new(0),
+            account_request_count: AtomicU64::new(0),
+            connection_accept_count: AtomicU64::new(0),
+            connection_close_count: AtomicU64::new(0),
             stored_request_found_count: AtomicU64::new(0),
             stored_request_miss_count: AtomicU64::new(0),
         }
@@ -838,6 +1011,40 @@ impl MetricsEngine for DummyMetricsEngine {
 
     fn record_setuid(&self, _labels: &SetUidLabels) {
         self.setuid_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_set_uid(&self, _status: SetUidStatus) {
+        self.set_uid_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_adapter_connections(
+        &self,
+        _labels: &AdapterLabels,
+        _reused: bool,
+        _was_idle: bool,
+    ) {
+        self.adapter_connections_count
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_prebid_cache_request_time(&self, _success: bool, _duration: Duration) {
+        self.prebid_cache_request_time_count
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_account_request(&self, _account_id: &str) {
+        self.account_request_count
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_connection_accept(&self, _success: bool) {
+        self.connection_accept_count
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_connection_close(&self, _success: bool) {
+        self.connection_close_count
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     fn record_stored_request(&self, found: bool) {
@@ -902,6 +1109,12 @@ mod tests {
         m.record_adapter_time(&sample_adapter_labels(), Duration::from_millis(100));
         m.record_cookie_sync(CookieSyncStatus::Ok);
         m.record_setuid(&sample_setuid_labels());
+        m.record_set_uid(SetUidStatus::Ok);
+        m.record_adapter_connections(&sample_adapter_labels(), true, false);
+        m.record_prebid_cache_request_time(true, Duration::from_millis(50));
+        m.record_account_request("test_account");
+        m.record_connection_accept(true);
+        m.record_connection_close(true);
         m.record_stored_request(true);
         m.record_stored_request(false);
         assert_eq!(m.to_text(), "");
@@ -1026,6 +1239,55 @@ mod tests {
         assert_eq!(d.request_count.load(Ordering::Relaxed), 0);
     }
 
+    #[test]
+    fn dummy_counts_set_uid() {
+        let d = DummyMetricsEngine::new();
+        d.record_set_uid(SetUidStatus::Ok);
+        d.record_set_uid(SetUidStatus::BadRequest);
+        assert_eq!(d.set_uid_count.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn dummy_counts_adapter_connections() {
+        let d = DummyMetricsEngine::new();
+        d.record_adapter_connections(&sample_adapter_labels(), true, false);
+        d.record_adapter_connections(&sample_adapter_labels(), false, true);
+        assert_eq!(d.adapter_connections_count.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn dummy_counts_prebid_cache_request_time() {
+        let d = DummyMetricsEngine::new();
+        d.record_prebid_cache_request_time(true, Duration::from_millis(100));
+        assert_eq!(
+            d.prebid_cache_request_time_count.load(Ordering::Relaxed),
+            1
+        );
+    }
+
+    #[test]
+    fn dummy_counts_account_request() {
+        let d = DummyMetricsEngine::new();
+        d.record_account_request("acct_123");
+        d.record_account_request("acct_456");
+        assert_eq!(d.account_request_count.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn dummy_counts_connection_accept() {
+        let d = DummyMetricsEngine::new();
+        d.record_connection_accept(true);
+        d.record_connection_accept(false);
+        assert_eq!(d.connection_accept_count.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn dummy_counts_connection_close() {
+        let d = DummyMetricsEngine::new();
+        d.record_connection_close(true);
+        assert_eq!(d.connection_close_count.load(Ordering::Relaxed), 1);
+    }
+
     // -- PrometheusMetrics smoke tests ---------------------------------------
 
     #[test]
@@ -1110,6 +1372,59 @@ mod tests {
         let text = pm.to_text();
         assert!(text.contains("stored_request_hit_total"));
         assert!(text.contains("stored_request_miss_total"));
+    }
+
+    #[test]
+    fn prometheus_record_set_uid() {
+        let pm = PrometheusMetrics::new("pbs").expect("create");
+        pm.record_set_uid(SetUidStatus::Ok);
+        pm.record_set_uid(SetUidStatus::BadRequest);
+        let text = pm.to_text();
+        assert!(text.contains("setuid_total"));
+    }
+
+    #[test]
+    fn prometheus_record_adapter_connections() {
+        let pm = PrometheusMetrics::new("pbs").expect("create");
+        pm.record_adapter_connections(&sample_adapter_labels(), true, false);
+        let text = pm.to_text();
+        assert!(text.contains("adapter_connections_total"));
+        assert!(text.contains("appnexus"));
+    }
+
+    #[test]
+    fn prometheus_record_prebid_cache_request_time() {
+        let pm = PrometheusMetrics::new("pbs").expect("create");
+        pm.record_prebid_cache_request_time(true, Duration::from_millis(50));
+        pm.record_prebid_cache_request_time(false, Duration::from_millis(200));
+        let text = pm.to_text();
+        assert!(text.contains("prebid_cache_request_time_ms"));
+    }
+
+    #[test]
+    fn prometheus_record_account_request() {
+        let pm = PrometheusMetrics::new("pbs").expect("create");
+        pm.record_account_request("account_42");
+        let text = pm.to_text();
+        assert!(text.contains("account_requests_total"));
+        assert!(text.contains("account_42"));
+    }
+
+    #[test]
+    fn prometheus_record_connection_accept() {
+        let pm = PrometheusMetrics::new("pbs").expect("create");
+        pm.record_connection_accept(true);
+        pm.record_connection_accept(false);
+        let text = pm.to_text();
+        assert!(text.contains("connection_accept_total"));
+    }
+
+    #[test]
+    fn prometheus_record_connection_close() {
+        let pm = PrometheusMetrics::new("pbs").expect("create");
+        pm.record_connection_close(true);
+        let text = pm.to_text();
+        assert!(text.contains("connection_close_total"));
     }
 
     #[test]

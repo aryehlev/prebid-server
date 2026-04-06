@@ -2264,6 +2264,246 @@ fn is_valid_url(s: &str) -> bool {
     true
 }
 
+// ---------------------------------------------------------------------------
+// BidRoundingMode
+// ---------------------------------------------------------------------------
+
+/// Bid rounding mode controlling how bid prices are rounded.
+///
+/// Maps to the Go `BidRoundingMode` type in config/account.go.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum BidRoundingMode {
+    /// Round down (floor).
+    #[serde(rename = "down")]
+    Down,
+    /// True rounding (standard arithmetic rounding).
+    #[serde(rename = "true")]
+    True,
+    /// Time-split rounding (alternates rounding direction based on time).
+    #[serde(rename = "timesplit")]
+    TimeSplit,
+    /// Round up (ceil).
+    #[serde(rename = "up")]
+    Up,
+}
+
+impl Default for BidRoundingMode {
+    fn default() -> Self {
+        BidRoundingMode::Down
+    }
+}
+
+impl std::fmt::Display for BidRoundingMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BidRoundingMode::Down => write!(f, "down"),
+            BidRoundingMode::True => write!(f, "true"),
+            BidRoundingMode::TimeSplit => write!(f, "timesplit"),
+            BidRoundingMode::Up => write!(f, "up"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DefaultTTLs
+// ---------------------------------------------------------------------------
+
+/// Default TTL (time-to-live) values in seconds for each media type.
+///
+/// Maps to the Go `DefaultTTLs` struct in config/config.go. This is
+/// distinct from `CacheTTL` which is used for cache-specific TTL config.
+/// `DefaultTTLs` represents the global default TTL applied when a bidder
+/// does not specify one.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DefaultTTLs {
+    /// Default TTL for banner creatives (seconds).
+    #[serde(default)]
+    pub banner: i32,
+    /// Default TTL for video creatives (seconds).
+    #[serde(default)]
+    pub video: i32,
+    /// Default TTL for native creatives (seconds).
+    #[serde(default)]
+    pub native: i32,
+    /// Default TTL for audio creatives (seconds).
+    #[serde(default)]
+    pub audio: i32,
+}
+
+// ---------------------------------------------------------------------------
+// RequestValidationExt
+// ---------------------------------------------------------------------------
+
+/// Extended request validation settings controlling which validation
+/// steps can be skipped.
+///
+/// These flags allow operators to skip specific validation passes during
+/// request processing, for example when testing or for backward compat.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RequestValidationExt {
+    /// When true, bidder-specific parameter validation is skipped.
+    #[serde(default)]
+    pub skip_bidder_params: bool,
+    /// When true, native request validation is skipped.
+    #[serde(default)]
+    pub skip_native: bool,
+}
+
+// ---------------------------------------------------------------------------
+// TCF2 BasicEnforcementVendors
+// ---------------------------------------------------------------------------
+
+/// Vendor set for TCF2 basic enforcement.
+///
+/// When basic enforcement is used for a purpose, only vendors in this set
+/// are subject to the simplified consent check. All other vendors fall
+/// through to full enforcement.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Tcf2BasicEnforcementVendors {
+    /// Vendor IDs subject to basic enforcement.
+    #[serde(default)]
+    pub vendor_ids: Vec<u16>,
+}
+
+// ---------------------------------------------------------------------------
+// HostCookieOptOut
+// ---------------------------------------------------------------------------
+
+/// Extended host cookie opt-out configuration.
+///
+/// Provides additional settings beyond the simple CookieConfig for
+/// controlling the opt-out experience.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HostCookieOptOut {
+    /// Name of the opt-out cookie.
+    #[serde(default)]
+    pub name: String,
+    /// Value that indicates the user has opted out.
+    #[serde(default)]
+    pub value: String,
+    /// Custom URL the user is redirected to after opting out.
+    #[serde(default)]
+    pub custom_redirect_url: String,
+}
+
+// ---------------------------------------------------------------------------
+// ExperimentAdsCertConfig (extended)
+// ---------------------------------------------------------------------------
+
+/// Extended A/B testing configuration for experiments.
+///
+/// Maps to the Go `Experiment` struct extended fields. Provides knobs
+/// for enabling experimental features in a controlled rollout.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExperimentABTestConfig {
+    /// When true, A/B testing for this experiment is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Percentage of traffic to route to the experimental path (0..100).
+    #[serde(default)]
+    pub percentage: u8,
+    /// Identifier for this experiment (used in analytics/logging).
+    #[serde(default)]
+    pub experiment_id: String,
+}
+
+// ---------------------------------------------------------------------------
+// EndpointCompressionMode
+// ---------------------------------------------------------------------------
+
+/// Compression mode for bidder endpoint requests.
+///
+/// Determines whether and how outgoing bid requests are compressed
+/// before being sent to the bidder's endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum EndpointCompressionMode {
+    /// No compression.
+    #[serde(rename = "none")]
+    None,
+    /// GZIP compression.
+    #[serde(rename = "gzip")]
+    Gzip,
+}
+
+impl Default for EndpointCompressionMode {
+    fn default() -> Self {
+        EndpointCompressionMode::None
+    }
+}
+
+impl std::fmt::Display for EndpointCompressionMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EndpointCompressionMode::None => write!(f, "none"),
+            EndpointCompressionMode::Gzip => write!(f, "gzip"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BidderInfoWhiteLabel
+// ---------------------------------------------------------------------------
+
+/// White-label bidder configuration.
+///
+/// When `white_label_only` is true on a `BidderInfo`, the adapter is not
+/// available as a standalone bidder and can only be used through an alias.
+/// This struct captures additional metadata for white-label adapters.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BidderInfoWhiteLabel {
+    /// When true, this adapter can only be accessed through an alias.
+    #[serde(default)]
+    pub white_label_only: bool,
+    /// Optional list of allowed alias names. Empty means any alias is allowed.
+    #[serde(default)]
+    pub allowed_aliases: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Tcf2PurposeEnforcementConfig (extended)
+// ---------------------------------------------------------------------------
+
+/// Extended per-purpose TCF2 enforcement configuration including
+/// basic enforcement vendor sets and purpose-specific flags.
+///
+/// Supplements `Tcf2PurposeConfig` with additional enforcement
+/// granularity used in the Go implementation.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Tcf2PurposeEnforcementConfig {
+    /// Enforcement algorithm ("basic" or "full").
+    #[serde(default)]
+    pub enforce_algo: String,
+    /// Whether purpose consent is enforced.
+    #[serde(default)]
+    pub enforce_purpose: bool,
+    /// Whether vendor consent is enforced.
+    #[serde(default)]
+    pub enforce_vendors: bool,
+    /// Bidders that are exempt from this purpose's enforcement.
+    #[serde(default)]
+    pub vendor_exceptions: Vec<String>,
+    /// Vendors subject to basic enforcement for this purpose.
+    #[serde(default)]
+    pub basic_enforcement_vendors: Tcf2BasicEnforcementVendors,
+}
+
+// ---------------------------------------------------------------------------
+// Tcf2SpecialFeaturesConfig (extended)
+// ---------------------------------------------------------------------------
+
+/// Extended special features enforcement configuration.
+///
+/// Covers special features 1 and 2 with per-feature vendor exceptions.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Tcf2SpecialFeaturesConfig {
+    /// Special Feature 1 enforcement.
+    #[serde(default)]
+    pub special_feature1: Tcf2SpecialFeatureConfig,
+    /// Special Feature 2 enforcement (reserved for future use).
+    #[serde(default)]
+    pub special_feature2: Tcf2SpecialFeatureConfig,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
