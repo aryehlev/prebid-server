@@ -444,6 +444,8 @@ pub struct Site {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub domain: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub cattax: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cat: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sectioncat: Option<Vec<String>>,
@@ -484,6 +486,8 @@ pub struct App {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub storeurl: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub cattax: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cat: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sectioncat: Option<Vec<String>>,
@@ -513,6 +517,8 @@ pub struct Publisher {
     pub id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cattax: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cat: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -550,6 +556,8 @@ pub struct Content {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cat: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub cattax: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub prodq: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub videoquality: Option<i32>,
@@ -572,6 +580,8 @@ pub struct Content {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub langb: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub embeddable: Option<i32>,
     #[serde(default)]
     pub data: Vec<Data>,
@@ -587,6 +597,8 @@ pub struct Producer {
     pub id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cattax: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cat: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
