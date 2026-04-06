@@ -20,8 +20,21 @@ pub mod privacy;
 pub mod seat_non_bids;
 pub mod tmax;
 pub mod usersync;
+pub mod account;
+pub mod adapter_util;
+pub mod amp;
+pub mod auction;
+pub mod clone;
+pub mod defaults;
+pub mod ortb_version;
+pub mod price_granularity;
+pub mod privacysandbox;
+pub mod request_validator;
 pub mod schain;
+pub mod stored_responses;
+pub mod targeting;
 pub mod validation;
+pub mod vast;
 
 #[cfg(test)]
 mod tests;

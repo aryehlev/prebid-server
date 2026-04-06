@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 use openrtb::SupplyChain;
 
@@ -1925,6 +1926,147 @@ pub struct ExtImpOpenx {
 
     #[serde(rename = "customParams", skip_serializing_if = "Option::is_none")]
     pub custom_params: Option<HashMap<String, serde_json::Value>>,
+}
+
+// ── Bidder Management Functions ─────────────────────────────────────────────
+
+/// A static map of lowercase bidder names to their canonical BidderName.
+/// Built once and cached.
+fn bidder_name_map() -> &'static HashMap<String, BidderName> {
+    static MAP: OnceLock<HashMap<String, BidderName>> = OnceLock::new();
+    MAP.get_or_init(|| {
+        let names = all_bidder_names();
+        let mut map = HashMap::with_capacity(names.len());
+        for name in names {
+            map.insert(name.0.to_lowercase(), name);
+        }
+        map
+    })
+}
+
+/// All reserved bidder name strings.
+const RESERVED_NAMES: &[&str] = &[
+    BIDDER_RESERVED_ALL,
+    BIDDER_RESERVED_CONTEXT,
+    BIDDER_RESERVED_DATA,
+    BIDDER_RESERVED_GENERAL,
+    BIDDER_RESERVED_GPID,
+    BIDDER_RESERVED_PREBID,
+    BIDDER_RESERVED_SKADN,
+    BIDDER_RESERVED_TID,
+    BIDDER_RESERVED_AE,
+    BIDDER_RESERVED_IGS,
+];
+
+/// Check if a bidder name is reserved.
+pub fn is_bidder_name_reserved(name: &str) -> bool {
+    RESERVED_NAMES.iter().any(|&r| r.eq_ignore_ascii_case(name))
+}
+
+/// Check if a name can be used as a bidder (i.e., it's not reserved).
+pub fn is_potential_bidder(name: &str) -> bool {
+    !is_bidder_name_reserved(name)
+}
+
+/// Normalize a bidder name using case-insensitive lookup.
+/// Returns (BidderName, true) if found, or (BidderName(name), false) if not.
+pub fn normalize_bidder_name(name: &str) -> (BidderName, bool) {
+    let map = bidder_name_map();
+    match map.get(&name.to_lowercase()) {
+        Some(bn) => (bn.clone(), true),
+        None => (BidderName::new(name), false),
+    }
+}
+
+/// Normalize a bidder name, returning the canonical form if found,
+/// or the input unchanged if not.
+pub fn normalize_bidder_name_or_unchanged(name: &str) -> BidderName {
+    let (bn, _) = normalize_bidder_name(name);
+    bn
+}
+
+/// Build a HashMap from string to BidderName for all core bidders.
+pub fn build_bidder_map() -> HashMap<String, BidderName> {
+    let names = all_bidder_names();
+    let mut map = HashMap::with_capacity(names.len());
+    for name in names {
+        map.insert(name.0.clone(), name);
+    }
+    map
+}
+
+/// Build a Vec of all core bidder name strings.
+pub fn build_bidder_string_slice() -> Vec<String> {
+    all_bidder_names().into_iter().map(|n| n.0).collect()
+}
+
+/// Build a HashSet of all core bidder name strings.
+pub fn build_bidder_name_hash_set() -> std::collections::HashSet<String> {
+    all_bidder_names().into_iter().map(|n| n.0).collect()
+}
+
+// ── BidType additional methods ──────────────────────────────────────────────
+
+impl BidType {
+    /// Parse a string to a BidType.
+    pub fn parse(s: &str) -> Result<BidType, String> {
+        match s {
+            "banner" => Ok(BidType::Banner),
+            "video" => Ok(BidType::Video),
+            "audio" => Ok(BidType::Audio),
+            "native" => Ok(BidType::Native),
+            _ => Err(format!("invalid BidType: {}", s)),
+        }
+    }
+
+    /// Return all valid bid types.
+    pub fn all() -> Vec<BidType> {
+        vec![BidType::Banner, BidType::Video, BidType::Audio, BidType::Native]
+    }
+}
+
+// ── ExtAlternateBidderCodes validation ──────────────────────────────────────
+
+impl ExtAlternateBidderCodes {
+    /// Check if a bidder code is valid for a given adapter.
+    pub fn is_valid_bidder_code(&self, adapter: &str, bidder_code: &str) -> (bool, String) {
+        if !self.enabled.unwrap_or(false) {
+            return (false, "alternateBidderCodes disabled".to_string());
+        }
+        if adapter.eq_ignore_ascii_case(bidder_code) {
+            return (true, String::new());
+        }
+        if let Some(bidders) = &self.bidders {
+            let adapter_lower = adapter.to_lowercase();
+            if let Some(adapter_cfg) = bidders.get(&adapter_lower).or_else(|| bidders.get(adapter)) {
+                if !adapter_cfg.enabled.unwrap_or(false) {
+                    return (false, format!("alternateBidderCodes disabled for adapter {}", adapter));
+                }
+                if let Some(allowed) = &adapter_cfg.allowed_bidder_codes {
+                    if allowed.iter().any(|c| c == "*") || allowed.iter().any(|c| c.eq_ignore_ascii_case(bidder_code)) {
+                        return (true, String::new());
+                    }
+                    return (false, format!("bidder code {} not allowed for adapter {}", bidder_code, adapter));
+                }
+                return (false, format!("no allowed bidder codes configured for adapter {}", adapter));
+            }
+        }
+        (false, format!("adapter {} not found in alternateBidderCodes", adapter))
+    }
+}
+
+// ── PriceGranularity default constructor ────────────────────────────────────
+
+impl PriceGranularity {
+    /// Create the default "medium" price granularity used by Prebid Server.
+    pub fn new_default() -> Self {
+        PriceGranularity {
+            precision: Some(2),
+            ranges: Some(vec![
+                GranularityRange { min: 0.0, max: 20.0, increment: 0.1 },
+            ]),
+        }
+    }
 }
 
 // ── Unit Tests ─────────────────────────────────────────────────────────────

@@ -1476,17 +1476,14 @@ pub async fn cookie_sync_handler(
 
     // ── Compute effective limit (account defaults + max limit) ───────────────
     let account_default_limit = account_cfg
-        .and_then(|a| a.cookie_sync.as_ref())
-        .and_then(|cs| cs.default_limit);
+        .and_then(|a| a.cookie_sync.default_limit);
     let account_max_limit = account_cfg
-        .and_then(|a| a.cookie_sync.as_ref())
-        .and_then(|cs| cs.max_limit);
+        .and_then(|a| a.cookie_sync.max_limit);
     let limit = compute_effective_limit(body.limit, account_default_limit, account_max_limit);
 
     // ── Priority groups from account or global config ────────────────────────
     let priority_groups: Vec<Vec<String>> = account_cfg
-        .and_then(|a| a.cookie_sync.as_ref())
-        .and_then(|cs| cs.priority_groups.clone())
+        .map(|a| a.cookie_sync.priority_groups.clone())
         .unwrap_or_default();
 
     // Determine which bidders to check — use requested list or fall back to all known
@@ -1630,6 +1627,7 @@ pub async fn cookie_sync_handler(
     Json(CookieSyncResponse {
         status: status.to_string(),
         bidder_status,
+        debug: None,
     })
     .into_response()
 }

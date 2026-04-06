@@ -395,6 +395,194 @@ impl ActivityControl {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Privacy Scrubber — mirrors Go privacy/scrubber.go
+// ---------------------------------------------------------------------------
+// Provides functions to strip PII from BidRequest based on privacy regulations.
+
+/// IP masking configuration.
+#[derive(Debug, Clone)]
+pub struct IpConf {
+    pub ipv4_anon_keep_bits: u8,
+    pub ipv6_anon_keep_bits: u8,
+}
+
+impl Default for IpConf {
+    fn default() -> Self {
+        IpConf {
+            ipv4_anon_keep_bits: 24,
+            ipv6_anon_keep_bits: 56,
+        }
+    }
+}
+
+/// Scrub device hardware identifiers.
+pub fn scrub_device_ids(req: &mut openrtb::BidRequest) {
+    if let Some(device) = &mut req.device {
+        device.didmd5 = None;
+        device.didsha1 = None;
+        device.dpidmd5 = None;
+        device.dpidsha1 = None;
+        device.ifa = None;
+        device.macmd5 = None;
+        device.macsha1 = None;
+    }
+}
+
+/// Scrub user identifiers and demographic data.
+pub fn scrub_user_ids(req: &mut openrtb::BidRequest) {
+    if let Some(user) = &mut req.user {
+        user.data = Vec::new();
+        user.id = None;
+        user.buyeruid = None;
+        user.yob = None;
+        user.gender = None;
+        user.keywords = None;
+    }
+}
+
+/// Scrub user demographics (ID, buyeruid, yob, gender).
+pub fn scrub_user_demographics(req: &mut openrtb::BidRequest) {
+    if let Some(user) = &mut req.user {
+        user.buyeruid = None;
+        user.id = None;
+        user.yob = None;
+        user.gender = None;
+    }
+}
+
+/// Scrub EIDs (Extended IDs) from user.eids and user.ext.eids.
+pub fn scrub_eids(req: &mut openrtb::BidRequest) {
+    if let Some(user) = &mut req.user {
+        user.eids = None;
+        scrub_ext_field(&mut user.ext, "eids");
+    }
+}
+
+/// Scrub TID (Transaction ID) from source.tid and imp[].ext.tid.
+pub fn scrub_tid(req: &mut openrtb::BidRequest) {
+    if let Some(source) = &mut req.source {
+        source.tid = None;
+    }
+    for imp in &mut req.imp {
+        scrub_ext_field(&mut imp.ext, "tid");
+    }
+}
+
+/// Reduce geographic precision by rounding lat/lon to 2 decimal places.
+pub fn scrub_geo_precision(req: &mut openrtb::BidRequest) {
+    if let Some(user) = &mut req.user {
+        if let Some(geo) = &mut user.geo {
+            round_geo_precision(geo);
+        }
+    }
+    if let Some(device) = &mut req.device {
+        if let Some(geo) = &mut device.geo {
+            round_geo_precision(geo);
+        }
+    }
+}
+
+/// Remove all geographic data.
+pub fn scrub_geo_full(req: &mut openrtb::BidRequest) {
+    if let Some(user) = &mut req.user {
+        if user.geo.is_some() {
+            user.geo = Some(openrtb::Geo::default());
+        }
+    }
+    if let Some(device) = &mut req.device {
+        if device.geo.is_some() {
+            device.geo = Some(openrtb::Geo::default());
+        }
+    }
+}
+
+/// Mask device IP addresses for anonymization.
+pub fn scrub_device_ip(req: &mut openrtb::BidRequest, ip_conf: &IpConf) {
+    if let Some(device) = &mut req.device {
+        if let Some(ref ip) = device.ip {
+            device.ip = Some(scrub_ip(ip, ip_conf.ipv4_anon_keep_bits, 32));
+        }
+        if let Some(ref ipv6) = device.ipv6 {
+            device.ipv6 = Some(scrub_ip(ipv6, ip_conf.ipv6_anon_keep_bits, 128));
+        }
+    }
+}
+
+/// Full privacy scrub: device IDs, IPs, user demographics, ext field, and geo.
+/// Mirrors Go `ScrubDeviceIDsIPsUserDemoExt`.
+pub fn scrub_device_ids_ips_user_demo_ext(
+    req: &mut openrtb::BidRequest,
+    ip_conf: &IpConf,
+    ext_field_name: &str,
+    scrub_full_geo: bool,
+) {
+    scrub_device_ids(req);
+    scrub_device_ip(req, ip_conf);
+    scrub_user_demographics(req);
+    if let Some(user) = &mut req.user {
+        scrub_ext_field(&mut user.ext, ext_field_name);
+    }
+    if scrub_full_geo {
+        scrub_geo_full(req);
+    } else {
+        scrub_geo_precision(req);
+    }
+}
+
+/// Scrub user FPD (First Party Data). Mirrors Go `ScrubUserFPD`.
+pub fn scrub_user_fpd(req: &mut openrtb::BidRequest) {
+    scrub_device_ids(req);
+    scrub_user_ids(req);
+    if let Some(user) = &mut req.user {
+        scrub_ext_field(&mut user.ext, "data");
+        user.eids = None;
+    }
+}
+
+/// Scrub GDPR-related identifiers. Mirrors Go `ScrubGdprID`.
+pub fn scrub_gdpr_id(req: &mut openrtb::BidRequest) {
+    scrub_device_ids(req);
+    scrub_user_demographics(req);
+    if let Some(user) = &mut req.user {
+        scrub_ext_field(&mut user.ext, "eids");
+    }
+}
+
+/// Scrub geo and device IP. Mirrors Go `ScrubGeoAndDeviceIP`.
+pub fn scrub_geo_and_device_ip(req: &mut openrtb::BidRequest, ip_conf: &IpConf) {
+    scrub_device_ip(req, ip_conf);
+    scrub_geo_precision(req);
+}
+
+// -- internal helpers --
+
+fn scrub_ip(ip: &str, keep_bits: u8, total_bits: u8) -> String {
+    if ip.is_empty() {
+        return String::new();
+    }
+    if total_bits == 32 {
+        pbs_util::iputil::mask_ipv4(ip, keep_bits).unwrap_or_default()
+    } else {
+        pbs_util::iputil::mask_ipv6(ip, keep_bits).unwrap_or_default()
+    }
+}
+
+fn round_geo_precision(geo: &mut openrtb::Geo) {
+    if let Some(lat) = geo.lat {
+        geo.lat = Some((lat * 100.0 + 0.5).floor() / 100.0);
+    }
+    if let Some(lon) = geo.lon {
+        geo.lon = Some((lon * 100.0 + 0.5).floor() / 100.0);
+    }
+}
+
+fn scrub_ext_field(ext: &mut Option<serde_json::Value>, field: &str) {
+    if let Some(serde_json::Value::Object(map)) = ext {
+        map.remove(field);
+    }
+}
+
 /// Sanitize a `BidRequest` for COPPA compliance by stripping user and device
 /// identifiers before the request is forwarded to bidders.
 ///
@@ -495,6 +683,7 @@ mod tests {
         let mut req = openrtb::BidRequest::default();
         req.regs = Some(openrtb::Regs {
             coppa: None,
+            gdpr: None,
             us_privacy: None,
             gpp: None,
             gpp_sid: None,
@@ -515,6 +704,7 @@ mod tests {
         let mut req = openrtb::BidRequest::default();
         req.regs = Some(openrtb::Regs {
             coppa: Some(1),
+            gdpr: None,
             us_privacy: None,
             gpp: None,
             gpp_sid: None,

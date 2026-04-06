@@ -1484,6 +1484,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "pbs-errortypes"
+version = "0.1.0"
+dependencies = [
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "pbs-exchange"
 version = "0.1.0"
 dependencies = [
@@ -1500,6 +1507,7 @@ dependencies = [
  "pbs-config",
  "pbs-currency",
  "pbs-metrics",
+ "pbs-util",
  "rand 0.8.5",
  "regex",
  "reqwest",
@@ -1527,6 +1535,8 @@ name = "pbs-util"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
+ "ipnet",
  "rand 0.8.5",
  "serde",
  "serde_json",

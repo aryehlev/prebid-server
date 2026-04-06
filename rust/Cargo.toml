@@ -2,6 +2,7 @@
 members = [
     "crates/openrtb",
     "crates/openrtb-ext",
+    "crates/errortypes",
     "crates/config",
     "crates/util",
     "crates/adapters",

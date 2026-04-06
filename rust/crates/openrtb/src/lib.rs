@@ -755,6 +755,9 @@ pub struct User {
     pub gender: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub keywords: Option<String>,
+    /// User consent string (OpenRTB 2.6 first-class field, was in ext for 2.5).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub consent: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub customdata: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -814,6 +817,9 @@ pub struct Dsa {
 pub struct Regs {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub coppa: Option<i32>,
+    /// GDPR flag (OpenRTB 2.6 first-class field, was in ext for 2.5).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gdpr: Option<i8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub us_privacy: Option<String>,
     /// GPP consent string (Global Privacy Platform).

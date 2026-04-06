@@ -20,6 +20,7 @@ pbs-adapters = { path = "../adapters" }
 pbs-metrics = { path = "../metrics" }
 pbs-config = { path = "../config" }
 pbs-currency = { path = "../currency" }
+pbs-util = { path = "../util" }
 flate2 = { workspace = true }
 chrono = { workspace = true }
 base64 = { workspace = true }
