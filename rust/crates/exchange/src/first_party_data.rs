@@ -184,6 +184,162 @@ pub fn resolve_fpd_for_bidders(
     resolve_fpd(request, &fpd_config)
 }
 
+/// Resolved first party data for a single bidder.
+///
+/// Contains the fully-merged site, app, user, and device objects
+/// ready to be applied to a bid request.
+///
+/// Mirrors Go `firstpartydata.ResolvedFirstPartyData`.
+#[derive(Debug, Clone, Default)]
+pub struct ResolvedFirstPartyData {
+    pub site: Option<openrtb::Site>,
+    pub app: Option<openrtb::App>,
+    pub user: Option<openrtb::User>,
+}
+
+/// Extract global FPD from the request's site/app/user ext.data sections.
+///
+/// Returns a map of section name to the raw JSON data extracted.
+/// Also removes the extracted data from the request to avoid leakage.
+///
+/// Mirrors Go `firstpartydata.ExtractGlobalFPD`.
+pub fn extract_global_fpd(request: &mut BidRequest) -> HashMap<String, Value> {
+    let mut result = HashMap::new();
+
+    // Extract site.ext.data
+    if let Some(site) = &mut request.site {
+        if let Some(ext) = &mut site.ext {
+            if let Some(data) = ext.get("data").cloned() {
+                result.insert("site".to_string(), data);
+                ext.as_object_mut().map(|m| m.remove("data"));
+            }
+        }
+    }
+
+    // Extract app.ext.data
+    if let Some(app) = &mut request.app {
+        if let Some(ext) = &mut app.ext {
+            if let Some(data) = ext.get("data").cloned() {
+                result.insert("app".to_string(), data);
+                ext.as_object_mut().map(|m| m.remove("data"));
+            }
+        }
+    }
+
+    // Extract user.ext.data
+    if let Some(user) = &mut request.user {
+        if let Some(ext) = &mut user.ext {
+            if let Some(data) = ext.get("data").cloned() {
+                result.insert("user".to_string(), data);
+                ext.as_object_mut().map(|m| m.remove("data"));
+            }
+        }
+    }
+
+    result
+}
+
+/// Extract OpenRTB-standard global FPD (user.data, site.content.data, app.content.data).
+///
+/// Removes the extracted data arrays from the request to avoid leakage.
+///
+/// Mirrors Go `firstpartydata.ExtractOpenRtbGlobalFPD`.
+pub fn extract_openrtb_global_fpd(request: &mut BidRequest) -> HashMap<String, Vec<openrtb::Data>> {
+    let mut result = HashMap::new();
+
+    // Extract user.data
+    if let Some(user) = &mut request.user {
+        if !user.data.is_empty() {
+            result.insert("user".to_string(), std::mem::take(&mut user.data));
+        }
+    }
+
+    // Extract site.content.data
+    if let Some(site) = &mut request.site {
+        if let Some(content) = &mut site.content {
+            if !content.data.is_empty() {
+                result.insert(
+                    "siteContent".to_string(),
+                    std::mem::take(&mut content.data),
+                );
+            }
+        }
+    }
+
+    // Extract app.content.data
+    if let Some(app) = &mut request.app {
+        if let Some(content) = &mut app.content {
+            if !content.data.is_empty() {
+                result.insert(
+                    "appContent".to_string(),
+                    std::mem::take(&mut content.data),
+                );
+            }
+        }
+    }
+
+    result
+}
+
+/// Full FPD extraction and resolution pipeline.
+///
+/// 1. Extracts global FPD from the request
+/// 2. Extracts per-bidder FPD configs
+/// 3. Merges everything together for each bidder
+///
+/// Mirrors Go `firstpartydata.ExtractFPDForBidders`.
+pub fn extract_fpd_for_bidders(
+    request: &mut BidRequest,
+    bidder_names: &[&str],
+) -> HashMap<String, ResolvedFirstPartyData> {
+    let global_fpd = extract_global_fpd(request);
+    let openrtb_global_fpd = extract_openrtb_global_fpd(request);
+
+    let mut result = HashMap::new();
+
+    for &bidder in bidder_names {
+        let fpd_config = extract_fpd_for_bidder(request, bidder);
+        let bidder_req = apply_fpd_to_request(request, &fpd_config);
+
+        // Re-apply global FPD to the bidder's request
+        let mut resolved = ResolvedFirstPartyData {
+            site: bidder_req.site,
+            app: bidder_req.app,
+            user: bidder_req.user,
+        };
+
+        // Merge global user.data back
+        if let Some(user_data) = openrtb_global_fpd.get("user") {
+            let user = resolved.user.get_or_insert_with(Default::default);
+            user.data.extend(user_data.iter().cloned());
+        }
+
+        // Merge global ext.data back
+        if let Some(site_data) = global_fpd.get("site") {
+            let site = resolved.site.get_or_insert_with(Default::default);
+            let ext = site
+                .ext
+                .get_or_insert_with(|| Value::Object(Default::default()));
+            if let Some(obj) = ext.as_object_mut() {
+                obj.insert("data".to_string(), site_data.clone());
+            }
+        }
+        if let Some(user_data) = global_fpd.get("user") {
+            let user = resolved.user.get_or_insert_with(Default::default);
+            let ext = user
+                .ext
+                .get_or_insert_with(|| Value::Object(Default::default()));
+            if let Some(obj) = ext.as_object_mut() {
+                obj.insert("data".to_string(), user_data.clone());
+            }
+        }
+
+        result.insert(bidder.to_string(), resolved);
+    }
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

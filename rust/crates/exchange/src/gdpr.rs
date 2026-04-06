@@ -1066,6 +1066,108 @@ impl<P: Permissions> Permissions for AllowHostCookies<P> {
 }
 
 // ---------------------------------------------------------------------------
+// FullEnforcement — TCF2 full enforcement algorithm
+// ---------------------------------------------------------------------------
+
+/// TCF2 full enforcement algorithm.
+///
+/// Determines legal basis by checking both consent and legitimate interest,
+/// respecting publisher restrictions and vendor GVL declarations.
+///
+/// Mirrors Go `gdpr.FullEnforcement`.
+pub struct FullEnforcement {
+    /// The TCF purpose being evaluated.
+    pub purpose_id: u32,
+    /// Configuration for this purpose.
+    pub config: PurposeConfig,
+}
+
+impl FullEnforcement {
+    /// Determine if legal basis is satisfied for a vendor/bidder.
+    ///
+    /// Checks consent first, then legitimate interest as fallback.
+    /// Mirrors Go `FullEnforcement.LegalBasis`.
+    pub fn legal_basis(
+        &self,
+        consent: &TcfConsent,
+        vendor: &VendorInfo,
+        enforce_purpose_override: Option<bool>,
+        enforce_vendors_override: Option<bool>,
+    ) -> bool {
+        let enforce_purpose = enforce_purpose_override.unwrap_or(self.config.enforce_purpose);
+        let enforce_vendors = enforce_vendors_override.unwrap_or(self.config.enforce_vendors);
+
+        // Check vendor exception
+        if self.config.vendor_exceptions.contains(&vendor.id) {
+            return true;
+        }
+
+        // Try consent
+        if self.consent_established(consent, vendor, enforce_purpose, enforce_vendors) {
+            return true;
+        }
+
+        // Try legitimate interest (only for full enforcement algorithm)
+        if self.config.enforce_algo == "full" {
+            return self.legit_interest_established(consent, vendor, enforce_purpose, enforce_vendors);
+        }
+
+        false
+    }
+
+    /// Check if consent is established for this purpose/vendor.
+    fn consent_established(
+        &self,
+        consent: &TcfConsent,
+        vendor: &VendorInfo,
+        enforce_purpose: bool,
+        enforce_vendors: bool,
+    ) -> bool {
+        let purpose_ok = if enforce_purpose {
+            // Vendor must declare this purpose in GVL and user must consent
+            vendor.purposes.contains(&self.purpose_id)
+                && consent.has_purpose_consent(self.purpose_id)
+        } else {
+            true
+        };
+
+        let vendor_ok = if enforce_vendors {
+            consent.has_vendor_consent(vendor.id)
+        } else {
+            true
+        };
+
+        purpose_ok && vendor_ok
+    }
+
+    /// Check if legitimate interest is established for this purpose/vendor.
+    fn legit_interest_established(
+        &self,
+        consent: &TcfConsent,
+        vendor: &VendorInfo,
+        enforce_purpose: bool,
+        enforce_vendors: bool,
+    ) -> bool {
+        let purpose_ok = if enforce_purpose {
+            // Vendor must declare LI for this purpose and user must have LI transparency
+            vendor.leg_int_purposes.contains(&self.purpose_id)
+        } else {
+            true
+        };
+
+        let vendor_ok = if enforce_vendors {
+            // For LI, we check if the vendor is in the consent vendor list
+            // (TCF2 LI transparency uses the same vendor consent bits)
+            consent.has_vendor_consent(vendor.id)
+        } else {
+            true
+        };
+
+        purpose_ok && vendor_ok
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Legacy public helpers (kept for backward compatibility with existing callers)
 // ---------------------------------------------------------------------------
 

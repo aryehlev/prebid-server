@@ -258,6 +258,92 @@ impl CcpaPolicy {
     pub fn should_block(&self) -> bool {
         self.opt_out_sale
     }
+
+    /// Validate a CCPA consent string.
+    /// Returns true if empty or valid per IAB spec (4 chars, version '1').
+    pub fn validate_consent(consent: &str) -> bool {
+        if consent.is_empty() {
+            return true;
+        }
+        let chars: Vec<char> = consent.chars().collect();
+        if chars.len() != 4 {
+            return false;
+        }
+        chars[0] == '1'
+    }
+}
+
+/// Parsed CCPA policy for enforcement decisions.
+///
+/// Determines whether a specific bidder should be blocked from
+/// receiving the bid request based on opt-out and no-sale lists.
+///
+/// Mirrors Go `ccpa.ParsedPolicy`.
+#[derive(Debug, Clone, Default)]
+pub struct ParsedCcpaPolicy {
+    /// Whether consent was explicitly provided.
+    pub consent_specified: bool,
+    /// Whether the user opted out of sale.
+    pub consent_opt_out_sale: bool,
+    /// Whether all bidders are in the no-sale list.
+    pub no_sale_for_all_bidders: bool,
+    /// Specific bidders in the no-sale list.
+    pub no_sale_specific_bidders: std::collections::HashSet<String>,
+}
+
+impl ParsedCcpaPolicy {
+    /// Parse a CCPA policy with no-sale bidders.
+    ///
+    /// `no_sale_bidders` is from `req.ext.prebid.nosale`.
+    pub fn parse(consent: &str, no_sale_bidders: &[String]) -> Result<Self, String> {
+        let (consent_specified, consent_opt_out_sale) = if consent.is_empty() {
+            (false, false)
+        } else {
+            if !CcpaPolicy::validate_consent(consent) {
+                return Err(format!(
+                    "request.regs.ext.us_privacy must contain 4 characters"
+                ));
+            }
+            let chars: Vec<char> = consent.chars().collect();
+            (true, chars.len() >= 3 && chars[2] == 'Y')
+        };
+
+        let mut no_sale_for_all = false;
+        let mut no_sale_specific = std::collections::HashSet::new();
+        for bidder in no_sale_bidders {
+            if bidder == "*" {
+                no_sale_for_all = true;
+            } else {
+                no_sale_specific.insert(bidder.clone());
+            }
+        }
+
+        Ok(Self {
+            consent_specified,
+            consent_opt_out_sale,
+            no_sale_for_all_bidders: no_sale_for_all,
+            no_sale_specific_bidders: no_sale_specific,
+        })
+    }
+
+    /// Returns true when consent is explicitly provided.
+    pub fn can_enforce(&self) -> bool {
+        self.consent_specified
+    }
+
+    /// Returns true when the bid should be blocked for this bidder.
+    pub fn should_enforce(&self, bidder: &str) -> bool {
+        if !self.consent_opt_out_sale {
+            return false;
+        }
+        // If bidder is in no-sale list, enforcement is NOT needed
+        // (publisher has already ensured no sale for this bidder).
+        !self.is_no_sale_for_bidder(bidder)
+    }
+
+    fn is_no_sale_for_bidder(&self, bidder: &str) -> bool {
+        self.no_sale_for_all_bidders || self.no_sale_specific_bidders.contains(bidder)
+    }
 }
 
 // ---------------------------------------------------------------------------
