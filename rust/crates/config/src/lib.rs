@@ -195,6 +195,11 @@ pub struct Configuration {
     /// Garbage collector threshold in bytes (Go-specific, kept for config compat).
     #[serde(default)]
     pub garbage_collector_threshold: u64,
+    /// Debug override token. When set, requests that send this value in the
+    /// `x-pbs-debug-override` header can enable debug output regardless of
+    /// the account `debug_allow` flag.
+    #[serde(default)]
+    pub debug_override_token: Option<String>,
 }
 
 fn default_host() -> String {
@@ -651,6 +656,9 @@ pub struct AccountConfig {
     /// Account-level event tracking configuration.
     #[serde(default)]
     pub events: AccountEventsConfig,
+    /// Whether events are enabled (optional override).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub events_enabled: Option<bool>,
     /// Account-level privacy overrides.
     #[serde(default)]
     pub privacy: AccountPrivacyConfig,
@@ -687,9 +695,12 @@ pub struct AccountConfig {
     /// Bid rounding mode: "down", "true", "timesplit", "up".
     #[serde(default)]
     pub bid_rounding: String,
-    /// Targeting key prefix.
+    /// Targeting key prefix override for this account.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub targeting_prefix: Option<String>,
+    /// Account-level module configuration: map[vendor_name] -> map[module_name] -> raw JSON.
     #[serde(default)]
-    pub targeting_prefix: String,
+    pub modules: HashMap<String, HashMap<String, JsonValue>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -757,7 +768,7 @@ pub struct VastEventConfig {
     pub urls: Vec<String>,
 }
 
-/// Account-level privacy overrides (GDPR, CCPA, COPPA).
+/// Account-level privacy overrides (GDPR, CCPA, COPPA, LMT).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AccountPrivacyConfig {
     #[serde(default)]
@@ -766,6 +777,9 @@ pub struct AccountPrivacyConfig {
     pub ccpa: AccountCcpaConfig,
     #[serde(default)]
     pub coppa: AccountCoppaConfig,
+    /// Account-level LMT (Limit Ad Tracking) configuration.
+    #[serde(default)]
+    pub lmt: AccountLmtConfig,
     /// IPv4 anonymisation config (number of bits to mask).
     #[serde(default)]
     pub ipv4: IpAnonymisationConfig,
@@ -781,6 +795,14 @@ pub struct AccountPrivacyConfig {
     /// Privacy Sandbox configuration.
     #[serde(default)]
     pub privacysandbox: PrivacySandboxConfig,
+}
+
+/// Account-level LMT (Limit Ad Tracking) enforcement configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AccountLmtConfig {
+    /// When true, LMT enforcement is enabled for this account.
+    #[serde(default)]
+    pub enforce: bool,
 }
 
 /// Account-level DSA configuration.

@@ -642,6 +642,8 @@ pub struct Device {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ua: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub sua: Option<UserAgent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub geo: Option<Geo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dnt: Option<i32>,
@@ -679,6 +681,8 @@ pub struct Device {
     pub flashver: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub langb: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub carrier: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -836,6 +840,110 @@ pub struct Source {
     pub pchain: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schain: Option<SupplyChain>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ext: Option<serde_json::Value>,
+}
+
+/// OpenRTB 2.6 DOOH (Digital Out-Of-Home)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DOOH {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub venuetype: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub venuetypetax: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub publisher: Option<Publisher>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keywords: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<Content>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ext: Option<serde_json::Value>,
+}
+
+/// OpenRTB 2.6 UserAgent (Structured User Agent / SUA)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UserAgent {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub browsers: Option<Vec<BrandVersion>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub platform: Option<BrandVersion>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mobile: Option<i8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub architecture: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bitness: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ext: Option<serde_json::Value>,
+}
+
+/// OpenRTB 2.6 BrandVersion (used by UserAgent)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BrandVersion {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub brand: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ext: Option<serde_json::Value>,
+}
+
+/// OpenRTB 2.6 Refresh (ad slot auto-refresh details)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Refresh {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refsettings: Option<Vec<RefSettings>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub count: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ext: Option<serde_json::Value>,
+}
+
+/// OpenRTB 2.6 RefSettings (refresh trigger settings)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RefSettings {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reftype: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub minint: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ext: Option<serde_json::Value>,
+}
+
+/// OpenRTB 2.6 Qty (impression quantity/multiplier)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Qty {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub multiplier: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sourcetype: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vendor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ext: Option<serde_json::Value>,
+}
+
+/// OpenRTB 2.6 DurFloors (duration-based price floors for video/audio)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DurFloors {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mindur: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub maxdur: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bidfloor: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ext: Option<serde_json::Value>,
 }

@@ -1106,6 +1106,141 @@ pub async fn get_uids_handler(
 // POST /cookie_sync
 // ──────────────────────────────────────────────────────────────────────────────
 
+/// Sync type filter modes, mirroring Go's `usersync.BidderFilterMode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BidderFilterMode {
+    Include,
+    Exclude,
+}
+
+/// A bidder filter that either uniformly allows/blocks all bidders, or
+/// applies to a specific set.
+#[derive(Debug, Clone)]
+pub enum BidderFilter {
+    /// Applies the mode to all bidders (the `"*"` wildcard).
+    Uniform(BidderFilterMode),
+    /// Applies the mode to only the listed bidders.
+    Specific {
+        bidders: Vec<String>,
+        mode: BidderFilterMode,
+    },
+}
+
+impl BidderFilter {
+    /// Returns true if the given bidder is allowed by this filter.
+    pub fn allows(&self, bidder: &str) -> bool {
+        match self {
+            BidderFilter::Uniform(BidderFilterMode::Include) => true,
+            BidderFilter::Uniform(BidderFilterMode::Exclude) => false,
+            BidderFilter::Specific { bidders, mode } => {
+                let found = bidders.iter().any(|b| b.eq_ignore_ascii_case(bidder));
+                match mode {
+                    BidderFilterMode::Include => found,
+                    BidderFilterMode::Exclude => !found,
+                }
+            }
+        }
+    }
+}
+
+/// Per-sync-type filter, mirroring Go's `usersync.SyncTypeFilter`.
+#[derive(Debug, Clone)]
+pub struct SyncTypeFilter {
+    pub iframe: BidderFilter,
+    pub redirect: BidderFilter,
+}
+
+impl Default for SyncTypeFilter {
+    fn default() -> Self {
+        Self {
+            iframe: BidderFilter::Uniform(BidderFilterMode::Include),
+            redirect: BidderFilter::Uniform(BidderFilterMode::Include),
+        }
+    }
+}
+
+impl SyncTypeFilter {
+    /// Return allowed sync types for a given bidder.
+    pub fn allowed_types(&self, bidder: &str) -> Vec<&'static str> {
+        let mut types = Vec::new();
+        if self.iframe.allows(bidder) {
+            types.push("iframe");
+        }
+        if self.redirect.allows(bidder) {
+            types.push("redirect");
+        }
+        types
+    }
+}
+
+/// Parse a single filter object from JSON (`{ "bidders": ..., "filter": "include"|"exclude" }`).
+fn parse_bidder_filter(filter: &serde_json::Value) -> Result<BidderFilter, String> {
+    let mode_str = filter
+        .get("filter")
+        .and_then(|v| v.as_str())
+        .unwrap_or("include");
+    let mode = match mode_str {
+        "include" => BidderFilterMode::Include,
+        "exclude" => BidderFilterMode::Exclude,
+        other => {
+            return Err(format!(
+                "invalid filter value '{}'. must be either 'include' or 'exclude'",
+                other
+            ))
+        }
+    };
+
+    match filter.get("bidders") {
+        None => Ok(BidderFilter::Uniform(mode)),
+        Some(serde_json::Value::String(s)) if s == "*" => Ok(BidderFilter::Uniform(mode)),
+        Some(serde_json::Value::String(s)) => Err(format!(
+            "invalid bidders value `{}`. must either be '*' or a string array",
+            s
+        )),
+        Some(serde_json::Value::Array(arr)) => {
+            let mut bidders = Vec::with_capacity(arr.len());
+            for v in arr {
+                match v.as_str() {
+                    Some(b) => bidders.push(b.to_string()),
+                    None => {
+                        return Err(
+                            "invalid bidders type. must either be a string '*' or a string array of bidders"
+                                .to_string(),
+                        )
+                    }
+                }
+            }
+            Ok(BidderFilter::Specific { bidders, mode })
+        }
+        Some(_) => Err(
+            "invalid bidders type. must either be a string '*' or a string array of bidders"
+                .to_string(),
+        ),
+    }
+}
+
+/// Parse the `filterSettings` object into a `SyncTypeFilter`.
+/// Go uses `iframe` for iframes and `image` for redirects.
+fn parse_type_filter(filter_settings: Option<&serde_json::Value>) -> Result<SyncTypeFilter, String> {
+    let mut stf = SyncTypeFilter::default();
+    let settings = match filter_settings {
+        Some(v) if v.is_object() => v,
+        Some(_) => return Err("filterSettings must be an object".to_string()),
+        None => return Ok(stf),
+    };
+
+    if let Some(iframe) = settings.get("iframe") {
+        stf.iframe = parse_bidder_filter(iframe)
+            .map_err(|e| format!("error parsing filtersettings.iframe: {}", e))?;
+    }
+    // Go uses "image" as the JSON key for redirect filters
+    if let Some(image) = settings.get("image") {
+        stf.redirect = parse_bidder_filter(image)
+            .map_err(|e| format!("error parsing filtersettings.image: {}", e))?;
+    }
+    Ok(stf)
+}
+
 #[derive(Deserialize)]
 pub struct CookieSyncRequest {
     pub bidders: Option<Vec<String>>,
@@ -1118,12 +1253,24 @@ pub struct CookieSyncRequest {
     #[serde(rename = "filterSettings")]
     pub filter_settings: Option<serde_json::Value>,
     pub account: Option<String>,
+    pub debug: Option<bool>,
+    pub gpp: Option<String>,
+    pub gpp_sid: Option<String>,
 }
 
 #[derive(Serialize)]
 pub struct CookieSyncResponse {
     pub status: String,
     pub bidder_status: Vec<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub debug: Option<Vec<CookieSyncDebugEntry>>,
+}
+
+#[derive(Serialize, Clone)]
+pub struct CookieSyncDebugEntry {
+    pub bidder: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// All known bidder names that have sync URLs configured.
@@ -1132,6 +1279,27 @@ const KNOWN_SYNC_BIDDERS: &[&str] = &[
     "33across", "criteo", "yieldmo", "sharethrough", "smaato",
     "conversant", "smartadserver", "yieldlab", "triplelift",
 ];
+
+/// Compute the effective limit for cookie sync, applying account-level
+/// default_limit and max_limit, mirroring Go's `setLimit`.
+fn compute_effective_limit(
+    request_limit: Option<i32>,
+    account_default_limit: Option<i32>,
+    account_max_limit: Option<i32>,
+) -> usize {
+    let limit = request_limit
+        .or(account_default_limit)
+        .filter(|&l| l > 0)
+        .map(|l| l as usize)
+        .unwrap_or(usize::MAX);
+
+    let max_limit = account_max_limit
+        .filter(|&m| m > 0)
+        .map(|m| m as usize)
+        .unwrap_or(usize::MAX);
+
+    limit.min(max_limit)
+}
 
 /// Build a sync URL from a template, appending GDPR params when present.
 /// The `{{.RedirectURL}}` macro in templates is left as-is (server-side macro).
@@ -1155,14 +1323,110 @@ fn build_sync_url(template: &str, gdpr: Option<i32>, gdpr_consent: Option<&str>)
     }
 }
 
+/// Build a Set-Cookie value with the `Partitioned` attribute for CHIPS support.
+/// Mirrors Go's `setCookiePartitioned`.
+fn build_partitioned_set_cookie(base_cookie_val: &str) -> String {
+    format!("{}; Partitioned", base_cookie_val)
+}
+
+/// Detect Chrome version from User-Agent string for SameSite workarounds.
+/// Chrome >= 67 requires SameSite=None cookies to also be Secure.
+/// Mirrors Go's `siteCookieCheck` + `checkChromeBrowserVersion`.
+fn is_chrome_needing_samesite(user_agent: &str) -> bool {
+    const CHROME_STR: &str = "Chrome/";
+    const CRIOS_STR: &str = "CriOS/";
+    const CHROME_MIN_VER: i32 = 67;
+
+    fn check_version(ua: &str, prefix: &str) -> bool {
+        if let Some(idx) = ua.find(prefix) {
+            let version_start = idx + prefix.len();
+            let remaining = &ua[version_start..];
+            let dot_idx = remaining.find('.').unwrap_or(remaining.len());
+            if let Ok(ver) = remaining[..dot_idx].parse::<i32>() {
+                return ver >= CHROME_MIN_VER;
+            }
+        }
+        false
+    }
+
+    check_version(user_agent, CHROME_STR) || check_version(user_agent, CRIOS_STR)
+}
+
+/// Determine the best sync type for a bidder given the type filter and
+/// available sync info. Returns `None` if all sync types are filtered out.
+fn choose_sync_type<'a>(
+    bidder: &str,
+    sync_info: Option<&BidderSyncInfo>,
+    type_filter: &SyncTypeFilter,
+) -> Option<(&'static str, bool)> {
+    // Get the available types for this bidder
+    let has_iframe = sync_info
+        .map(|s| s.iframe_url.is_some())
+        .unwrap_or(false)
+        || bidder_sync_url(bidder).map(|(t, _)| t == "iframe").unwrap_or(false);
+    let has_redirect = sync_info
+        .map(|s| s.redirect_url.is_some())
+        .unwrap_or(false)
+        || bidder_sync_url(bidder).map(|(t, _)| t == "redirect").unwrap_or(false);
+
+    let iframe_allowed = type_filter.iframe.allows(bidder);
+    let redirect_allowed = type_filter.redirect.allows(bidder);
+
+    // Prefer redirect over iframe (matching Go behavior), but respect the filter
+    if has_redirect && redirect_allowed {
+        Some(("redirect", true))
+    } else if has_iframe && iframe_allowed {
+        Some(("iframe", true))
+    } else if has_redirect && !redirect_allowed {
+        Some(("redirect", false)) // has it but filtered
+    } else if has_iframe && !iframe_allowed {
+        Some(("iframe", false)) // has it but filtered
+    } else {
+        None
+    }
+}
+
 pub async fn cookie_sync_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(body): Json<CookieSyncRequest>,
 ) -> Response {
+    let debug_enabled = body.debug.unwrap_or(false);
+
+    // ── Account validation ───────────────────────────────────────────────────
+    let account_id = body.account.as_deref().unwrap_or("");
+    let account_cfg = if !account_id.is_empty() {
+        state.accounts.get(account_id)
+    } else {
+        None
+    };
+
+    if state.account_required {
+        if account_id.is_empty() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "status": "error",
+                    "bidder_status": [],
+                    "error": "account must be valid if provided, please reach out to the prebid server host"
+                })),
+            )
+                .into_response();
+        }
+        if !account_id.is_empty() && !state.accounts.contains_key(account_id) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "status": "error",
+                    "bidder_status": [],
+                    "error": "account is disabled, please reach out to the prebid server host"
+                })),
+            )
+                .into_response();
+        }
+    }
+
     // ── GDPR enforcement ─────────────────────────────────────────────────────
-    // When GDPR applies (gdpr=1) and no valid consent string is present,
-    // block all syncs and return 451 Unavailable For Legal Reasons.
     if state.gdpr_enabled {
         let gdpr_signal = body.gdpr.unwrap_or(0);
         let consent = body.gdpr_consent.as_deref().unwrap_or("");
@@ -1172,12 +1436,28 @@ pub async fn cookie_sync_handler(
                 Json(serde_json::json!({
                     "status": "error",
                     "bidder_status": [],
-                    "error": "The gdpr_consent string prevents cookies from being saved"
+                    "error": "gdpr_consent is required if gdpr=1"
                 })),
             )
                 .into_response();
         }
     }
+
+    // ── Parse type filter from filterSettings ────────────────────────────────
+    let type_filter = match parse_type_filter(body.filter_settings.as_ref()) {
+        Ok(tf) => tf,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "status": "error",
+                    "bidder_status": [],
+                    "error": e
+                })),
+            )
+                .into_response();
+        }
+    };
 
     // Parse cookie using PrebidCookie from exchange usersync module
     let raw_cookie_val = extract_cookie_value(&headers, &state.host_cookie.cookie_name);
@@ -1193,6 +1473,21 @@ pub async fn cookie_sync_handler(
     let gdpr = body.gdpr;
     let gdpr_consent = body.gdpr_consent.clone();
     let coop_sync = body.coop_sync.unwrap_or(false);
+
+    // ── Compute effective limit (account defaults + max limit) ───────────────
+    let account_default_limit = account_cfg
+        .and_then(|a| a.cookie_sync.as_ref())
+        .and_then(|cs| cs.default_limit);
+    let account_max_limit = account_cfg
+        .and_then(|a| a.cookie_sync.as_ref())
+        .and_then(|cs| cs.max_limit);
+    let limit = compute_effective_limit(body.limit, account_default_limit, account_max_limit);
+
+    // ── Priority groups from account or global config ────────────────────────
+    let priority_groups: Vec<Vec<String>> = account_cfg
+        .and_then(|a| a.cookie_sync.as_ref())
+        .and_then(|cs| cs.priority_groups.clone())
+        .unwrap_or_default();
 
     // Determine which bidders to check — use requested list or fall back to all known
     let requested: Vec<String> = body.bidders.unwrap_or_default();
