@@ -27,6 +27,8 @@ pub mod auction;
 pub mod clone;
 pub mod defaults;
 pub mod exchange_utils;
+pub mod injector;
+pub mod json_merge;
 pub mod ortb_version;
 pub mod price_granularity;
 pub mod privacysandbox;

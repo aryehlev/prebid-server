@@ -376,6 +376,31 @@ impl HookStageExecutor {
         }
     }
 
+    /// Execute the **Exitpoint** stage (final HTTP response, after serialization).
+    ///
+    /// This stage does **not** support rejection.
+    ///
+    /// Mirrors Go `ExecuteExitpointStage`.
+    pub async fn execute_exitpoint_stage(
+        &self,
+        response: Value,
+    ) -> Value {
+        // Exitpoint uses the same AuctionResponse stage key but with a
+        // separate entity tag. Some hook systems treat it as a distinct
+        // stage; here we reuse the AuctionResponse plan.
+        match self
+            .run_stage(Stage::AuctionResponse, response.clone())
+            .await
+        {
+            Ok((payload, mut outcome)) => {
+                outcome.entity = "exitpoint".to_string();
+                self.push_outcome(outcome).await;
+                payload
+            }
+            Err(_) => response,
+        }
+    }
+
     // -- Internal helpers -----------------------------------------------------
 
     /// Core execution logic for any stage.

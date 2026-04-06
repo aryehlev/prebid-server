@@ -308,6 +308,8 @@ pub fn bid_meets_floor(bid_price: f64, floor: f64, is_deal: bool, enforce_deals:
 
 /// Determine if floor enforcement should be skipped based on skip rate.
 /// Returns true if enforcement should be skipped.
+///
+/// Mirrors Go `isSatisfiedByEnforceRate`.
 pub fn should_skip_enforcement(skip_rate: i32) -> bool {
     if skip_rate <= 0 {
         return false;
@@ -315,9 +317,76 @@ pub fn should_skip_enforcement(skip_rate: i32) -> bool {
     if skip_rate >= 100 {
         return true;
     }
-    // Use a simple deterministic check based on random
-    // In production this would use rand, but for simplicity we use a fixed approach
-    false
+    let roll = rand::random::<i32>().rem_euclid(100);
+    roll < skip_rate
+}
+
+/// Check if enforcement should proceed based on enforce rate configuration.
+///
+/// Mirrors Go `isSatisfiedByEnforceRate` which uses both request-level
+/// and config-level enforce rates. Enforcement proceeds if a random value
+/// is below the minimum of the two rates.
+pub fn is_satisfied_by_enforce_rate(request_rate: i32, config_rate: i32) -> bool {
+    let effective_rate = if request_rate > 0 && config_rate > 0 {
+        request_rate.min(config_rate)
+    } else if request_rate > 0 {
+        request_rate
+    } else if config_rate > 0 {
+        config_rate
+    } else {
+        return true; // No rate configured, always enforce
+    };
+
+    if effective_rate >= 100 {
+        return true;
+    }
+    if effective_rate <= 0 {
+        return false;
+    }
+
+    let roll = rand::random::<i32>().rem_euclid(100);
+    roll < effective_rate
+}
+
+/// Full floor enforcement on seat bids.
+///
+/// Returns (accepted_bids, errors, rejected_bids).
+/// Mirrors Go `enforceFloorToBids`.
+pub fn enforce_floor_to_bids(
+    request: &openrtb::BidRequest,
+    floors: &PriceFloors,
+    bids: &[(String, f64, Option<String>)], // (imp_id, price, deal_id)
+    enforce_deals: bool,
+) -> (Vec<usize>, Vec<String>, Vec<usize>) {
+    let mut accepted = Vec::new();
+    let mut rejected = Vec::new();
+    let mut errors = Vec::new();
+
+    for (i, (imp_id, price, deal_id)) in bids.iter().enumerate() {
+        // Find the impression's floor
+        let imp = request.imp.iter().find(|imp| imp.id == *imp_id);
+        let floor = imp
+            .and_then(|imp| get_floor_for_imp(imp, request, floors))
+            .unwrap_or(0.0);
+
+        if floor <= 0.0 {
+            accepted.push(i);
+            continue;
+        }
+
+        let is_deal = deal_id.as_ref().map_or(false, |d| !d.is_empty());
+        if bid_meets_floor(*price, floor, is_deal, enforce_deals) {
+            accepted.push(i);
+        } else {
+            rejected.push(i);
+            errors.push(format!(
+                "bid rejected: price {:.4} below floor {:.4} for imp {}",
+                price, floor, imp_id
+            ));
+        }
+    }
+
+    (accepted, errors, rejected)
 }
 
 /// Apply floor rules to a bid request — set imp.bidfloor for each impression.

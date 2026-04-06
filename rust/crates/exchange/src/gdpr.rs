@@ -763,6 +763,309 @@ impl VendorListFetcher for StaticVendorListFetcher {
 }
 
 // ---------------------------------------------------------------------------
+// AuctionPermissions — mirrors Go `gdpr.AuctionPermissions`
+// ---------------------------------------------------------------------------
+
+/// Permissions for auction-related activities under GDPR.
+///
+/// Mirrors Go `gdpr.AuctionPermissions`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuctionPermissions {
+    /// Whether the bidder can receive the bid request.
+    pub allow_bid_request: bool,
+    /// Whether precise geo data can be forwarded.
+    pub pass_geo: bool,
+    /// Whether user identifiers can be forwarded.
+    pub pass_id: bool,
+}
+
+impl AuctionPermissions {
+    /// All activities allowed.
+    pub fn allow_all() -> Self {
+        Self {
+            allow_bid_request: true,
+            pass_geo: true,
+            pass_id: true,
+        }
+    }
+
+    /// All activities denied.
+    pub fn deny_all() -> Self {
+        Self {
+            allow_bid_request: false,
+            pass_geo: false,
+            pass_id: false,
+        }
+    }
+}
+
+impl Default for AuctionPermissions {
+    fn default() -> Self {
+        Self::allow_all()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Permissions trait — mirrors Go `gdpr.Permissions`
+// ---------------------------------------------------------------------------
+
+/// Full GDPR permissions interface for both sync and auction activities.
+///
+/// Mirrors Go `gdpr.Permissions`.
+pub trait Permissions: Send + Sync {
+    /// Whether the host SSP's own cookies are allowed.
+    fn host_cookies_allowed(&self) -> bool;
+
+    /// Whether a specific bidder can sync cookies.
+    fn bidder_sync_allowed(&self, bidder: &str) -> bool;
+
+    /// Get full auction-related permissions for a bidder.
+    fn auction_activities_allowed(
+        &self,
+        bidder_core_name: &str,
+        bidder: &str,
+    ) -> AuctionPermissions;
+}
+
+/// Concrete implementation of [`Permissions`] backed by a TCF consent string,
+/// policy configuration, and optional vendor list.
+///
+/// Mirrors Go `gdpr.permissionsImpl`.
+pub struct PermissionsImpl {
+    /// GDPR enforcement policy configuration.
+    pub policy: GdprPolicy,
+    /// Parsed TCF consent string (if present).
+    pub consent: Option<TcfConsent>,
+    /// GDPR signal for this request.
+    pub signal: GdprSignal,
+    /// Host SSP vendor ID in the GVL.
+    pub host_vendor_id: Option<u32>,
+    /// Mapping of bidder name to GVL vendor ID.
+    pub vendor_ids: std::collections::HashMap<String, u32>,
+    /// Optional vendor list for LI/purpose cross-checks.
+    pub vendor_list: Option<VendorList>,
+    /// Per-purpose enforcement configuration.
+    pub purpose_enforcer: PurposeEnforcer,
+    /// Publisher IDs exempt from standard GDPR enforcement.
+    pub non_standard_publishers: std::collections::HashSet<String>,
+    /// Current publisher ID.
+    pub publisher_id: String,
+    /// Alias-to-GVL-ID overrides.
+    pub alias_gvl_ids: std::collections::HashMap<String, u32>,
+}
+
+impl PermissionsImpl {
+    /// Resolve the effective signal, respecting policy defaults.
+    fn effective_signal(&self) -> GdprSignal {
+        match self.signal {
+            GdprSignal::Ambiguous => self.policy.default_value,
+            other => other,
+        }
+    }
+
+    /// Resolve vendor ID for a bidder, checking aliases first.
+    fn resolve_vendor_id(&self, bidder_core_name: &str, bidder: &str) -> Option<u32> {
+        self.alias_gvl_ids
+            .get(bidder)
+            .copied()
+            .or_else(|| self.vendor_ids.get(bidder_core_name).copied())
+    }
+
+    /// Check if this is a non-standard publisher (exempt from enforcement).
+    fn is_non_standard_publisher(&self) -> bool {
+        self.non_standard_publishers.contains(&self.publisher_id)
+    }
+
+    /// Check sync permission for a given vendor ID.
+    fn allow_sync(&self, vendor_id: u32) -> bool {
+        // Purpose 1 (device access) is required for sync
+        let consent = match &self.consent {
+            Some(c) => c,
+            None => return false,
+        };
+
+        let cfg = &self.purpose_enforcer.purposes[0]; // Purpose 1
+
+        // Check vendor exception
+        if cfg.vendor_exceptions.contains(&vendor_id) {
+            return true;
+        }
+
+        let purpose_ok = if cfg.enforce_purpose {
+            consent.has_purpose_consent(1)
+        } else {
+            true
+        };
+
+        let vendor_ok = if cfg.enforce_vendors {
+            consent.has_vendor_consent(vendor_id)
+        } else {
+            true
+        };
+
+        purpose_ok && vendor_ok
+    }
+
+    /// Check whether a bidder can receive bid requests (purpose 2).
+    fn allow_bid_request(&self, bidder: &str, vendor_id: u32) -> bool {
+        let consent = match &self.consent {
+            Some(c) => c,
+            None => return false,
+        };
+
+        // Check bidder exception
+        if self.policy.bidder_exceptions.contains(bidder) {
+            return true;
+        }
+
+        self.purpose_enforcer.is_allowed(2, consent, vendor_id)
+    }
+
+    /// Check whether geo data can be passed (special feature 1).
+    fn allow_geo(&self, bidder: &str, vendor_id: u32) -> bool {
+        let consent = match &self.consent {
+            Some(c) => c,
+            None => return false,
+        };
+
+        if self.policy.bidder_exceptions.contains(bidder) {
+            return true;
+        }
+
+        // Special Feature 1: precise geo requires opt-in
+        // Check if vendor has special feature 1 in GVL
+        if let Some(vl) = &self.vendor_list {
+            if let Some(vi) = vl.vendors.get(&vendor_id) {
+                if vi.special_purposes.contains(&1) {
+                    return consent.has_vendor_consent(vendor_id);
+                }
+            }
+        }
+
+        // Fall back to basic purpose consent check
+        consent.has_vendor_consent(vendor_id)
+    }
+
+    /// Check whether user IDs can be passed (purposes 2-10).
+    fn allow_id(&self, bidder: &str, vendor_id: u32) -> bool {
+        let consent = match &self.consent {
+            Some(c) => c,
+            None => return false,
+        };
+
+        if self.policy.bidder_exceptions.contains(bidder) {
+            return true;
+        }
+
+        // Any of purposes 2-10 granting permission is sufficient
+        for purpose_id in 2..=10u32 {
+            if self.purpose_enforcer.is_allowed(purpose_id, consent, vendor_id) {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+impl Permissions for PermissionsImpl {
+    fn host_cookies_allowed(&self) -> bool {
+        if self.effective_signal() != GdprSignal::Yes {
+            return true;
+        }
+        match self.host_vendor_id {
+            Some(vid) => self.allow_sync(vid),
+            None => true,
+        }
+    }
+
+    fn bidder_sync_allowed(&self, bidder: &str) -> bool {
+        if self.effective_signal() != GdprSignal::Yes {
+            return true;
+        }
+        if self.is_non_standard_publisher() {
+            return true;
+        }
+        match self.vendor_ids.get(bidder).copied() {
+            Some(vid) => self.allow_sync(vid),
+            None => true,
+        }
+    }
+
+    fn auction_activities_allowed(
+        &self,
+        bidder_core_name: &str,
+        bidder: &str,
+    ) -> AuctionPermissions {
+        if self.is_non_standard_publisher() {
+            return AuctionPermissions::allow_all();
+        }
+        if self.effective_signal() != GdprSignal::Yes {
+            return AuctionPermissions::allow_all();
+        }
+
+        let vendor_id = match self.resolve_vendor_id(bidder_core_name, bidder) {
+            Some(vid) => vid,
+            None => return AuctionPermissions::allow_all(),
+        };
+
+        AuctionPermissions {
+            allow_bid_request: self.allow_bid_request(bidder, vendor_id),
+            pass_geo: self.allow_geo(bidder, vendor_id),
+            pass_id: self.allow_id(bidder, vendor_id),
+        }
+    }
+}
+
+/// Always-allow implementation for testing or when GDPR is disabled.
+///
+/// Mirrors Go `gdpr.AlwaysAllow`.
+pub struct AlwaysAllow;
+
+impl Permissions for AlwaysAllow {
+    fn host_cookies_allowed(&self) -> bool {
+        true
+    }
+
+    fn bidder_sync_allowed(&self, _bidder: &str) -> bool {
+        true
+    }
+
+    fn auction_activities_allowed(
+        &self,
+        _bidder_core_name: &str,
+        _bidder: &str,
+    ) -> AuctionPermissions {
+        AuctionPermissions::allow_all()
+    }
+}
+
+/// Implementation that always allows host cookies but delegates other checks.
+///
+/// Mirrors Go `gdpr.AllowHostCookies`.
+pub struct AllowHostCookies<P: Permissions> {
+    pub inner: P,
+}
+
+impl<P: Permissions> Permissions for AllowHostCookies<P> {
+    fn host_cookies_allowed(&self) -> bool {
+        true
+    }
+
+    fn bidder_sync_allowed(&self, bidder: &str) -> bool {
+        self.inner.bidder_sync_allowed(bidder)
+    }
+
+    fn auction_activities_allowed(
+        &self,
+        bidder_core_name: &str,
+        bidder: &str,
+    ) -> AuctionPermissions {
+        self.inner
+            .auction_activities_allowed(bidder_core_name, bidder)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Legacy public helpers (kept for backward compatibility with existing callers)
 // ---------------------------------------------------------------------------
 
