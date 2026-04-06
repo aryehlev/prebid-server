@@ -1538,6 +1538,80 @@ pub fn process_interstitials(bid_request: &mut openrtb::BidRequest) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// GET/POST /optout — opt-out / opt-in handler
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Query parameters accepted by the `/optout` endpoint.
+#[derive(Debug, Deserialize, Default)]
+pub struct OptOutParams {
+    /// When non-empty the user is opting **out**; when empty the user is opting
+    /// back **in**.  Mirrors the Go `r.FormValue("optout")`.
+    #[serde(default)]
+    pub optout: Option<String>,
+}
+
+/// Handles GET and POST `/optout`.
+///
+/// Behaviour mirrors the Go `UserSyncDeps.OptOut` handler:
+///  1. Read the prebid UID cookie from the request.
+///  2. Set or clear the `optout` flag based on the `optout` query parameter.
+///  3. Write the updated cookie back via `Set-Cookie`.
+///  4. Redirect to `opt_out_url` (if opting out) or `opt_in_url` (if opting in).
+///
+/// The Go handler additionally checks a reCAPTCHA response and, when it is
+/// absent, redirects to a static HTML page.  The Rust port omits the reCAPTCHA
+/// verification but preserves the rest of the flow so that automated / API
+/// callers can toggle opt-out programmatically.
+pub async fn optout_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<OptOutParams>,
+) -> Response {
+    let hc = &state.host_cookie;
+
+    // Read the current prebid UID cookie.
+    let mut cookie = UserSyncCookie::from_request(&headers, &hc.cookie_name);
+
+    // Determine whether this is an opt-out or opt-in request.
+    let is_opt_out = params.optout.as_ref().map(|v| !v.is_empty()).unwrap_or(false);
+    cookie.optout = Some(is_opt_out);
+
+    // If opting out, clear all stored UIDs so no further syncing occurs.
+    if is_opt_out {
+        cookie.uids.clear();
+    }
+
+    // Build the Set-Cookie header with the updated cookie.
+    let set_cookie_value = cookie.build_set_cookie_header(
+        &hc.cookie_name,
+        hc.ttl_days,
+        &hc.domain,
+    );
+
+    let redirect_url = if is_opt_out {
+        &hc.opt_out_url
+    } else {
+        &hc.opt_in_url
+    };
+
+    // If no redirect URL is configured, respond with a simple 200 OK.
+    if redirect_url.is_empty() {
+        let mut resp = (StatusCode::OK, "opt-out preference saved").into_response();
+        if let Ok(val) = HeaderValue::from_str(&set_cookie_value) {
+            resp.headers_mut().insert(SET_COOKIE, val);
+        }
+        return resp;
+    }
+
+    // Redirect (301 Moved Permanently) to the configured URL, matching Go behaviour.
+    let mut resp = axum::response::Redirect::permanent(redirect_url).into_response();
+    if let Ok(val) = HeaderValue::from_str(&set_cookie_value) {
+        resp.headers_mut().insert(SET_COOKIE, val);
+    }
+    resp
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Router
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -1562,6 +1636,7 @@ pub fn create_router(state: AppState) -> axum::Router {
         .route("/cookie_sync", axum::routing::post(cookie_sync_handler))
         .route("/setuid", axum::routing::get(set_uid_handler))
         .route("/getuids", axum::routing::get(get_uids_handler))
+        .route("/optout", axum::routing::get(optout_handler).post(optout_handler))
         // Events
         .route("/event", axum::routing::get(event_handler))
         .route("/vtrack", axum::routing::post(vtrack_handler))

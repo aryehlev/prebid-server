@@ -1613,6 +1613,262 @@ pub struct ExtRequestPrebid {
     pub experiment: Option<serde_json::Value>,
 }
 
+// ── Imp-level Prebid extension (ExtImpPrebid) ─────────────────────────────
+
+/// ExtImpPrebid defines the contract for bidrequest.imp[i].ext.prebid
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ExtImpPrebid {
+    /// StoredRequest specifies which stored impression to use, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storedrequest: Option<ExtStoredRequest>,
+
+    /// StoredAuctionResponse specifies which stored auction response to use, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storedauctionresponse: Option<ExtStoredAuctionResponse>,
+
+    /// Stored bid response determines if imp has stored bid response for bidder.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storedbidresponse: Option<Vec<ExtStoredBidResponse>>,
+
+    /// IsRewardedInventory is a signal intended for video impressions. Must be 0 or 1.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_rewarded_inventory: Option<i8>,
+
+    /// Bidder params keyed by bidder name (raw JSON).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bidder: Option<HashMap<String, serde_json::Value>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub options: Option<ExtImpPrebidOptions>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub adunitcode: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub passthrough: Option<serde_json::Value>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub floors: Option<ExtImpPrebidFloors>,
+
+    /// Per-bidder first party data (raw JSON per bidder).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub imp: Option<HashMap<String, serde_json::Value>>,
+}
+
+/// ExtStoredAuctionResponse defines the contract for bidrequest.imp[i].ext.prebid.storedauctionresponse
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExtStoredAuctionResponse {
+    pub id: String,
+}
+
+/// ExtStoredBidResponse defines the contract for bidrequest.imp[i].ext.prebid.storedbidresponse
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExtStoredBidResponse {
+    pub id: String,
+    #[serde(default)]
+    pub bidder: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replaceimpid: Option<bool>,
+}
+
+/// ExtImpPrebidOptions defines the options object in ExtImpPrebid.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExtImpPrebidOptions {
+    #[serde(default)]
+    pub echovideoattrs: bool,
+}
+
+/// ExtImpPrebidFloors defines floor information on an impression.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExtImpPrebidFloors {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub floorrule: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub floorrulevalue: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub floorvalue: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub floormin: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "floorminCur")]
+    pub floormin_cur: Option<String>,
+}
+
+// ── Bidder-specific imp ext types ──────────────────────────────────────────
+
+/// ExtImpAppnexus defines the contract for bidrequest.imp[i].ext.prebid.bidder.appnexus
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ExtImpAppnexus {
+    /// Deprecated camelCase form; prefer placement_id.
+    #[serde(rename = "placementId")]
+    pub deprecated_placement_id: Option<i64>,
+
+    /// Deprecated camelCase form; prefer inv_code.
+    #[serde(rename = "invCode")]
+    pub legacy_inv_code: Option<String>,
+
+    /// Deprecated camelCase form; prefer traffic_source_code.
+    #[serde(rename = "trafficSourceCode")]
+    pub legacy_traffic_source_code: Option<String>,
+
+    pub placement_id: Option<i64>,
+    pub inv_code: Option<String>,
+    pub member: Option<String>,
+
+    /// Keywords can be a string, array of key-val objects, or map; stored as a
+    /// flattened comma-separated string after deserialization in Go.  In Rust we
+    /// keep it as raw JSON so callers can interpret it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keywords: Option<serde_json::Value>,
+
+    pub traffic_source_code: Option<String>,
+    pub reserve: Option<f64>,
+    pub position: Option<String>,
+
+    #[serde(rename = "use_pmt_rule")]
+    pub use_payment_rule: Option<bool>,
+
+    /// Deprecated alias for use_payment_rule.
+    #[serde(rename = "use_payment_rule")]
+    pub deprecated_use_payment_rule: Option<bool>,
+
+    /// Raw JSON blob; no processing needed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub private_sizes: Option<serde_json::Value>,
+
+    #[serde(rename = "generate_ad_pod_id")]
+    pub ad_pod_id: Option<bool>,
+
+    pub ext_inv_code: Option<String>,
+    pub external_imp_id: Option<String>,
+}
+
+/// ExtImpRubicon defines the contract for bidrequest.imp[i].ext.prebid.bidder.rubicon
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ExtImpRubicon {
+    #[serde(rename = "accountId")]
+    pub account_id: Option<serde_json::Number>,
+
+    #[serde(rename = "siteId")]
+    pub site_id: Option<serde_json::Number>,
+
+    #[serde(rename = "zoneId")]
+    pub zone_id: Option<serde_json::Number>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inventory: Option<serde_json::Value>,
+
+    #[serde(rename = "bidonmultiformat")]
+    pub bid_on_multiformat: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keywords: Option<Vec<String>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub visitor: Option<serde_json::Value>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub video: Option<RubiconVideoParams>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub debug: Option<ImpExtRubiconDebug>,
+}
+
+/// RubiconVideoParams defines the video params for Rubicon.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct RubiconVideoParams {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none", rename = "playerHeight")]
+    pub player_height: Option<serde_json::Number>,
+
+    #[serde(skip_serializing_if = "Option::is_none", rename = "playerWidth")]
+    pub player_width: Option<serde_json::Number>,
+
+    #[serde(rename = "size_id")]
+    pub video_size_id: Option<i32>,
+
+    pub skip: Option<i32>,
+    pub skipdelay: Option<i32>,
+}
+
+/// ImpExtRubiconDebug defines the debug params for Rubicon.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ImpExtRubiconDebug {
+    pub cpmoverride: Option<f64>,
+}
+
+/// ExtImpPubmatic defines the contract for bidrequest.imp[i].ext.prebid.bidder.pubmatic
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ExtImpPubmatic {
+    #[serde(rename = "publisherId")]
+    pub publisher_id: Option<String>,
+
+    #[serde(rename = "adSlot")]
+    pub ad_slot: Option<String>,
+
+    pub dctr: Option<String>,
+
+    #[serde(rename = "pmzoneid")]
+    pub pmzone_id: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wrapper: Option<serde_json::Value>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keywords: Option<Vec<ExtImpPubmaticKeyVal>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kadfloor: Option<String>,
+}
+
+/// ExtImpPubmaticKeyVal defines a keyword key-value pair for Pubmatic.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExtImpPubmaticKeyVal {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+
+    #[serde(rename = "value", skip_serializing_if = "Option::is_none")]
+    pub values: Option<Vec<String>>,
+}
+
+/// ExtImpIx defines the contract for bidrequest.imp[i].ext.prebid.bidder.ix
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ExtImpIx {
+    #[serde(rename = "siteId")]
+    pub site_id: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<Vec<i32>>,
+
+    pub sid: Option<String>,
+}
+
+/// ExtImpOpenx defines the contract for bidrequest.imp[i].ext.prebid.bidder.openx
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ExtImpOpenx {
+    pub unit: Option<serde_json::Number>,
+
+    pub platform: Option<String>,
+
+    #[serde(rename = "delDomain")]
+    pub del_domain: Option<String>,
+
+    #[serde(rename = "customFloor")]
+    pub custom_floor: Option<serde_json::Number>,
+
+    #[serde(rename = "customParams", skip_serializing_if = "Option::is_none")]
+    pub custom_params: Option<HashMap<String, serde_json::Value>>,
+}
+
 // ── Unit Tests ─────────────────────────────────────────────────────────────
 
 #[cfg(test)]

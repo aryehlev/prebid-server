@@ -495,9 +495,12 @@ fn price_granularity_bucket(price: f64, granularity: Option<&PriceGranularity>) 
 /// for bids that are kept but have suspicious fields.
 ///
 /// Rules (mirrors Go exchange/bidder_validate_bids.go):
-///   - `bid.id` empty → drop + warn
+///   - `bid.id` empty → drop
+///   - `bid.impid` empty → drop
 ///   - `bid.impid` does not match any request imp → drop
 ///   - `bid.price` < 0 → drop
+///   - `bid.price` == 0 and no deal → drop
+///   - `bid.crid` empty → drop
 ///   - banner/video bid with no `adm` AND no `nurl` → warn but keep
 fn validate_bids(bids: Vec<pbs_adapters::TypedBid>, imps: &[openrtb::Imp]) -> Vec<pbs_adapters::TypedBid> {
     let imp_ids: std::collections::HashSet<&str> = imps.iter().map(|i| i.id.as_str()).collect();
@@ -508,6 +511,11 @@ fn validate_bids(bids: Vec<pbs_adapters::TypedBid>, imps: &[openrtb::Imp]) -> Ve
 
             if bid.id.is_empty() {
                 tracing::warn!(impid = %bid.impid, "dropping bid: missing required field 'id'");
+                return false;
+            }
+
+            if bid.impid.is_empty() {
+                tracing::warn!(bid_id = %bid.id, "dropping bid: missing required field 'impid'");
                 return false;
             }
 
@@ -523,6 +531,18 @@ fn validate_bids(bids: Vec<pbs_adapters::TypedBid>, imps: &[openrtb::Imp]) -> Ve
                 return false;
             }
 
+            // Zero-price bids are only allowed when there's a deal.
+            if bid.price == 0.0 && bid.dealid.is_none() {
+                tracing::warn!(bid_id = %bid.id,
+                    "dropping bid: zero price requires a deal");
+                return false;
+            }
+
+            if bid.crid.as_deref().unwrap_or("").is_empty() {
+                tracing::warn!(bid_id = %bid.id, "dropping bid: missing creative ID");
+                return false;
+            }
+
             // Warn (but keep) banner/video bids without creative.
             let is_banner_or_video = matches!(tb.bid_type, openrtb_ext::BidType::Banner | openrtb_ext::BidType::Video);
             if is_banner_or_video && bid.adm.is_none() && bid.nurl.is_none() {
@@ -533,6 +553,28 @@ fn validate_bids(bids: Vec<pbs_adapters::TypedBid>, imps: &[openrtb::Imp]) -> Ve
             true
         })
         .collect()
+}
+
+/// Validate that the bid currency is a valid ISO 4217 code.
+/// Returns an error string if the code is malformed.
+///
+/// Note: currency *conversion* (EUR→USD etc.) is handled separately by the
+/// currency converter.  This function only checks that the code is syntactically
+/// valid so we don't attempt to convert a garbage string.
+///
+/// Mirrors the format-check portion of Go exchange/bidder_validate_bids.go
+/// `validateCurrency()`.
+fn validate_bid_currency(_request_currencies: &[String], bid_currency: &str) -> Result<(), String> {
+    if bid_currency.is_empty() {
+        return Ok(()); // empty means default (USD)
+    }
+
+    let upper = bid_currency.to_uppercase();
+    if upper.len() != 3 || !upper.chars().all(|c| c.is_ascii_uppercase()) {
+        return Err(format!("Invalid currency code: '{}'", bid_currency));
+    }
+
+    Ok(())
 }
 
 /// Split impressions per bidder, extracting each bidder's params from
@@ -728,6 +770,20 @@ impl Exchange {
                 .await
             {
                 return Err(anyhow::anyhow!("request rejected by hook: {}", reject));
+            }
+        }
+
+        // Execute RawAuctionRequest hooks after entrypoint, before further processing.
+        // In Go this runs in the auction endpoint after account lookup but before
+        // request validation / stored-request merging.
+        if let Some(executor) = &self.hook_executor {
+            let payload = serde_json::to_value(&request.bid_request)
+                .unwrap_or(serde_json::Value::Null);
+            if let Err(reject) = executor
+                .execute_stage(hooks::Stage::RawAuctionRequest, payload)
+                .await
+            {
+                return Err(anyhow::anyhow!("request rejected by RawAuctionRequest hook: {}", reject));
             }
         }
 
@@ -928,6 +984,18 @@ impl Exchange {
         // Extract unified privacy config (GDPR, CCPA, COPPA, LMT) from the request.
         let privacy_config = privacy::extract_privacy_config(bid_request);
 
+        // Execute ProcessedAuctionRequest hooks after validation, before bidder fan-out.
+        if let Some(executor) = &self.hook_executor {
+            let payload = serde_json::to_value(&request.bid_request)
+                .unwrap_or(serde_json::Value::Null);
+            if let Err(reject) = executor
+                .execute_stage(hooks::Stage::ProcessedAuctionRequest, payload)
+                .await
+            {
+                return Err(anyhow::anyhow!("request rejected by ProcessedAuctionRequest hook: {}", reject));
+            }
+        }
+
         // Split impressions per bidder: extract imp.ext.prebid.bidder.<name> params
         // and create sanitized imp copies where each bidder only sees its own params.
         // This mirrors Go exchange/utils.go splitImps().
@@ -1095,6 +1163,26 @@ impl Exchange {
                 apply_fpd_for_bidder(&mut req, &bidder_name);
                 // COPPA sanitization: strip user/device identifiers for child-directed requests.
                 privacy::sanitize_request_for_coppa(&mut req);
+
+                // Execute BidderRequest hooks before sending request to this bidder.
+                if let Some(executor) = &self.hook_executor {
+                    let payload = serde_json::json!({
+                        "bidder": bidder_name,
+                        "bid_request": serde_json::to_value(&req).unwrap_or(serde_json::Value::Null),
+                    });
+                    if let Err(reject) = executor
+                        .execute_stage(hooks::Stage::BidderRequest, payload)
+                        .await
+                    {
+                        tracing::warn!(
+                            bidder = %bidder_name,
+                            "BidderRequest hook rejected bidder: {}; skipping",
+                            reject,
+                        );
+                        continue;
+                    }
+                }
+
                 let extra = extra_info.clone();
                 // Spawn task using the alias name so the SeatBid carries the alias.
                 let seat_name = bidder_name.clone();
@@ -1141,6 +1229,25 @@ impl Exchange {
                         );
                     }
 
+                    // Execute RawBidderResponse hooks after receiving each bidder's response.
+                    if let Some(executor) = &self.hook_executor {
+                        let payload = serde_json::json!({
+                            "bidder": bidder_result.bidder_name,
+                            "timed_out": bidder_result.timed_out,
+                            "duration_ms": bidder_result.duration_ms,
+                        });
+                        if let Err(reject) = executor
+                            .execute_stage(hooks::Stage::RawBidderResponse, payload)
+                            .await
+                        {
+                            tracing::warn!(
+                                bidder = %bidder_result.bidder_name,
+                                "RawBidderResponse hook rejected: {}",
+                                reject,
+                            );
+                        }
+                    }
+
                     // Record per-bidder metrics.
                     if let Some(m) = &self.metrics {
                         let status = if bidder_result.timed_out {
@@ -1162,6 +1269,20 @@ impl Exchange {
                     match bidder_result.response {
                         Ok(mut response) => {
                             if !response.bids.is_empty() {
+                                // Validate bid currency before processing.
+                                let cur_slice = bid_request.cur.as_deref().unwrap_or(&[]);
+                                if let Err(currency_err) = validate_bid_currency(
+                                    cur_slice,
+                                    &response.currency,
+                                ) {
+                                    tracing::warn!(bidder = %bidder_result.bidder_name,
+                                        error = %currency_err, "dropping all bids: invalid currency");
+                                    bidder_errors
+                                        .entry(bidder_result.bidder_name.clone())
+                                        .or_default()
+                                        .push(currency_err);
+                                    // Skip this bidder's bids entirely — same as Go behavior.
+                                } else {
                                 // Currency conversion: normalize bid prices to USD.
                                 if response.currency != "USD" {
                                     if let Some(converter) = &request.currency_rates {
@@ -1286,7 +1407,8 @@ impl Exchange {
                                     }
                                     bidder_results.push((bidder_result.bidder_name, deduped));
                                 }
-                            }
+                            } // end else (currency valid)
+                            } // end if !response.bids.is_empty()
                         }
                         Err(errs) => {
                             // Collect error strings for response.ext.prebid.errors.
@@ -1820,6 +1942,19 @@ impl Exchange {
                 bid_count,
                 total_revenue,
             });
+        }
+
+        // Execute AuctionResponse hooks after final response assembly.
+        // Rejection is not supported at this stage; errors are logged as warnings.
+        if let Some(executor) = &self.hook_executor {
+            let payload = serde_json::to_value(&bid_response)
+                .unwrap_or(serde_json::Value::Null);
+            if let Err(reject) = executor
+                .execute_stage(hooks::Stage::AuctionResponse, payload)
+                .await
+            {
+                tracing::warn!("AuctionResponse hook rejected: {}", reject);
+            }
         }
 
         Ok(AuctionResponse {

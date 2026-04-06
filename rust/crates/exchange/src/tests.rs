@@ -32,6 +32,7 @@ impl pbs_adapters::Bidder for MockBidder {
             id: "bid1".to_string(),
             impid: "imp1".to_string(),
             price: self.price,
+            crid: Some("cr1".to_string()),
             ..Default::default()
         };
         let mut resp = pbs_adapters::BidderResponse::new();
@@ -320,7 +321,7 @@ async fn test_bid_adjustment_factor_applied() {
                 "id": "bid1",
                 "impid": "imp1",
                 "price": 1.0,
-                "adm": "<ad/>"
+                "adm": "<ad/>", "crid": "cr1"
             }]
         }]
     });
@@ -391,7 +392,7 @@ async fn test_bid_no_adjustment_factor_unchanged() {
                 "id": "bid1",
                 "impid": "imp1",
                 "price": 2.0,
-                "adm": "<ad/>"
+                "adm": "<ad/>", "crid": "cr1"
             }]
         }]
     });
@@ -483,7 +484,8 @@ async fn make_mock_server_with_bid(
     let mut bid = serde_json::json!({
         "id": "bid1",
         "impid": "imp1",
-        "price": price
+        "price": price,
+        "crid": "cr1"
     });
     if let Some(a) = adm {
         bid["adm"] = serde_json::Value::String(a.to_string());
@@ -551,6 +553,7 @@ impl pbs_adapters::Bidder for CurrencyMockBidder {
             impid: "imp1".to_string(),
             price: self.price,
             adm: Some("<ad/>".to_string()),
+            crid: Some("cr1".to_string()),
             ..Default::default()
         };
         let mut resp = pbs_adapters::BidderResponse::new();
@@ -585,6 +588,7 @@ impl pbs_adapters::Bidder for DupBidMockBidder {
             impid: "imp1".to_string(),
             price: 1.0,
             adm: Some("<low/>".to_string()),
+            crid: Some("cr1".to_string()),
             ..Default::default()
         };
         let high = openrtb::Bid {
@@ -592,6 +596,7 @@ impl pbs_adapters::Bidder for DupBidMockBidder {
             impid: "imp1".to_string(),
             price: 3.0,
             adm: Some("<high/>".to_string()),
+            crid: Some("cr1".to_string()),
             ..Default::default()
         };
         let mut resp = pbs_adapters::BidderResponse::new();
@@ -609,7 +614,7 @@ async fn test_bid_adjustment_factor_half() {
     use wiremock::matchers::method;
 
     let mock_server = MockServer::start().await;
-    let body = serde_json::json!({"id":"r","seatbid":[{"bid":[{"id":"b1","impid":"imp1","price":2.0,"adm":"<ad/>"}]}]});
+    let body = serde_json::json!({"id":"r","seatbid":[{"bid":[{"id":"b1","impid":"imp1","price":2.0,"adm":"<ad/>","crid":"cr1"}]}]});
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(200).set_body_json(&body))
         .mount(&mock_server)
@@ -647,7 +652,7 @@ fn test_validate_bids_empty_id_dropped() {
 fn test_validate_bids_wrong_impid_dropped() {
     let imp = openrtb::Imp { id: "imp1".to_string(), ..Default::default() };
     let bad = pbs_adapters::TypedBid::new(
-        openrtb::Bid { id: "b1".to_string(), impid: "wrong-imp".to_string(), price: 1.0, ..Default::default() },
+        openrtb::Bid { id: "b1".to_string(), impid: "wrong-imp".to_string(), price: 1.0, crid: Some("cr1".to_string()), ..Default::default() },
         openrtb_ext::BidType::Banner,
     );
     let kept = validate_bids(vec![bad], &[imp]);
@@ -660,11 +665,76 @@ fn test_validate_bids_wrong_impid_dropped() {
 fn test_validate_bids_negative_price_dropped() {
     let imp = openrtb::Imp { id: "imp1".to_string(), ..Default::default() };
     let bad = pbs_adapters::TypedBid::new(
-        openrtb::Bid { id: "b1".to_string(), impid: "imp1".to_string(), price: -0.01, ..Default::default() },
+        openrtb::Bid { id: "b1".to_string(), impid: "imp1".to_string(), price: -0.01, crid: Some("cr1".to_string()), ..Default::default() },
         openrtb_ext::BidType::Banner,
     );
     let kept = validate_bids(vec![bad], &[imp]);
     assert!(kept.is_empty(), "bid with negative price should be dropped");
+}
+
+// ── Test: bid validation — zero price without deal is dropped ────────────────────────────────
+
+#[test]
+fn test_validate_bids_zero_price_no_deal_dropped() {
+    let imp = openrtb::Imp { id: "imp1".to_string(), ..Default::default() };
+    let bad = pbs_adapters::TypedBid::new(
+        openrtb::Bid { id: "b1".to_string(), impid: "imp1".to_string(), price: 0.0, crid: Some("cr1".to_string()), ..Default::default() },
+        openrtb_ext::BidType::Banner,
+    );
+    let kept = validate_bids(vec![bad], &[imp]);
+    assert!(kept.is_empty(), "bid with zero price and no deal should be dropped");
+}
+
+// ── Test: bid validation — zero price WITH deal is kept ──────────────────────────────────────
+
+#[test]
+fn test_validate_bids_zero_price_with_deal_kept() {
+    let imp = openrtb::Imp { id: "imp1".to_string(), ..Default::default() };
+    let good = pbs_adapters::TypedBid::new(
+        openrtb::Bid {
+            id: "b1".to_string(), impid: "imp1".to_string(), price: 0.0,
+            crid: Some("cr1".to_string()), dealid: Some("deal-123".to_string()),
+            ..Default::default()
+        },
+        openrtb_ext::BidType::Banner,
+    );
+    let kept = validate_bids(vec![good], &[imp]);
+    assert_eq!(kept.len(), 1, "bid with zero price and deal should be kept");
+}
+
+// ── Test: bid validation — missing creative ID is dropped ────────────────────────────────────
+
+#[test]
+fn test_validate_bids_missing_crid_dropped() {
+    let imp = openrtb::Imp { id: "imp1".to_string(), ..Default::default() };
+    let bad = pbs_adapters::TypedBid::new(
+        openrtb::Bid { id: "b1".to_string(), impid: "imp1".to_string(), price: 1.0, ..Default::default() },
+        openrtb_ext::BidType::Banner,
+    );
+    let kept = validate_bids(vec![bad], &[imp]);
+    assert!(kept.is_empty(), "bid with empty crid should be dropped");
+}
+
+// ── Test: currency validation ────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_validate_bid_currency_default_usd() {
+    assert!(validate_bid_currency(&[], "").is_ok());
+    assert!(validate_bid_currency(&[], "USD").is_ok());
+}
+
+#[test]
+fn test_validate_bid_currency_valid_codes() {
+    assert!(validate_bid_currency(&[], "EUR").is_ok());
+    assert!(validate_bid_currency(&[], "GBP").is_ok());
+    assert!(validate_bid_currency(&[], "JPY").is_ok());
+}
+
+#[test]
+fn test_validate_bid_currency_invalid_code() {
+    assert!(validate_bid_currency(&[], "XY").is_err());
+    assert!(validate_bid_currency(&[], "1234").is_err());
+    assert!(validate_bid_currency(&[], "ab").is_err());
 }
 
 // ── Test 5: GDPR with no consent → seat_non_bid with status code 50 ──────────────────────────
@@ -704,7 +774,7 @@ async fn test_price_floor_drops_bid_and_emits_non_bid_300() {
 
     let mock_server = MockServer::start().await;
     // Bid price 0.5 is below floor 1.0.
-    let body = serde_json::json!({"id":"r","seatbid":[{"bid":[{"id":"b1","impid":"imp1","price":0.5,"adm":"<ad/>"}]}]});
+    let body = serde_json::json!({"id":"r","seatbid":[{"bid":[{"id":"b1","impid":"imp1","price":0.5,"adm":"<ad/>","crid":"cr1"}]}]});
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(200).set_body_json(&body))
         .mount(&mock_server)
@@ -749,7 +819,7 @@ async fn test_macro_resolution_auction_price_in_nurl() {
     use wiremock::matchers::method;
 
     let mock_server = MockServer::start().await;
-    let body = serde_json::json!({"id":"r","seatbid":[{"bid":[{"id":"b1","impid":"imp1","price":1.5,"nurl":"http://win?price=${AUCTION_PRICE}"}]}]});
+    let body = serde_json::json!({"id":"r","seatbid":[{"bid":[{"id":"b1","impid":"imp1","price":1.5,"nurl":"http://win?price=${AUCTION_PRICE}","crid":"cr1"}]}]});
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(200).set_body_json(&body))
         .mount(&mock_server)
@@ -826,7 +896,7 @@ async fn test_targeting_keys_set_on_winning_bid() {
     use wiremock::matchers::method;
 
     let mock_server = MockServer::start().await;
-    let body = serde_json::json!({"id":"r","seatbid":[{"bid":[{"id":"bid1","impid":"imp1","price":1.5,"adm":"<ad/>"}]}]});
+    let body = serde_json::json!({"id":"r","seatbid":[{"bid":[{"id":"bid1","impid":"imp1","price":1.5,"adm":"<ad/>","crid":"cr1"}]}]});
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(200).set_body_json(&body))
         .mount(&mock_server)
@@ -854,7 +924,7 @@ async fn test_tmax_timeout_produces_timed_out_bidder() {
 
     // The mock server adds a 200ms delay; tmax=1ms forces a timeout.
     let mock_server = MockServer::start().await;
-    let body = serde_json::json!({"id":"r","seatbid":[{"bid":[{"id":"b1","impid":"imp1","price":1.0,"adm":"<ad/>"}]}]});
+    let body = serde_json::json!({"id":"r","seatbid":[{"bid":[{"id":"b1","impid":"imp1","price":1.0,"adm":"<ad/>","crid":"cr1"}]}]});
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(200).set_body_json(&body).set_delay(std::time::Duration::from_millis(200)))
         .mount(&mock_server)
@@ -884,7 +954,7 @@ async fn test_debug_mode_includes_http_calls() {
     use wiremock::matchers::method;
 
     let mock_server = MockServer::start().await;
-    let body = serde_json::json!({"id":"r","seatbid":[{"bid":[{"id":"b1","impid":"imp1","price":1.0,"adm":"<ad/>"}]}]});
+    let body = serde_json::json!({"id":"r","seatbid":[{"bid":[{"id":"b1","impid":"imp1","price":1.0,"adm":"<ad/>","crid":"cr1"}]}]});
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(200).set_body_json(&body))
         .mount(&mock_server)
@@ -927,7 +997,7 @@ async fn test_no_debug_mode_when_test_is_zero() {
     use wiremock::matchers::method;
 
     let mock_server = MockServer::start().await;
-    let body = serde_json::json!({"id":"r","seatbid":[{"bid":[{"id":"b1","impid":"imp1","price":1.0,"adm":"<ad/>"}]}]});
+    let body = serde_json::json!({"id":"r","seatbid":[{"bid":[{"id":"b1","impid":"imp1","price":1.0,"adm":"<ad/>","crid":"cr1"}]}]});
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(200).set_body_json(&body))
         .mount(&mock_server)
@@ -988,7 +1058,7 @@ async fn test_ccpa_no_opt_out_does_not_block() {
     use wiremock::matchers::method;
 
     let mock_server = MockServer::start().await;
-    let body = serde_json::json!({"id":"r","seatbid":[{"bid":[{"id":"b1","impid":"imp1","price":1.0,"adm":"<ad/>"}]}]});
+    let body = serde_json::json!({"id":"r","seatbid":[{"bid":[{"id":"b1","impid":"imp1","price":1.0,"adm":"<ad/>","crid":"cr1"}]}]});
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(200).set_body_json(&body))
         .mount(&mock_server)
@@ -1039,6 +1109,7 @@ impl pbs_adapters::Bidder for MultiBidMockBidder {
                 impid: "imp1".to_string(),
                 price: i as f64,
                 adm: Some(format!("<ad{i}/>")),
+                crid: Some("cr1".to_string()),
                 ..Default::default()
             };
             resp.bids.push(pbs_adapters::TypedBid::new(bid, openrtb_ext::BidType::Banner));
@@ -1114,7 +1185,7 @@ async fn test_bid_adjustment_applied_before_floor() {
 
     let mock_server = MockServer::start().await;
     // Raw bid price = 5.0; adjustment factor 0.8 → adjusted = 4.0; floor = 4.5 → rejected
-    let body = serde_json::json!({"id":"r","seatbid":[{"bid":[{"id":"b1","impid":"imp1","price":5.0,"adm":"<ad/>"}]}]});
+    let body = serde_json::json!({"id":"r","seatbid":[{"bid":[{"id":"b1","impid":"imp1","price":5.0,"adm":"<ad/>","crid":"cr1"}]}]});
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(200).set_body_json(&body))
         .mount(&mock_server)
@@ -1160,7 +1231,8 @@ async fn test_price_macro_resolved_in_nurl() {
             "id": "b1",
             "impid": "imp1",
             "price": 1.23,
-            "nurl": "http://track.com?price=${AUCTION_PRICE}"
+            "nurl": "http://track.com?price=${AUCTION_PRICE}",
+            "crid": "cr1"
         }]}]
     });
     Mock::given(method("POST"))
@@ -1196,7 +1268,8 @@ async fn test_price_macro_resolved_in_adm() {
             "id": "b1",
             "impid": "imp1",
             "price": 2.5,
-            "adm": "<creative>price=${AUCTION_PRICE}</creative>"
+            "adm": "<creative>price=${AUCTION_PRICE}</creative>",
+            "crid": "cr1"
         }]}]
     });
     Mock::given(method("POST"))

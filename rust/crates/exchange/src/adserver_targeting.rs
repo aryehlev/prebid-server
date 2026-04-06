@@ -20,6 +20,13 @@ pub const KEY_VAST_CACHE_ID: &str = "hb_uuid";
 pub const KEY_FORMAT: &str = "hb_format";
 pub const KEY_ENV: &str = "hb_env";
 pub const KEY_CACHE_URL: &str = "hb_cache_url";
+pub const KEY_CATEGORY_DURATION: &str = "hb_cat_dur";
+
+/// Minimum key length (for custom truncation)
+pub const MIN_KEY_LENGTH: usize = 12;
+
+/// Default key prefix
+pub const DEFAULT_KEY_PREFIX: &str = "hb";
 
 /// Truncate a targeting key to MAX_KEY_LENGTH.
 pub fn truncate_target_key(key: &str) -> String {
@@ -30,9 +37,25 @@ pub fn truncate_target_key(key: &str) -> String {
     }
 }
 
+/// Truncate a targeting key to a custom max length.
+/// If `max_length` is 0 or less than MIN_KEY_LENGTH, uses MAX_KEY_LENGTH.
+pub fn truncate_target_key_custom(key: &str, max_length: usize) -> String {
+    let limit = if max_length >= MIN_KEY_LENGTH { max_length } else { MAX_KEY_LENGTH };
+    if key.len() <= limit {
+        key.to_string()
+    } else {
+        key[..limit].to_string()
+    }
+}
+
 /// Build a bidder-suffixed targeting key, e.g. `hb_pb_appnexus`.
 pub fn bidder_key(base: &str, bidder: &str) -> String {
     truncate_target_key(&format!("{}_{}", base, bidder))
+}
+
+/// Build a bidder-suffixed targeting key with custom max length.
+pub fn bidder_key_custom(base: &str, bidder: &str, max_length: usize) -> String {
+    truncate_target_key_custom(&format!("{}_{}", base, bidder), max_length)
 }
 
 // ---------------------------------------------------------------------------
@@ -150,6 +173,15 @@ pub struct TargetingParams<'a> {
     pub cache_path: Option<&'a str>,
     pub env: Option<&'a str>,
     pub is_winning_bid: bool,
+    /// Category/duration targeting key value (e.g. "cars_30s")
+    pub category_duration: Option<&'a str>,
+    /// Whether to always include bidder keys for deals regardless of
+    /// the include_bidder_keys setting.
+    pub always_include_deals: bool,
+    /// Whether to include bidder-suffixed keys (default true).
+    pub include_bidder_keys: bool,
+    /// Whether to include winning (unsuffixed) keys (default true).
+    pub include_winners: bool,
 }
 
 /// Build the targeting key-value map for a single bid.
@@ -159,39 +191,51 @@ pub struct TargetingParams<'a> {
 pub fn make_targeting(params: &TargetingParams, granularity: &PriceGranularity) -> HashMap<String, String> {
     let mut kv = HashMap::new();
     let bucket = get_price_bucket(params.price, granularity);
+    let has_deal = params.deal_id.map_or(false, |d| !d.is_empty());
 
-    // Always add bidder-suffixed keys
-    kv.insert(bidder_key(KEY_BIDDER, params.bidder), params.bidder.to_string());
-    kv.insert(bidder_key(KEY_PRICE_BUCKET, params.bidder), bucket.clone());
-    if let Some((w, h)) = params.size {
-        kv.insert(bidder_key(KEY_SIZE, params.bidder), format!("{}x{}", w, h));
-    }
-    if let Some(deal) = params.deal_id {
-        if !deal.is_empty() {
-            kv.insert(bidder_key(KEY_DEAL, params.bidder), deal.to_string());
+    // Add bidder-suffixed keys when include_bidder_keys is true,
+    // or when always_include_deals is true and bid has a deal.
+    let add_bidder_keys = params.include_bidder_keys
+        || (params.always_include_deals && has_deal);
+
+    if add_bidder_keys {
+        kv.insert(bidder_key(KEY_BIDDER, params.bidder), params.bidder.to_string());
+        kv.insert(bidder_key(KEY_PRICE_BUCKET, params.bidder), bucket.clone());
+        if let Some((w, h)) = params.size {
+            kv.insert(bidder_key(KEY_SIZE, params.bidder), format!("{}x{}", w, h));
         }
-    }
-    if let Some(cid) = params.cache_id {
-        kv.insert(bidder_key(KEY_CACHE_ID, params.bidder), cid.to_string());
-    }
-    if let Some(vid) = params.vast_cache_id {
-        kv.insert(bidder_key(KEY_VAST_CACHE_ID, params.bidder), vid.to_string());
-    }
-    if let Some(fmt) = params.format {
-        kv.insert(bidder_key(KEY_FORMAT, params.bidder), fmt.to_string());
-    }
-    if let Some(env) = params.env {
-        kv.insert(bidder_key(KEY_ENV, params.bidder), env.to_string());
-    }
-    if let Some(host) = params.cache_host {
-        kv.insert(bidder_key(KEY_CACHE_HOST, params.bidder), host.to_string());
-    }
-    if let Some(path) = params.cache_path {
-        kv.insert(bidder_key(KEY_CACHE_PATH, params.bidder), path.to_string());
+        if let Some(deal) = params.deal_id {
+            if !deal.is_empty() {
+                kv.insert(bidder_key(KEY_DEAL, params.bidder), deal.to_string());
+            }
+        }
+        if let Some(cid) = params.cache_id {
+            kv.insert(bidder_key(KEY_CACHE_ID, params.bidder), cid.to_string());
+        }
+        if let Some(vid) = params.vast_cache_id {
+            kv.insert(bidder_key(KEY_VAST_CACHE_ID, params.bidder), vid.to_string());
+        }
+        if let Some(fmt) = params.format {
+            kv.insert(bidder_key(KEY_FORMAT, params.bidder), fmt.to_string());
+        }
+        if let Some(env) = params.env {
+            kv.insert(bidder_key(KEY_ENV, params.bidder), env.to_string());
+        }
+        if let Some(host) = params.cache_host {
+            kv.insert(bidder_key(KEY_CACHE_HOST, params.bidder), host.to_string());
+        }
+        if let Some(path) = params.cache_path {
+            kv.insert(bidder_key(KEY_CACHE_PATH, params.bidder), path.to_string());
+        }
+        if let Some(cat_dur) = params.category_duration {
+            if !cat_dur.is_empty() {
+                kv.insert(bidder_key(KEY_CATEGORY_DURATION, params.bidder), cat_dur.to_string());
+            }
+        }
     }
 
     // Add unsuffixed (winning) keys
-    if params.is_winning_bid {
+    if params.include_winners && params.is_winning_bid {
         kv.insert(KEY_BIDDER.to_string(), params.bidder.to_string());
         kv.insert(KEY_PRICE_BUCKET.to_string(), bucket);
         if let Some((w, h)) = params.size {
@@ -219,6 +263,11 @@ pub fn make_targeting(params: &TargetingParams, granularity: &PriceGranularity) 
         }
         if let Some(path) = params.cache_path {
             kv.insert(KEY_CACHE_PATH.to_string(), path.to_string());
+        }
+        if let Some(cat_dur) = params.category_duration {
+            if !cat_dur.is_empty() {
+                kv.insert(KEY_CATEGORY_DURATION.to_string(), cat_dur.to_string());
+            }
         }
     }
 
@@ -370,6 +419,10 @@ mod tests {
             cache_path: None,
             env: None,
             is_winning_bid: true,
+            category_duration: None,
+            always_include_deals: false,
+            include_bidder_keys: true,
+            include_winners: true,
         };
         let kv = make_targeting(&params, &g);
 
@@ -403,6 +456,10 @@ mod tests {
             cache_path: None,
             env: None,
             is_winning_bid: false,
+            category_duration: None,
+            always_include_deals: false,
+            include_bidder_keys: true,
+            include_winners: true,
         };
         let kv = make_targeting(&params, &g);
 

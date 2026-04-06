@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 
 /// Host-level SChain node configuration.
 /// When set, this node is prepended to the schain on every bid request.
@@ -85,6 +86,8 @@ pub struct Configuration {
     #[serde(default)]
     pub http_client: HTTPClientConfig,
     #[serde(default)]
+    pub http_client_cache: HTTPClientConfig,
+    #[serde(default)]
     pub user_sync: UserSyncConfig,
     #[serde(default)]
     pub analytics: AnalyticsConfig,
@@ -92,6 +95,105 @@ pub struct Configuration {
     pub price_floors: PriceFloorsConfig,
     #[serde(default)]
     pub lmt: LmtConfig,
+    /// Tmax adjustment settings for estimating bidder tmax.
+    #[serde(default)]
+    pub tmax_adjustments: TmaxAdjustments,
+    /// Default tmax value when not specified in the request.
+    #[serde(default)]
+    pub tmax_default: u64,
+    /// Video endpoint configuration.
+    #[serde(default)]
+    pub video: VideoConfig,
+    /// Hooks configuration for hook execution plans.
+    #[serde(default)]
+    pub hooks: HooksConfig,
+    /// Bid response validation settings.
+    #[serde(default)]
+    pub validations: ValidationsConfig,
+    /// Experimental feature flags.
+    #[serde(default)]
+    pub experiment: ExperimentConfig,
+    /// Default request configuration.
+    #[serde(default)]
+    pub default_request: DefReqConfig,
+    /// Host cookie configuration.
+    #[serde(default)]
+    pub host_cookie: HostCookieConfig,
+    /// External cache URL configuration.
+    #[serde(default)]
+    pub external_cache: ExternalCacheConfig,
+    /// Debug / logging configuration.
+    #[serde(default)]
+    pub debug: DebugConfig,
+    /// Request validation (private network CIDRs).
+    #[serde(default)]
+    pub request_validation: RequestValidationConfig,
+    /// Request timeout headers configuration.
+    #[serde(default)]
+    pub request_timeout_headers: RequestTimeoutHeaders,
+    /// Compression configuration.
+    #[serde(default)]
+    pub compression: CompressionConfig,
+    /// Admin listener configuration.
+    #[serde(default)]
+    pub admin: AdminConfig,
+    /// VTrack configuration.
+    #[serde(default)]
+    pub vtrack: VTrackConfig,
+    /// Event configuration.
+    #[serde(default)]
+    pub event: EventConfig,
+    /// Unix socket enable flag.
+    #[serde(default)]
+    pub unix_socket_enable: bool,
+    /// Unix socket file name.
+    #[serde(default)]
+    pub unix_socket_name: String,
+    /// Status response string for /status endpoint.
+    #[serde(default)]
+    pub status_response: String,
+    /// Recaptcha secret.
+    #[serde(default)]
+    pub recaptcha_secret: String,
+    /// AMP timeout adjustment in milliseconds.
+    #[serde(default)]
+    pub amp_timeout_adjustment_ms: i64,
+    /// Whether video stored request is required.
+    #[serde(default)]
+    pub video_stored_request_required: bool,
+    /// Blocked app bundle IDs.
+    #[serde(default)]
+    pub blocked_apps: Vec<String>,
+    /// Account defaults applied to all accounts.
+    #[serde(default)]
+    pub account_defaults: AccountConfig,
+    /// Path to PEM certificates file.
+    #[serde(default)]
+    pub certificates_file: String,
+    /// When true, a new bid ID is generated in seatbid[].bid[].ext.prebid.bidid.
+    #[serde(default)]
+    pub generate_request_id: bool,
+    /// Data center identifier.
+    #[serde(default)]
+    pub datacenter: String,
+    /// Stored AMP request configuration.
+    #[serde(default)]
+    pub stored_amp_req: StoredRequestConfig,
+    /// Category mapping configuration.
+    #[serde(default)]
+    pub category_mapping: StoredRequestConfig,
+    /// Stored video request configuration.
+    #[serde(default)]
+    pub stored_video_req: StoredRequestConfig,
+    /// Stored responses configuration.
+    #[serde(default)]
+    pub stored_responses: StoredRequestConfig,
+    /// Stored requests timeout in milliseconds.
+    #[serde(default = "default_stored_requests_timeout_ms")]
+    pub stored_requests_timeout_ms: u64,
+    /// Garbage collector threshold in bytes (Go-specific, kept for config compat).
+    #[serde(default)]
+    pub garbage_collector_threshold: u64,
 }
 
 fn default_host() -> String {
@@ -112,6 +214,419 @@ fn default_static_dir() -> String {
 
 fn default_max_request_size() -> usize {
     1_572_864 // 1.5 MB
+}
+
+fn default_stored_requests_timeout_ms() -> u64 {
+    50
+}
+
+// ---------------------------------------------------------------------------
+// TmaxAdjustments
+// ---------------------------------------------------------------------------
+
+/// Tmax adjustment settings for estimating bidder tmax.
+///
+/// Maps to the Go `TmaxAdjustments` struct in config/config.go.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TmaxAdjustments {
+    /// Whether bidder tmax should be calculated and passed to bid adapters.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Minimum expected response duration from a bidder in milliseconds.
+    #[serde(default)]
+    pub bidder_response_duration_min_ms: u64,
+    /// Network latency buffer between PBS and bidder servers in milliseconds.
+    #[serde(default)]
+    pub bidder_network_latency_buffer_ms: u64,
+    /// Time required for PBS to process all bidder responses in milliseconds.
+    #[serde(default)]
+    pub pbs_response_preparation_duration_ms: u64,
+}
+
+// ---------------------------------------------------------------------------
+// VideoConfig
+// ---------------------------------------------------------------------------
+
+/// Video endpoint configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct VideoConfig {
+    /// When true, the deprecated /video endpoint is enabled.
+    #[serde(default)]
+    pub enable_deprecated_endpoint: bool,
+}
+
+// ---------------------------------------------------------------------------
+// HooksConfig
+// ---------------------------------------------------------------------------
+
+/// Hook execution plan configuration.
+///
+/// Maps to the Go `Hooks` struct in config/hooks.go.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HooksConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Module configuration: map[vendor_name] -> map[module_name] -> config.
+    #[serde(default)]
+    pub modules: HashMap<String, HashMap<String, JsonValue>>,
+    /// Host execution plan (always executed).
+    #[serde(default)]
+    pub host_execution_plan: HookExecutionPlan,
+    /// Default account execution plan (can be overridden per-account).
+    #[serde(default)]
+    pub default_account_execution_plan: HookExecutionPlan,
+}
+
+/// Hook execution plan: endpoints -> stages -> groups.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HookExecutionPlan {
+    #[serde(default)]
+    pub endpoints: HashMap<String, HookEndpointPlan>,
+}
+
+/// Per-endpoint hook stages.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HookEndpointPlan {
+    #[serde(default)]
+    pub stages: HashMap<String, HookStagePlan>,
+}
+
+/// Per-stage hook execution groups.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HookStagePlan {
+    #[serde(default)]
+    pub groups: Vec<HookExecutionGroup>,
+}
+
+/// A group of hooks to execute with a shared timeout.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HookExecutionGroup {
+    /// Timeout in milliseconds. Zero means immediate timeout status.
+    #[serde(default)]
+    pub timeout: u64,
+    /// Ordered sequence of hooks to execute.
+    #[serde(default)]
+    pub hook_sequence: Vec<HookSequenceEntry>,
+}
+
+/// A single hook in a hook execution sequence.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HookSequenceEntry {
+    /// Composite value: "{vendor_name}.{module_name}".
+    #[serde(default)]
+    pub module_code: String,
+    /// Arbitrary identifier used for metrics and debug info.
+    #[serde(default)]
+    pub hook_impl_code: String,
+}
+
+// ---------------------------------------------------------------------------
+// ValidationsConfig
+// ---------------------------------------------------------------------------
+
+/// Bid response validation settings.
+///
+/// Maps to the Go `Validations` struct in config/config.go.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ValidationsConfig {
+    /// Banner creative max size enforcement: "skip", "warn", or "enforce".
+    #[serde(default)]
+    pub banner_creative_max_size: String,
+    /// Secure markup enforcement: "skip", "warn", or "enforce".
+    #[serde(default)]
+    pub secure_markup: String,
+    /// Maximum allowed creative width (0 = no limit).
+    #[serde(default)]
+    pub max_creative_width: i64,
+    /// Maximum allowed creative height (0 = no limit).
+    #[serde(default)]
+    pub max_creative_height: i64,
+}
+
+// ---------------------------------------------------------------------------
+// ExperimentConfig
+// ---------------------------------------------------------------------------
+
+/// Experimental feature flags.
+///
+/// Maps to the Go `Experiment` struct in config/experiment.go.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExperimentConfig {
+    /// Ads Cert configuration.
+    #[serde(default)]
+    pub adscert: AdsCertConfig,
+}
+
+/// Ads Cert configuration for signing bid requests.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AdsCertConfig {
+    /// Mode: "off", "inprocess", or "remote".
+    #[serde(default)]
+    pub mode: String,
+    /// In-process signing configuration.
+    #[serde(default)]
+    pub inprocess: AdsCertInProcessConfig,
+    /// Remote signing service configuration.
+    #[serde(default)]
+    pub remote: AdsCertRemoteConfig,
+}
+
+/// In-process ads cert signing configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AdsCertInProcessConfig {
+    /// Ads.cert hostname for the originating party.
+    #[serde(default)]
+    pub origin: String,
+    /// Base64-encoded private key.
+    #[serde(default)]
+    pub key: String,
+    /// Frequency in seconds to check DNS _delivery._adscert and _adscert subdomains.
+    #[serde(default = "default_ads_cert_dns_check_interval")]
+    pub domain_check_interval_seconds: u64,
+    /// Frequency in seconds to renew DNS _delivery._adscert and _adscert subdomains.
+    #[serde(default = "default_ads_cert_dns_renewal_interval")]
+    pub domain_renewal_interval_seconds: u64,
+}
+
+fn default_ads_cert_dns_check_interval() -> u64 {
+    30
+}
+
+fn default_ads_cert_dns_renewal_interval() -> u64 {
+    30
+}
+
+/// Remote ads cert signing service configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AdsCertRemoteConfig {
+    /// Address of gRPC server that creates call signatures.
+    #[serde(default)]
+    pub url: String,
+    /// Timeout in milliseconds for the signing operation.
+    #[serde(default = "default_ads_cert_signing_timeout")]
+    pub signing_timeout_ms: u64,
+}
+
+fn default_ads_cert_signing_timeout() -> u64 {
+    5
+}
+
+// ---------------------------------------------------------------------------
+// DefReqConfig
+// ---------------------------------------------------------------------------
+
+/// Default request configuration.
+///
+/// Maps to the Go `DefReqConfig` struct in config/config.go.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DefReqConfig {
+    /// Type of default request source (e.g. "file").
+    #[serde(default, rename = "type")]
+    pub req_type: String,
+    /// Filesystem-based default request settings.
+    #[serde(default)]
+    pub file: DefReqFiles,
+    /// Whether alias info should be included.
+    #[serde(default)]
+    pub alias_info: bool,
+}
+
+/// Filesystem default request file settings.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DefReqFiles {
+    /// Path to the default request JSON file.
+    #[serde(default)]
+    pub name: String,
+}
+
+// ---------------------------------------------------------------------------
+// HostCookieConfig
+// ---------------------------------------------------------------------------
+
+/// Host cookie configuration.
+///
+/// Maps to the Go `HostCookie` struct in config/config.go.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HostCookieConfig {
+    #[serde(default)]
+    pub domain: String,
+    #[serde(default)]
+    pub family: String,
+    #[serde(default)]
+    pub cookie_name: String,
+    #[serde(default)]
+    pub opt_out_url: String,
+    #[serde(default)]
+    pub opt_in_url: String,
+    /// Maximum cookie size in bytes. 0 = unlimited.
+    #[serde(default)]
+    pub max_cookie_size_bytes: u64,
+    /// Opt-out cookie settings.
+    #[serde(default)]
+    pub optout_cookie: CookieConfig,
+    /// Cookie TTL in days.
+    #[serde(default = "default_host_cookie_ttl_days")]
+    pub ttl_days: i64,
+}
+
+fn default_host_cookie_ttl_days() -> i64 {
+    90
+}
+
+/// Simple cookie name/value pair.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CookieConfig {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub value: String,
+}
+
+// ---------------------------------------------------------------------------
+// ExternalCacheConfig
+// ---------------------------------------------------------------------------
+
+/// External cache URL configuration.
+///
+/// Maps to the Go `ExternalCache` struct in config/config.go.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExternalCacheConfig {
+    #[serde(default)]
+    pub scheme: String,
+    #[serde(default)]
+    pub host: String,
+    #[serde(default)]
+    pub path: String,
+}
+
+// ---------------------------------------------------------------------------
+// DebugConfig
+// ---------------------------------------------------------------------------
+
+/// Debug / logging configuration.
+///
+/// Maps to the Go `Debug` struct in config/config.go.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DebugConfig {
+    #[serde(default)]
+    pub timeout_notification: TimeoutNotificationConfig,
+    #[serde(default)]
+    pub override_token: String,
+}
+
+/// Timeout notification logging configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TimeoutNotificationConfig {
+    /// Log timeout notifications in the application log.
+    #[serde(default)]
+    pub log: bool,
+    /// Fraction of notifications to log (0.0 .. 1.0).
+    #[serde(default)]
+    pub sampling_rate: f32,
+    /// Only log failures.
+    #[serde(default)]
+    pub fail_only: bool,
+}
+
+// ---------------------------------------------------------------------------
+// RequestValidationConfig
+// ---------------------------------------------------------------------------
+
+/// Request validation configuration (private network CIDRs).
+///
+/// Maps to the Go `RequestValidation` struct in config/requestvalidation.go.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RequestValidationConfig {
+    /// IPv4 private network CIDRs.
+    #[serde(default)]
+    pub ipv4_private_networks: Vec<String>,
+    /// IPv6 private network CIDRs.
+    #[serde(default)]
+    pub ipv6_private_networks: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// RequestTimeoutHeaders
+// ---------------------------------------------------------------------------
+
+/// Custom headers to handle request timeouts from queueing infrastructure.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RequestTimeoutHeaders {
+    #[serde(default)]
+    pub request_time_in_queue: String,
+    #[serde(default)]
+    pub request_timeout_in_queue: String,
+}
+
+// ---------------------------------------------------------------------------
+// CompressionConfig
+// ---------------------------------------------------------------------------
+
+/// Compression configuration.
+///
+/// Maps to the Go `Compression` struct in config/compression.go.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CompressionConfig {
+    #[serde(default)]
+    pub request: CompressionInfoConfig,
+    #[serde(default)]
+    pub response: CompressionInfoConfig,
+}
+
+/// Per-direction compression settings.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CompressionInfoConfig {
+    #[serde(default)]
+    pub enable_gzip: bool,
+}
+
+// ---------------------------------------------------------------------------
+// AdminConfig
+// ---------------------------------------------------------------------------
+
+/// Admin listener configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AdminConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+// ---------------------------------------------------------------------------
+// VTrackConfig
+// ---------------------------------------------------------------------------
+
+/// Video tracking configuration.
+///
+/// Maps to the Go `VTrack` struct in config/config.go.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct VTrackConfig {
+    #[serde(default = "default_vtrack_timeout")]
+    pub timeout_ms: i64,
+    #[serde(default = "default_true")]
+    pub allow_unknown_bidder: bool,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_vtrack_timeout() -> i64 {
+    2000
+}
+
+// ---------------------------------------------------------------------------
+// EventConfig
+// ---------------------------------------------------------------------------
+
+/// Event timeout configuration.
+///
+/// Maps to the Go `Event` struct in config/config.go.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EventConfig {
+    #[serde(default = "default_event_timeout")]
+    pub timeout_ms: i64,
+}
+
+fn default_event_timeout() -> i64 {
+    1000
 }
 
 /// Per-account configuration with full publisher-level settings.
@@ -150,6 +665,58 @@ pub struct AccountConfig {
     /// Allow debug/test requests for this account.
     #[serde(default)]
     pub debug_allow: bool,
+    /// Cache TTL defaults inherited from host cache config.
+    #[serde(default)]
+    pub cache_ttl: CacheTTL,
+    /// Cookie sync configuration.
+    #[serde(default)]
+    pub cookie_sync: AccountCookieSyncConfig,
+    /// Truncate targeting attribute to this length.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncate_target_attr: Option<i32>,
+    /// Account-level hooks configuration.
+    #[serde(default)]
+    pub hooks: AccountHooksConfig,
+    /// Account-level validations.
+    #[serde(default)]
+    pub validations: ValidationsConfig,
+    /// Default bid limit per imp.
+    #[serde(default)]
+    pub default_bid_limit: u32,
+    /// Bid rounding mode: "down", "true", "timesplit", "up".
+    #[serde(default)]
+    pub bid_rounding: String,
+    /// Targeting key prefix.
+    #[serde(default)]
+    pub targeting_prefix: String,
+}
+
+// ---------------------------------------------------------------------------
+// Account sub-configs (cookie sync, hooks)
+// ---------------------------------------------------------------------------
+
+/// Account-level cookie sync defaults.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AccountCookieSyncConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_limit: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_limit: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_coop_sync: Option<bool>,
+    #[serde(default)]
+    pub priority_groups: Vec<Vec<String>>,
+}
+
+/// Account-level hooks configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AccountHooksConfig {
+    /// Module configuration: map[vendor_name] -> map[module_name] -> raw JSON.
+    #[serde(default)]
+    pub modules: HashMap<String, HashMap<String, JsonValue>>,
+    /// Account-specific hook execution plan.
+    #[serde(default)]
+    pub execution_plan: HookExecutionPlan,
 }
 
 // ---------------------------------------------------------------------------
@@ -157,11 +724,36 @@ pub struct AccountConfig {
 // ---------------------------------------------------------------------------
 
 /// Account-level event tracking.
+///
+/// Maps to the Go `Events` struct in config/events.go.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AccountEventsConfig {
     /// When true, event tracking URLs are included in bid responses.
     #[serde(default)]
     pub enabled: bool,
+    /// Default event URL template.
+    #[serde(default)]
+    pub default_url: String,
+    /// VAST event injection configuration.
+    #[serde(default)]
+    pub vast_events: Vec<VastEventConfig>,
+}
+
+/// VAST event injection configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct VastEventConfig {
+    /// Element creation type.
+    #[serde(default)]
+    pub create_element: String,
+    /// Tracking event type.
+    #[serde(default, rename = "type")]
+    pub event_type: String,
+    /// Whether to exclude the default URL for this event.
+    #[serde(default)]
+    pub exclude_default_url: bool,
+    /// Custom URLs for this event.
+    #[serde(default)]
+    pub urls: Vec<String>,
 }
 
 /// Account-level privacy overrides (GDPR, CCPA, COPPA).
@@ -179,6 +771,98 @@ pub struct AccountPrivacyConfig {
     /// IPv6 anonymisation config (number of bits to mask).
     #[serde(default)]
     pub ipv6: IpAnonymisationConfig,
+    /// DSA configuration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dsa: Option<AccountDsaConfig>,
+    /// Allow-activities configuration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allowactivities: Option<AllowActivitiesConfig>,
+    /// Privacy Sandbox configuration.
+    #[serde(default)]
+    pub privacysandbox: PrivacySandboxConfig,
+}
+
+/// Account-level DSA configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AccountDsaConfig {
+    /// Default DSA object as a JSON string.
+    #[serde(default)]
+    pub default: String,
+    /// When true, DSA is only enforced for GDPR requests.
+    #[serde(default)]
+    pub gdpr_only: bool,
+}
+
+/// Privacy Sandbox configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PrivacySandboxConfig {
+    #[serde(default)]
+    pub topicsdomain: String,
+    #[serde(default)]
+    pub cookiedeprecation: CookieDeprecationConfig,
+}
+
+/// Cookie deprecation settings.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CookieDeprecationConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_cookie_deprecation_ttl")]
+    pub ttl_sec: u64,
+}
+
+fn default_cookie_deprecation_ttl() -> u64 {
+    604800
+}
+
+/// Allow-activities configuration.
+///
+/// Maps to the Go `AllowActivities` struct in config/activity.go.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AllowActivitiesConfig {
+    #[serde(default, rename = "syncUser")]
+    pub sync_user: ActivityConfig,
+    #[serde(default, rename = "fetchBids")]
+    pub fetch_bids: ActivityConfig,
+    #[serde(default, rename = "enrichUfpd")]
+    pub enrich_ufpd: ActivityConfig,
+    #[serde(default, rename = "reportAnalytics")]
+    pub report_analytics: ActivityConfig,
+    #[serde(default, rename = "transmitUfpd")]
+    pub transmit_ufpd: ActivityConfig,
+    #[serde(default, rename = "transmitPreciseGeo")]
+    pub transmit_precise_geo: ActivityConfig,
+    #[serde(default, rename = "transmitUniqueRequestIds")]
+    pub transmit_unique_request_ids: ActivityConfig,
+    #[serde(default, rename = "transmitTid")]
+    pub transmit_tids: ActivityConfig,
+}
+
+/// Per-activity configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ActivityConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default: Option<bool>,
+    #[serde(default)]
+    pub rules: Vec<ActivityRuleConfig>,
+}
+
+/// A single activity rule.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ActivityRuleConfig {
+    #[serde(default)]
+    pub condition: ActivityConditionConfig,
+    #[serde(default)]
+    pub allow: bool,
+}
+
+/// Condition for an activity rule.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ActivityConditionConfig {
+    #[serde(default, rename = "componentName")]
+    pub component_name: Vec<String>,
+    #[serde(default, rename = "componentType")]
+    pub component_type: Vec<String>,
 }
 
 /// IP address anonymisation settings.
