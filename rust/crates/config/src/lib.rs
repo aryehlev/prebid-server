@@ -1,6 +1,7 @@
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
@@ -1539,6 +1540,351 @@ pub struct FloorFetchConfig {
     pub max_file_size_kb: u32,
 }
 
+// ---------------------------------------------------------------------------
+// BidderInfo - loaded from per-bidder YAML files
+// ---------------------------------------------------------------------------
+
+/// Bidder information loaded from YAML config files.
+///
+/// Maps to the Go `BidderInfo` struct in config/bidderinfo.go.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BidderInfo {
+    /// If set, this bidder is an alias of the named canonical bidder.
+    #[serde(default, rename = "aliasOf")]
+    pub alias_of: String,
+    /// Whether this bidder is disabled.
+    #[serde(default)]
+    pub disabled: bool,
+    /// Bidder endpoint URL template.
+    #[serde(default)]
+    pub endpoint: String,
+    /// Extra adapter info passed to the adapter at construction time.
+    #[serde(default)]
+    pub extra_info: String,
+    /// Maintainer contact information.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub maintainer: Option<MaintainerInfo>,
+    /// Platform capabilities (app, site, dooh).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<CapabilitiesInfo>,
+    /// GVL vendor ID for GDPR enforcement.
+    #[serde(default, rename = "gvlVendorID")]
+    pub gvl_vendor_id: u16,
+    /// Whether modifying VAST XML is allowed.
+    #[serde(default, rename = "modifyingVastXmlAllowed")]
+    pub modifying_vast_xml_allowed: bool,
+    /// Debug configuration for this bidder.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub debug: Option<BidderDebugInfo>,
+    /// Geographic scope restrictions.
+    #[serde(default)]
+    pub geoscope: Vec<String>,
+    /// User sync configuration.
+    #[serde(default, rename = "userSync")]
+    pub user_sync: Option<BidderSyncerConfig>,
+    /// Experiment flags for this bidder.
+    #[serde(default)]
+    pub experiment: BidderExperimentConfig,
+    /// OpenRTB version and feature support.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub openrtb: Option<BidderOpenRTBInfo>,
+    /// Endpoint compression type (e.g. "gzip").
+    #[serde(default, rename = "endpointCompression")]
+    pub endpoint_compression: String,
+    /// XAPI config (needed for Rubicon).
+    #[serde(default)]
+    pub xapi: BidderXAPIConfig,
+    /// Platform ID (needed for Facebook).
+    #[serde(default)]
+    pub platform_id: String,
+    /// App secret (needed for Facebook).
+    #[serde(default)]
+    pub app_secret: String,
+}
+
+/// Maintainer contact info for a bidder.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MaintainerInfo {
+    #[serde(default)]
+    pub email: String,
+}
+
+/// Platform capabilities for a bidder.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CapabilitiesInfo {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<PlatformInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub site: Option<PlatformInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dooh: Option<PlatformInfo>,
+}
+
+/// Supported media types for a platform.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PlatformInfo {
+    #[serde(default, rename = "mediaTypes")]
+    pub media_types: Vec<String>,
+}
+
+/// Debug settings for a bidder.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BidderDebugInfo {
+    #[serde(default)]
+    pub allow: bool,
+}
+
+/// User sync (cookie sync) configuration for a bidder.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BidderSyncerConfig {
+    #[serde(default)]
+    pub key: String,
+    #[serde(default)]
+    pub supports: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iframe: Option<SyncerEndpointConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub redirect: Option<SyncerEndpointConfig>,
+    #[serde(default, rename = "externalUrl")]
+    pub external_url: String,
+    #[serde(default, rename = "formatOverride")]
+    pub format_override: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+}
+
+/// A single syncer endpoint (iframe or redirect).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SyncerEndpointConfig {
+    #[serde(default)]
+    pub url: String,
+    #[serde(default, rename = "redirectUrl")]
+    pub redirect_url: String,
+    #[serde(default, rename = "externalUrl")]
+    pub external_url: String,
+    #[serde(default, rename = "userMacro")]
+    pub user_macro: String,
+}
+
+/// Experiment flags for a bidder.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BidderExperimentConfig {
+    #[serde(default, rename = "adsCert")]
+    pub ads_cert: BidderAdsCertConfig,
+}
+
+/// AdsCert experiment config for a bidder.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BidderAdsCertConfig {
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+/// OpenRTB feature support for a bidder.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BidderOpenRTBInfo {
+    #[serde(default)]
+    pub version: String,
+    #[serde(default, rename = "gpp-supported")]
+    pub gpp_supported: bool,
+    #[serde(default, rename = "multiformat-supported")]
+    pub multiformat_supported: Option<bool>,
+}
+
+/// XAPI config for bidders like Rubicon.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BidderXAPIConfig {
+    #[serde(default)]
+    pub username: String,
+    #[serde(default)]
+    pub password: String,
+    #[serde(default)]
+    pub tracker: String,
+}
+
+/// Load all bidder info YAML files from a directory.
+///
+/// Each file in the directory is expected to be named `{bidder_name}.yaml`
+/// and deserialize into a [`BidderInfo`] struct.
+pub fn load_bidder_info(dir: &str) -> Result<HashMap<String, BidderInfo>> {
+    let dir_path = Path::new(dir);
+    if !dir_path.is_dir() {
+        bail!("bidder info directory '{}' does not exist or is not a directory", dir);
+    }
+
+    let mut bidders = HashMap::new();
+    let entries = std::fs::read_dir(dir_path)
+        .with_context(|| format!("failed to read bidder info directory '{}'", dir))?;
+
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+
+        // Only process .yaml and .yml files
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if ext != "yaml" && ext != "yml" {
+            continue;
+        }
+
+        let bidder_name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        if bidder_name.is_empty() {
+            continue;
+        }
+
+        let contents = std::fs::read_to_string(&path)
+            .with_context(|| format!("failed to read bidder info file '{}'", path.display()))?;
+        let info: BidderInfo = serde_yaml::from_str(&contents)
+            .with_context(|| format!("failed to parse bidder info file '{}'", path.display()))?;
+
+        bidders.insert(bidder_name, info);
+    }
+
+    Ok(bidders)
+}
+
+// ---------------------------------------------------------------------------
+// AccountFetcher trait and implementations
+// ---------------------------------------------------------------------------
+
+/// Trait for fetching account configuration by account ID.
+pub trait AccountFetcher {
+    /// Fetch account configuration for the given account ID.
+    fn fetch_account(&self, id: &str) -> Result<AccountConfig>;
+}
+
+/// Fetches accounts from a directory of JSON files.
+///
+/// Each account is stored as `{base_dir}/{id}.json`.
+pub struct FileAccountFetcher {
+    base_dir: PathBuf,
+}
+
+impl FileAccountFetcher {
+    pub fn new(base_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            base_dir: base_dir.into(),
+        }
+    }
+}
+
+impl AccountFetcher for FileAccountFetcher {
+    fn fetch_account(&self, id: &str) -> Result<AccountConfig> {
+        if id.is_empty() {
+            bail!("account ID must not be empty");
+        }
+        // Prevent path traversal
+        if id.contains("..") || id.contains('/') || id.contains('\\') {
+            bail!("invalid account ID '{}'", id);
+        }
+        let path = self.base_dir.join(format!("{}.json", id));
+        let contents = std::fs::read_to_string(&path)
+            .with_context(|| format!("failed to read account file '{}'", path.display()))?;
+        let account: AccountConfig = serde_json::from_str(&contents)
+            .with_context(|| format!("failed to parse account file '{}'", path.display()))?;
+        Ok(account)
+    }
+}
+
+/// Fetches accounts from an HTTP endpoint.
+///
+/// The endpoint is called as `{base_url}/{id}` and is expected to return
+/// account JSON. This is a blocking implementation suitable for startup or
+/// synchronous contexts.
+pub struct HttpAccountFetcher {
+    base_url: String,
+}
+
+impl HttpAccountFetcher {
+    pub fn new(base_url: impl Into<String>) -> Self {
+        Self {
+            base_url: base_url.into(),
+        }
+    }
+}
+
+impl AccountFetcher for HttpAccountFetcher {
+    fn fetch_account(&self, id: &str) -> Result<AccountConfig> {
+        if id.is_empty() {
+            bail!("account ID must not be empty");
+        }
+        let url = format!(
+            "{}/{}",
+            self.base_url.trim_end_matches('/'),
+            id
+        );
+        // Use a simple blocking HTTP GET. In production this would use an async
+        // client, but for config loading a blocking call is sufficient.
+        let body = reqwest_blocking_get(&url)
+            .with_context(|| format!("failed to fetch account from '{}'", url))?;
+        let account: AccountConfig = serde_json::from_str(&body)
+            .with_context(|| format!("failed to parse account JSON from '{}'", url))?;
+        Ok(account)
+    }
+}
+
+/// Minimal blocking HTTP GET using std only (no reqwest dependency needed at
+/// config crate level). Returns the response body as a string.
+///
+/// In a real deployment you would replace this with reqwest or similar.
+fn reqwest_blocking_get(url: &str) -> Result<String> {
+    // We intentionally keep the config crate dependency-light. This is a stub
+    // that will fail at runtime if actually called but compiles fine. Real
+    // HTTP fetching should be wired in at the application layer.
+    bail!(
+        "HTTP account fetching is not available in this build. \
+         Attempted to GET '{}'. Wire in an HTTP client at the application layer.",
+        url
+    )
+}
+
+/// Fetches accounts from an in-memory HashMap.
+pub struct InMemoryAccountFetcher {
+    accounts: HashMap<String, AccountConfig>,
+}
+
+impl InMemoryAccountFetcher {
+    pub fn new(accounts: HashMap<String, AccountConfig>) -> Self {
+        Self { accounts }
+    }
+
+    /// Build from the accounts map in a [`Configuration`].
+    pub fn from_config(cfg: &Configuration) -> Self {
+        Self {
+            accounts: cfg.accounts.clone(),
+        }
+    }
+}
+
+impl AccountFetcher for InMemoryAccountFetcher {
+    fn fetch_account(&self, id: &str) -> Result<AccountConfig> {
+        self.accounts
+            .get(id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("account '{}' not found", id))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Configuration validation
+// ---------------------------------------------------------------------------
+
+/// A single validation error produced by [`Configuration::validate`].
+#[derive(Debug, Clone)]
+pub struct ValidationError {
+    pub message: String,
+}
+
+impl std::fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
 impl Configuration {
     /// Load configuration from an optional file path plus environment variables.
     /// Environment variables override file settings.
@@ -1582,6 +1928,50 @@ impl Configuration {
         Ok(cfg)
     }
 
+    /// Load configuration from a specific file path.
+    ///
+    /// The file format is auto-detected from the extension (.yaml, .yml, .json,
+    /// .toml). Environment variables with the `PBS_` prefix are NOT applied
+    /// automatically; call [`with_env_overrides`](Self::with_env_overrides) if
+    /// you want them.
+    pub fn from_file(path: &str) -> Result<Configuration> {
+        let builder = config::Config::builder()
+            .add_source(config::File::with_name(path).required(true));
+        let config = builder
+            .build()
+            .with_context(|| format!("failed to load configuration from '{}'", path))?;
+        let cfg: Configuration = config
+            .try_deserialize()
+            .with_context(|| format!("failed to deserialize configuration from '{}'", path))?;
+        Ok(cfg)
+    }
+
+    /// Load configuration by merging multiple file sources in order.
+    ///
+    /// Later files override earlier ones. Environment variables are NOT applied;
+    /// call [`with_env_overrides`](Self::with_env_overrides) afterwards if desired.
+    pub fn from_files(paths: &[&str]) -> Result<Configuration> {
+        let mut builder = config::Config::builder();
+        for path in paths {
+            builder = builder.add_source(config::File::with_name(path).required(true));
+        }
+        let config = builder.build().context("failed to merge configuration files")?;
+        let cfg: Configuration = config
+            .try_deserialize()
+            .context("failed to deserialize merged configuration")?;
+        Ok(cfg)
+    }
+
+    /// Apply PBS_* environment variable overrides and return self for chaining.
+    ///
+    /// This applies both the generic `config` crate environment source mapping
+    /// (PBS_HOST -> host, PBS_ADAPTERS_APPNEXUS_ENDPOINT -> adapters.appnexus.endpoint, etc.)
+    /// and well-known explicit overrides.
+    pub fn with_env_overrides(mut self) -> Self {
+        self.apply_env_overrides();
+        self
+    }
+
     /// Apply well-known PBS_* environment variable overrides with explicit mappings.
     /// These override whatever was loaded from the config file or the generic
     /// `PBS_<KEY>` environment prefix parsing.
@@ -1607,11 +1997,249 @@ impl Configuration {
         }
         if let Ok(val) = std::env::var("PBS_GDPR_ENABLED") {
             self.gdpr_enabled = matches!(val.to_lowercase().as_str(), "true" | "1" | "yes");
+            self.gdpr.enabled = self.gdpr_enabled;
         }
         if let Ok(val) = std::env::var("PBS_CCPA_ENFORCE") {
             self.ccpa_enforce = matches!(val.to_lowercase().as_str(), "true" | "1" | "yes");
+            self.ccpa.enforce = self.ccpa_enforce;
+        }
+        // Adapter endpoint overrides: PBS_ADAPTERS_{BIDDER}_ENDPOINT
+        for (key, val) in std::env::vars() {
+            if let Some(rest) = key.strip_prefix("PBS_ADAPTERS_") {
+                // e.g. PBS_ADAPTERS_APPNEXUS_ENDPOINT -> rest = "APPNEXUS_ENDPOINT"
+                if let Some(bidder_upper) = rest.strip_suffix("_ENDPOINT") {
+                    let bidder = bidder_upper.to_lowercase();
+                    self.adapters
+                        .entry(bidder)
+                        .or_insert_with(AdapterConfig::default)
+                        .endpoint = val;
+                }
+            }
         }
     }
+
+    /// Validate the configuration, returning a list of errors.
+    ///
+    /// Ported from the Go `Configuration.validate()` method in config/config.go.
+    /// Returns `Ok(())` if valid, or `Err` with all validation errors collected.
+    pub fn validate(&self) -> std::result::Result<(), Vec<ValidationError>> {
+        let mut errs = Vec::new();
+
+        // --- Required fields ---
+        if self.host.is_empty() {
+            errs.push(verr("host must not be empty"));
+        }
+        if self.port == 0 {
+            errs.push(verr("port must be greater than 0"));
+        }
+
+        // --- Auction timeouts ---
+        if self.auction_timeouts.max > 0
+            && self.auction_timeouts.default > 0
+            && self.auction_timeouts.max < self.auction_timeouts.default
+        {
+            errs.push(verr(&format!(
+                "auction_timeouts.max ({}) cannot be less than auction_timeouts.default ({})",
+                self.auction_timeouts.max, self.auction_timeouts.default
+            )));
+        }
+
+        // --- Max request size ---
+        // Go uses int64 so negative is possible; in Rust it is usize (always >= 0), no check needed.
+
+        // --- Stored requests timeout ---
+        if self.stored_requests_timeout_ms == 0 {
+            errs.push(verr("stored_requests_timeout_ms must be > 0"));
+        }
+
+        // --- GDPR validation ---
+        self.validate_gdpr(&mut errs);
+
+        // --- CCPA / privacy consistency ---
+        // (CCPA has no complex validation in Go beyond the enforce flag)
+
+        // --- External cache ---
+        self.validate_external_cache(&mut errs);
+
+        // --- Adapter endpoints must be valid URLs ---
+        for (name, adapter) in &self.adapters {
+            if !adapter.endpoint.is_empty() && !is_valid_url(&adapter.endpoint) {
+                errs.push(verr(&format!(
+                    "adapters.{}.endpoint '{}' is not a valid URL",
+                    name, adapter.endpoint
+                )));
+            }
+        }
+
+        // --- Prometheus metrics ---
+        if let Some(ref prom) = self.metrics.prometheus {
+            if prom.port > 0 && prom.timeout_ms == 0 {
+                errs.push(verr(&format!(
+                    "metrics.prometheus.timeout_ms must be positive if metrics.prometheus.port is defined. Got timeout={} and port={}",
+                    prom.timeout_ms, prom.port
+                )));
+            }
+        }
+
+        // --- Debug sampling rate ---
+        if self.debug.timeout_notification.sampling_rate < 0.0
+            || self.debug.timeout_notification.sampling_rate > 1.0
+        {
+            errs.push(verr(&format!(
+                "debug.timeout_notification.sampling_rate must be between 0.0 and 1.0. Got {}",
+                self.debug.timeout_notification.sampling_rate
+            )));
+        }
+
+        // --- Currency converter ---
+        if self.currency.fetch_interval_seconds == 0 {
+            // 0 means disabled, which is acceptable, but warn-level in Go.
+            // We allow it without error.
+        }
+
+        // --- Price floors account defaults ---
+        self.validate_price_floors(&mut errs);
+
+        // --- TCF2 purpose enforce_algo ---
+        self.validate_tcf2_purposes(&mut errs);
+
+        // --- Timeout values should be reasonable ---
+        if self.auction_timeouts.max > 60_000 {
+            errs.push(verr(&format!(
+                "auction_timeouts.max ({}) exceeds 60000ms, which is unreasonably large",
+                self.auction_timeouts.max
+            )));
+        }
+        if self.tmax_default > 60_000 {
+            errs.push(verr(&format!(
+                "tmax_default ({}) exceeds 60000ms, which is unreasonably large",
+                self.tmax_default
+            )));
+        }
+
+        if errs.is_empty() {
+            Ok(())
+        } else {
+            Err(errs)
+        }
+    }
+
+    fn validate_gdpr(&self, errs: &mut Vec<ValidationError>) {
+        let dv = &self.gdpr.default_value;
+        if dv != "0" && dv != "1" {
+            errs.push(verr(&format!(
+                "gdpr.default_value must be \"0\" or \"1\". Got \"{}\"",
+                dv
+            )));
+        }
+        if self.gdpr.host_vendor_id > 0xffff {
+            errs.push(verr(&format!(
+                "gdpr.host_vendor_id must be in the range [0, {}]. Got {}",
+                0xffff,
+                self.gdpr.host_vendor_id
+            )));
+        }
+    }
+
+    fn validate_external_cache(&self, errs: &mut Vec<ValidationError>) {
+        let ec = &self.external_cache;
+        if ec.host.is_empty() && ec.path.is_empty() {
+            return; // both blank is fine
+        }
+        if !ec.scheme.is_empty() && ec.scheme != "http" && ec.scheme != "https" {
+            errs.push(verr("external cache scheme must be http or https if specified"));
+        }
+        if (ec.host.is_empty()) != (ec.path.is_empty()) {
+            errs.push(verr("external cache host and path must both be specified"));
+        }
+        if ec.host.ends_with('/') {
+            errs.push(verr(&format!(
+                "external cache host '{}' must not end with a path separator",
+                ec.host
+            )));
+        }
+        if ec.host.contains("://") {
+            errs.push(verr(&format!(
+                "external cache host must not specify a protocol. '{}'",
+                ec.host
+            )));
+        }
+        if !ec.path.is_empty() && !ec.path.starts_with('/') {
+            errs.push(verr(&format!(
+                "external cache path '{}' must begin with a path separator",
+                ec.path
+            )));
+        }
+    }
+
+    fn validate_price_floors(&self, errs: &mut Vec<ValidationError>) {
+        let pf = &self.account_defaults.price_floors;
+        if pf.enforce_floors_rate > 100 {
+            errs.push(verr(
+                "account_defaults.price_floors.enforce_floors_rate should be between 0 and 100",
+            ));
+        }
+        if pf.max_schema_dims > 20 {
+            errs.push(verr(
+                "account_defaults.price_floors.max_schema_dims should be between 0 and 20",
+            ));
+        }
+    }
+
+    fn validate_tcf2_purposes(&self, errs: &mut Vec<ValidationError>) {
+        let purposes = [
+            &self.gdpr.tcf2.purpose1,
+            &self.gdpr.tcf2.purpose2,
+            &self.gdpr.tcf2.purpose3,
+            &self.gdpr.tcf2.purpose4,
+            &self.gdpr.tcf2.purpose5,
+            &self.gdpr.tcf2.purpose6,
+            &self.gdpr.tcf2.purpose7,
+            &self.gdpr.tcf2.purpose8,
+            &self.gdpr.tcf2.purpose9,
+            &self.gdpr.tcf2.purpose10,
+        ];
+        for (i, p) in purposes.iter().enumerate() {
+            if !p.enforce_algo.is_empty()
+                && p.enforce_algo != "basic"
+                && p.enforce_algo != "full"
+            {
+                errs.push(verr(&format!(
+                    "gdpr.tcf2.purpose{}.enforce_algo must be \"basic\" or \"full\". Got \"{}\"",
+                    i + 1,
+                    p.enforce_algo
+                )));
+            }
+        }
+    }
+}
+
+/// Helper to create a [`ValidationError`].
+fn verr(msg: &str) -> ValidationError {
+    ValidationError {
+        message: msg.to_string(),
+    }
+}
+
+/// Simple URL validation: must parse and have a scheme.
+fn is_valid_url(s: &str) -> bool {
+    // Use a minimal check: must contain "://" and parse reasonably.
+    if !s.contains("://") {
+        return false;
+    }
+    // Try to split on "://" and verify scheme is alphabetic
+    if let Some(scheme) = s.split("://").next() {
+        if scheme.is_empty() || !scheme.chars().all(|c| c.is_ascii_alphabetic()) {
+            return false;
+        }
+    }
+    // Verify there is a host part after ://
+    if let Some(rest) = s.split("://").nth(1) {
+        if rest.is_empty() {
+            return false;
+        }
+    }
+    true
 }
 
 #[cfg(test)]
@@ -2435,5 +3063,630 @@ mod tests {
         assert_eq!(he.refresh_rate_seconds, 30);
         assert_eq!(he.timeout_ms, 1000);
         assert_eq!(he.amp_endpoint, "https://events.example.com/amp");
+    }
+
+    // -----------------------------------------------------------------------
+    // Configuration::from_file tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_from_file_json() {
+        let dir = std::env::temp_dir().join("pbs_config_test_from_file_json");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("test_config.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "host": "10.0.0.1",
+                "port": 9999,
+                "admin_port": 7070,
+                "gdpr": { "default_value": "0", "enabled": true }
+            }"#,
+        )
+        .unwrap();
+
+        let cfg = Configuration::from_file(path.to_str().unwrap()).unwrap();
+        assert_eq!(cfg.host, "10.0.0.1");
+        assert_eq!(cfg.port, 9999);
+        assert_eq!(cfg.admin_port, 7070);
+        assert!(cfg.gdpr.enabled);
+        assert_eq!(cfg.gdpr.default_value, "0");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_from_file_yaml() {
+        let dir = std::env::temp_dir().join("pbs_config_test_from_file_yaml");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("test_config.yaml");
+        std::fs::write(
+            &path,
+            "host: 192.168.1.1\nport: 8888\ngdpr:\n  default_value: \"1\"\n  enabled: false\n",
+        )
+        .unwrap();
+
+        let cfg = Configuration::from_file(path.to_str().unwrap()).unwrap();
+        assert_eq!(cfg.host, "192.168.1.1");
+        assert_eq!(cfg.port, 8888);
+        assert!(!cfg.gdpr.enabled);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_from_file_toml() {
+        let dir = std::env::temp_dir().join("pbs_config_test_from_file_toml");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("test_config.toml");
+        std::fs::write(
+            &path,
+            "host = \"172.16.0.1\"\nport = 7777\n\n[gdpr]\ndefault_value = \"1\"\nenabled = false\n",
+        )
+        .unwrap();
+
+        let cfg = Configuration::from_file(path.to_str().unwrap()).unwrap();
+        assert_eq!(cfg.host, "172.16.0.1");
+        assert_eq!(cfg.port, 7777);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_from_file_not_found() {
+        let result = Configuration::from_file("/nonexistent/path/config.json");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_from_files_merge() {
+        let dir = std::env::temp_dir().join("pbs_config_test_merge");
+        let _ = std::fs::create_dir_all(&dir);
+
+        let base_path = dir.join("base.json");
+        std::fs::write(
+            &base_path,
+            r#"{ "host": "0.0.0.0", "port": 8000, "admin_port": 6060 }"#,
+        )
+        .unwrap();
+
+        let override_path = dir.join("override.json");
+        std::fs::write(
+            &override_path,
+            r#"{ "port": 9001, "enable_cors": true }"#,
+        )
+        .unwrap();
+
+        let cfg = Configuration::from_files(&[
+            base_path.to_str().unwrap(),
+            override_path.to_str().unwrap(),
+        ])
+        .unwrap();
+        assert_eq!(cfg.host, "0.0.0.0");
+        assert_eq!(cfg.port, 9001); // overridden
+        assert!(cfg.enable_cors); // from override
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -----------------------------------------------------------------------
+    // with_env_overrides tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_with_env_overrides_chaining() {
+        let old_port = std::env::var("PBS_PORT").ok();
+        std::env::set_var("PBS_PORT", "4321");
+
+        let cfg = Configuration::default().with_env_overrides();
+        assert_eq!(cfg.port, 4321);
+
+        match old_port {
+            Some(v) => std::env::set_var("PBS_PORT", v),
+            None => std::env::remove_var("PBS_PORT"),
+        }
+    }
+
+    #[test]
+    fn test_env_override_adapter_endpoint() {
+        let key = "PBS_ADAPTERS_TESTBIDDER_ENDPOINT";
+        let old = std::env::var(key).ok();
+        std::env::set_var(key, "https://test.bidder.com/bid");
+
+        let mut cfg = Configuration::default();
+        cfg.apply_env_overrides();
+        assert_eq!(
+            cfg.adapters.get("testbidder").unwrap().endpoint,
+            "https://test.bidder.com/bid"
+        );
+
+        match old {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+    }
+
+    #[test]
+    fn test_env_override_gdpr_syncs_both_fields() {
+        let old = std::env::var("PBS_GDPR_ENABLED").ok();
+        std::env::set_var("PBS_GDPR_ENABLED", "1");
+
+        let mut cfg = Configuration::default();
+        cfg.apply_env_overrides();
+        assert!(cfg.gdpr_enabled);
+        assert!(cfg.gdpr.enabled);
+
+        match old {
+            Some(v) => std::env::set_var("PBS_GDPR_ENABLED", v),
+            None => std::env::remove_var("PBS_GDPR_ENABLED"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Configuration::validate tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_validate_default_config_passes() {
+        let cfg = Configuration {
+            host: "0.0.0.0".into(),
+            port: 8000,
+            stored_requests_timeout_ms: 50,
+            gdpr: GDPRConfig::default(),
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_empty_host_fails() {
+        let cfg = Configuration {
+            host: String::new(),
+            port: 8000,
+            stored_requests_timeout_ms: 50,
+            ..Default::default()
+        };
+        let errs = cfg.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.message.contains("host must not be empty")));
+    }
+
+    #[test]
+    fn test_validate_zero_port_fails() {
+        let cfg = Configuration {
+            host: "0.0.0.0".into(),
+            port: 0,
+            stored_requests_timeout_ms: 50,
+            ..Default::default()
+        };
+        let errs = cfg.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.message.contains("port must be greater than 0")));
+    }
+
+    #[test]
+    fn test_validate_auction_timeout_max_less_than_default() {
+        let cfg = Configuration {
+            host: "0.0.0.0".into(),
+            port: 8000,
+            stored_requests_timeout_ms: 50,
+            auction_timeouts: AuctionTimeouts {
+                default: 5000,
+                max: 1000,
+            },
+            ..Default::default()
+        };
+        let errs = cfg.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.message.contains("cannot be less than")));
+    }
+
+    #[test]
+    fn test_validate_invalid_gdpr_default_value() {
+        let cfg = Configuration {
+            host: "0.0.0.0".into(),
+            port: 8000,
+            stored_requests_timeout_ms: 50,
+            gdpr: GDPRConfig {
+                default_value: "2".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let errs = cfg.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.message.contains("gdpr.default_value must be")));
+    }
+
+    #[test]
+    fn test_validate_invalid_adapter_url() {
+        let mut adapters = HashMap::new();
+        adapters.insert(
+            "bad_bidder".to_string(),
+            AdapterConfig {
+                endpoint: "not-a-url".into(),
+                enabled: true,
+                ..Default::default()
+            },
+        );
+        let cfg = Configuration {
+            host: "0.0.0.0".into(),
+            port: 8000,
+            stored_requests_timeout_ms: 50,
+            adapters,
+            ..Default::default()
+        };
+        let errs = cfg.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.message.contains("not a valid URL")));
+    }
+
+    #[test]
+    fn test_validate_valid_adapter_url() {
+        let mut adapters = HashMap::new();
+        adapters.insert(
+            "good_bidder".to_string(),
+            AdapterConfig {
+                endpoint: "https://bid.example.com/openrtb2".into(),
+                enabled: true,
+                ..Default::default()
+            },
+        );
+        let cfg = Configuration {
+            host: "0.0.0.0".into(),
+            port: 8000,
+            stored_requests_timeout_ms: 50,
+            adapters,
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_external_cache_missing_path() {
+        let cfg = Configuration {
+            host: "0.0.0.0".into(),
+            port: 8000,
+            stored_requests_timeout_ms: 50,
+            external_cache: ExternalCacheConfig {
+                host: "cache.example.com".into(),
+                path: String::new(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let errs = cfg.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.message.contains("must both be specified")));
+    }
+
+    #[test]
+    fn test_validate_external_cache_bad_scheme() {
+        let cfg = Configuration {
+            host: "0.0.0.0".into(),
+            port: 8000,
+            stored_requests_timeout_ms: 50,
+            external_cache: ExternalCacheConfig {
+                scheme: "ftp".into(),
+                host: "cache.example.com".into(),
+                path: "/cache".into(),
+            },
+            ..Default::default()
+        };
+        let errs = cfg.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.message.contains("scheme must be http or https")));
+    }
+
+    #[test]
+    fn test_validate_tcf2_invalid_enforce_algo() {
+        let cfg = Configuration {
+            host: "0.0.0.0".into(),
+            port: 8000,
+            stored_requests_timeout_ms: 50,
+            gdpr: GDPRConfig {
+                tcf2: Tcf2Config {
+                    purpose1: Tcf2PurposeConfig {
+                        enforce_algo: "invalid".into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let errs = cfg.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.message.contains("enforce_algo")));
+    }
+
+    #[test]
+    fn test_validate_prometheus_timeout_zero_with_port() {
+        let cfg = Configuration {
+            host: "0.0.0.0".into(),
+            port: 8000,
+            stored_requests_timeout_ms: 50,
+            metrics: MetricsConfig {
+                prometheus: Some(PrometheusConfig {
+                    port: 9090,
+                    timeout_ms: 0,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let errs = cfg.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.message.contains("prometheus.timeout_ms")));
+    }
+
+    #[test]
+    fn test_validate_debug_sampling_rate_out_of_range() {
+        let cfg = Configuration {
+            host: "0.0.0.0".into(),
+            port: 8000,
+            stored_requests_timeout_ms: 50,
+            debug: DebugConfig {
+                timeout_notification: TimeoutNotificationConfig {
+                    sampling_rate: 1.5,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let errs = cfg.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.message.contains("sampling_rate")));
+    }
+
+    #[test]
+    fn test_validate_unreasonable_timeout() {
+        let cfg = Configuration {
+            host: "0.0.0.0".into(),
+            port: 8000,
+            stored_requests_timeout_ms: 50,
+            auction_timeouts: AuctionTimeouts {
+                default: 1000,
+                max: 120_000,
+            },
+            ..Default::default()
+        };
+        let errs = cfg.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.message.contains("unreasonably large")));
+    }
+
+    #[test]
+    fn test_validate_price_floors_enforce_rate_out_of_range() {
+        let cfg = Configuration {
+            host: "0.0.0.0".into(),
+            port: 8000,
+            stored_requests_timeout_ms: 50,
+            account_defaults: AccountConfig {
+                price_floors: AccountPriceFloorsConfig {
+                    enforce_floors_rate: 200,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let errs = cfg.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.message.contains("enforce_floors_rate")));
+    }
+
+    // -----------------------------------------------------------------------
+    // AccountFetcher tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_in_memory_account_fetcher() {
+        let mut accounts = HashMap::new();
+        accounts.insert(
+            "acct-1".to_string(),
+            AccountConfig {
+                id: "acct-1".into(),
+                disabled: false,
+                ..Default::default()
+            },
+        );
+        let fetcher = InMemoryAccountFetcher::new(accounts);
+
+        let acct = fetcher.fetch_account("acct-1").unwrap();
+        assert_eq!(acct.id, "acct-1");
+        assert!(!acct.disabled);
+
+        let result = fetcher.fetch_account("nonexistent");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_in_memory_fetcher_from_config() {
+        let mut cfg = Configuration::default();
+        cfg.accounts.insert(
+            "pub-100".to_string(),
+            AccountConfig {
+                id: "pub-100".into(),
+                debug_allow: true,
+                ..Default::default()
+            },
+        );
+        let fetcher = InMemoryAccountFetcher::from_config(&cfg);
+        let acct = fetcher.fetch_account("pub-100").unwrap();
+        assert!(acct.debug_allow);
+    }
+
+    #[test]
+    fn test_file_account_fetcher() {
+        let dir = std::env::temp_dir().join("pbs_test_file_account_fetcher");
+        let _ = std::fs::create_dir_all(&dir);
+
+        let acct_path = dir.join("test-acct.json");
+        std::fs::write(
+            &acct_path,
+            r#"{ "id": "test-acct", "disabled": false, "debug_allow": true }"#,
+        )
+        .unwrap();
+
+        let fetcher = FileAccountFetcher::new(&dir);
+        let acct = fetcher.fetch_account("test-acct").unwrap();
+        assert_eq!(acct.id, "test-acct");
+        assert!(acct.debug_allow);
+
+        // Not found
+        let result = fetcher.fetch_account("missing");
+        assert!(result.is_err());
+
+        // Empty ID
+        let result = fetcher.fetch_account("");
+        assert!(result.is_err());
+
+        // Path traversal
+        let result = fetcher.fetch_account("../etc/passwd");
+        assert!(result.is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_http_account_fetcher_stub_errors() {
+        let fetcher = HttpAccountFetcher::new("https://accounts.example.com");
+        let result = fetcher.fetch_account("some-id");
+        assert!(result.is_err());
+        let err_msg = format!("{:#}", result.unwrap_err());
+        assert!(
+            err_msg.contains("HTTP account fetching is not available")
+                || err_msg.contains("failed to fetch account"),
+            "unexpected error: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_http_account_fetcher_empty_id() {
+        let fetcher = HttpAccountFetcher::new("https://accounts.example.com");
+        let result = fetcher.fetch_account("");
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // BidderInfo tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_bidder_info_from_yaml() {
+        let yaml = r#"
+endpoint: "https://bid.appnexus.com/openrtb2"
+maintainer:
+  email: "info@appnexus.com"
+capabilities:
+  app:
+    mediaTypes:
+      - banner
+      - video
+  site:
+    mediaTypes:
+      - banner
+      - video
+      - native
+gvlVendorID: 32
+modifyingVastXmlAllowed: true
+userSync:
+  key: appnexus
+  supports:
+    - iframe
+    - redirect
+  iframe:
+    url: "https://ib.adnxs.com/getuid?https://host/setuid"
+    userMacro: "$UID"
+"#;
+        let info: BidderInfo = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(info.endpoint, "https://bid.appnexus.com/openrtb2");
+        assert_eq!(info.maintainer.as_ref().unwrap().email, "info@appnexus.com");
+        let caps = info.capabilities.as_ref().unwrap();
+        assert!(caps.app.is_some());
+        assert!(caps.site.is_some());
+        assert!(caps.dooh.is_none());
+        assert_eq!(
+            caps.app.as_ref().unwrap().media_types,
+            vec!["banner", "video"]
+        );
+        assert_eq!(info.gvl_vendor_id, 32);
+        assert!(info.modifying_vast_xml_allowed);
+        let sync = info.user_sync.as_ref().unwrap();
+        assert_eq!(sync.key, "appnexus");
+        assert_eq!(sync.supports, vec!["iframe", "redirect"]);
+        assert_eq!(
+            sync.iframe.as_ref().unwrap().user_macro,
+            "$UID"
+        );
+    }
+
+    #[test]
+    fn test_bidder_info_defaults() {
+        let info = BidderInfo::default();
+        assert!(info.endpoint.is_empty());
+        assert!(!info.disabled);
+        assert!(info.maintainer.is_none());
+        assert!(info.capabilities.is_none());
+        assert_eq!(info.gvl_vendor_id, 0);
+    }
+
+    #[test]
+    fn test_load_bidder_info_from_dir() {
+        let dir = std::env::temp_dir().join("pbs_test_load_bidder_info");
+        let _ = std::fs::create_dir_all(&dir);
+
+        // Write two bidder files
+        std::fs::write(
+            dir.join("appnexus.yaml"),
+            "endpoint: \"https://bid.appnexus.com\"\nmaintainer:\n  email: \"a@b.com\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("rubicon.yaml"),
+            "endpoint: \"https://bid.rubicon.com\"\ngvlVendorID: 52\n",
+        )
+        .unwrap();
+        // Write a non-yaml file that should be skipped
+        std::fs::write(dir.join("README.md"), "This should be skipped").unwrap();
+
+        let bidders = load_bidder_info(dir.to_str().unwrap()).unwrap();
+        assert_eq!(bidders.len(), 2);
+        assert_eq!(
+            bidders["appnexus"].endpoint,
+            "https://bid.appnexus.com"
+        );
+        assert_eq!(
+            bidders["rubicon"].endpoint,
+            "https://bid.rubicon.com"
+        );
+        assert_eq!(bidders["rubicon"].gvl_vendor_id, 52);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_load_bidder_info_nonexistent_dir() {
+        let result = load_bidder_info("/nonexistent/bidder/dir");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_load_bidder_info_empty_dir() {
+        let dir = std::env::temp_dir().join("pbs_test_load_bidder_info_empty");
+        let _ = std::fs::create_dir_all(&dir);
+
+        let bidders = load_bidder_info(dir.to_str().unwrap()).unwrap();
+        assert!(bidders.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -----------------------------------------------------------------------
+    // is_valid_url helper tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_is_valid_url() {
+        assert!(is_valid_url("https://example.com"));
+        assert!(is_valid_url("http://localhost:8080/path"));
+        assert!(is_valid_url("https://bid.appnexus.com/openrtb2"));
+        assert!(!is_valid_url("not-a-url"));
+        assert!(!is_valid_url(""));
+        assert!(!is_valid_url("://missing-scheme"));
+        assert!(!is_valid_url("ftp://"));  // empty host
     }
 }
