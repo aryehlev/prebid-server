@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 
 use openrtb::Imp;
-use openrtb_ext::{BidderName, DealTier, ExtMultiBid};
+use openrtb_ext::{BidType, BidderName, DealTier, ExtBidPrebidEvents, ExtMultiBid};
 use serde::Deserialize;
 
 /// Default maximum number of bids to update per bidder when no multibid
@@ -22,10 +22,31 @@ pub type DealTierBidderMap = HashMap<BidderName, DealTier>;
 pub struct PbsOrtbBid {
     /// The underlying OpenRTB bid.
     pub bid: openrtb::Bid,
+    /// The media type of this bid (banner, video, native, audio).
+    pub bid_type: BidType,
+    /// Server-generated bid ID (used instead of bid.id when present).
+    pub generated_bid_id: String,
+    /// Pre-computed event URLs (win + imp) for this bid.
+    pub bid_events: Option<ExtBidPrebidEvents>,
     /// Deal priority extracted from the bidder adapter response.
     pub deal_priority: i32,
     /// Whether the deal tier requirement was satisfied.
     pub deal_tier_satisfied: bool,
+}
+
+/// A PBS-enriched seat bid: all bids from a single bidder.
+///
+/// Mirrors the Go `PbsOrtbSeatBid` in `exchange/entities`.
+#[derive(Debug, Clone, Default)]
+pub struct PbsOrtbSeatBid {
+    /// The enriched bids from this bidder.
+    pub bids: Vec<PbsOrtbBid>,
+    /// Currency of the bids.
+    pub currency: String,
+    /// HTTP headers returned by the bidder (if any).
+    pub http_calls: Vec<String>,
+    /// The seat (bidder) name.
+    pub seat: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -436,7 +457,7 @@ mod tests {
                 ..Default::default()
             },
             deal_priority: 10,
-            deal_tier_satisfied: false,
+            ..Default::default()
         };
         let dt = DealTier {
             prefix: Some("tier".to_string()),
@@ -460,7 +481,7 @@ mod tests {
                 ..Default::default()
             },
             deal_priority: 3,
-            deal_tier_satisfied: false,
+            ..Default::default()
         };
         let dt = DealTier {
             prefix: Some("tier".to_string()),
@@ -484,7 +505,7 @@ mod tests {
                 ..Default::default()
             },
             deal_priority: 10,
-            deal_tier_satisfied: false,
+            ..Default::default()
         };
         let dt = DealTier {
             prefix: Some("tier".to_string()),
@@ -526,7 +547,7 @@ mod tests {
                     ..Default::default()
                 },
                 deal_priority: 10,
-                deal_tier_satisfied: false,
+                ..Default::default()
             }],
         );
 
@@ -573,7 +594,7 @@ mod tests {
                     ..Default::default()
                 },
                 deal_priority: 10,
-                deal_tier_satisfied: false,
+                ..Default::default()
             }],
         );
 

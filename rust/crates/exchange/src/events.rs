@@ -8,9 +8,11 @@
 
 use std::collections::HashMap;
 
-use openrtb_ext::{BidType, ExtBidPrebidEvents};
+use openrtb_ext::{BidType, ExtBidPrebidEvents, ExtRequestPrebid};
+use pbs_config::{AccountConfig, BidderInfo};
 
 use crate::analytics::EventType;
+use crate::deals::{PbsOrtbBid, PbsOrtbSeatBid};
 
 // ---------------------------------------------------------------------------
 // Event tracking configuration
@@ -51,6 +53,49 @@ pub struct EventRequest {
     pub account_id: String,
     pub timestamp: i64,
     pub integration: String,
+}
+
+// ---------------------------------------------------------------------------
+// Factory function
+// ---------------------------------------------------------------------------
+
+/// Creates an `EventTracking` from the various configuration sources.
+///
+/// Mirrors Go `getEventTracking`.
+pub fn get_event_tracking(
+    request_ext_prebid: Option<&ExtRequestPrebid>,
+    timestamp_ms: i64,
+    account: &AccountConfig,
+    bidder_infos: &HashMap<String, BidderInfo>,
+    external_url: &str,
+) -> EventTracking {
+    let enabled_for_request = request_ext_prebid
+        .map(|p| p.events.is_some())
+        .unwrap_or(false);
+
+    let integration_type = request_ext_prebid
+        .and_then(|p| p.integration.clone())
+        .unwrap_or_default();
+
+    let mut event_bidder_infos = HashMap::new();
+    for (name, info) in bidder_infos {
+        event_bidder_infos.insert(
+            name.clone(),
+            BidderEventInfo {
+                modifying_vast_xml_allowed: info.modifying_vast_xml_allowed,
+            },
+        );
+    }
+
+    EventTracking {
+        account_id: account.id.clone(),
+        enabled_for_account: account.events.enabled,
+        enabled_for_request,
+        auction_timestamp_ms: timestamp_ms,
+        integration_type,
+        bidder_infos: event_bidder_infos,
+        external_url: external_url.to_string(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -187,6 +232,100 @@ impl EventTracking {
             );
         }
         serde_json::to_vec(&value)
+    }
+
+    /// Iterates seat bids, injects event tracking into each bid.
+    ///
+    /// For video bids where VAST modification is allowed: injects an impression
+    /// tracking pixel into the VAST XML.
+    /// For all bids: populates `bid_events` with win/imp URLs.
+    ///
+    /// Mirrors Go `modifyBidsForEvents`.
+    pub fn modify_bids_for_events(
+        &self,
+        seat_bids: &mut HashMap<String, PbsOrtbSeatBid>,
+    ) {
+        for (bidder_name, seat_bid) in seat_bids.iter_mut() {
+            let modifying_vast_allowed = self.is_modifying_vast_xml_allowed(bidder_name);
+            for pbs_bid in seat_bid.bids.iter_mut() {
+                if modifying_vast_allowed {
+                    self.modify_bid_vast(pbs_bid, bidder_name);
+                }
+                let effective_bid_id = self.effective_bid_id(pbs_bid);
+                pbs_bid.bid_events =
+                    self.make_bid_ext_events(&effective_bid_id, &pbs_bid.bid_type, bidder_name);
+            }
+        }
+    }
+
+    /// Injects a win URL ("wurl") into the bid JSON for non-video bids.
+    ///
+    /// If the bid already has pre-computed `bid_events`, uses the win URL from
+    /// there; otherwise computes it on the fly.
+    ///
+    /// Mirrors Go `modifyBidJSON`.
+    pub fn modify_bid_json(
+        &self,
+        pbs_bid: &PbsOrtbBid,
+        bidder: &str,
+        json_bytes: &[u8],
+    ) -> Result<Vec<u8>, serde_json::Error> {
+        if !self.is_event_allowed() || pbs_bid.bid_type == BidType::Video {
+            return Ok(json_bytes.to_vec());
+        }
+
+        let win_url = if let Some(ref events) = pbs_bid.bid_events {
+            events.win.clone().unwrap_or_default()
+        } else {
+            let effective_id = self.effective_bid_id(pbs_bid);
+            self.make_event_url(EventType::Win, &effective_id, bidder)
+        };
+
+        let mut value: serde_json::Value = serde_json::from_slice(json_bytes)?;
+        if let Some(obj) = value.as_object_mut() {
+            obj.insert("wurl".to_string(), serde_json::Value::String(win_url));
+        }
+        serde_json::to_vec(&value)
+    }
+
+    /// Injects an event impression URL into the VAST XML of a video bid.
+    ///
+    /// Mirrors Go `modifyBidVAST`.
+    fn modify_bid_vast(&self, pbs_bid: &mut PbsOrtbBid, bidder_name: &str) {
+        if pbs_bid.bid_type != BidType::Video {
+            return;
+        }
+        let has_adm = pbs_bid.bid.adm.as_ref().map_or(false, |a| !a.is_empty());
+        let has_nurl = pbs_bid.bid.nurl.as_ref().map_or(false, |n| !n.is_empty());
+        if !has_adm && !has_nurl {
+            return;
+        }
+
+        let adm = pbs_bid.bid.adm.as_deref().unwrap_or("");
+        let nurl = pbs_bid.bid.nurl.as_deref().unwrap_or("");
+        let vast_xml = crate::vast::make_vast(adm, nurl);
+
+        let effective_id = self.effective_bid_id(pbs_bid);
+
+        let tracker = VastEventTracker::new(
+            self.external_url.clone(),
+            self.account_id.clone(),
+            self.auction_timestamp_ms,
+            self.integration_type.clone(),
+        );
+
+        if let Some(new_vast) = tracker.inject_tracking(&vast_xml, &effective_id, bidder_name) {
+            pbs_bid.bid.adm = Some(new_vast);
+        }
+    }
+
+    /// Returns the effective bid ID: `generated_bid_id` if non-empty, else `bid.id`.
+    fn effective_bid_id(&self, pbs_bid: &PbsOrtbBid) -> String {
+        if !pbs_bid.generated_bid_id.is_empty() {
+            pbs_bid.generated_bid_id.clone()
+        } else {
+            pbs_bid.bid.id.clone()
+        }
     }
 }
 
@@ -477,5 +616,253 @@ mod tests {
         let url = create_tracking_url("https://pbs.example.com/", &req);
         // Should not have double slash
         assert!(url.starts_with("https://pbs.example.com/event?"));
+    }
+
+    // -----------------------------------------------------------------------
+    // get_event_tracking tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_get_event_tracking_basic() {
+        let account = AccountConfig {
+            id: "pub-123".to_string(),
+            events: pbs_config::AccountEventsConfig {
+                enabled: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut bidder_infos = HashMap::new();
+        bidder_infos.insert(
+            "appnexus".to_string(),
+            BidderInfo {
+                modifying_vast_xml_allowed: true,
+                ..Default::default()
+            },
+        );
+        let prebid = ExtRequestPrebid {
+            events: Some(serde_json::json!({})),
+            integration: Some("pbjs".to_string()),
+            ..Default::default()
+        };
+
+        let et = get_event_tracking(
+            Some(&prebid),
+            1700000000000,
+            &account,
+            &bidder_infos,
+            "https://pbs.example.com",
+        );
+
+        assert_eq!(et.account_id, "pub-123");
+        assert!(et.enabled_for_account);
+        assert!(et.enabled_for_request);
+        assert_eq!(et.auction_timestamp_ms, 1700000000000);
+        assert_eq!(et.integration_type, "pbjs");
+        assert!(et.is_modifying_vast_xml_allowed("appnexus"));
+    }
+
+    #[test]
+    fn test_get_event_tracking_no_prebid_ext() {
+        let account = AccountConfig {
+            id: "pub-456".to_string(),
+            ..Default::default()
+        };
+        let bidder_infos = HashMap::new();
+
+        let et = get_event_tracking(None, 1000, &account, &bidder_infos, "https://pbs.example.com");
+
+        assert!(!et.enabled_for_account);
+        assert!(!et.enabled_for_request);
+        assert!(et.integration_type.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // modify_bids_for_events tests
+    // -----------------------------------------------------------------------
+
+    fn make_pbs_bid(id: &str, bid_type: BidType, adm: Option<&str>) -> PbsOrtbBid {
+        PbsOrtbBid {
+            bid: openrtb::Bid {
+                id: id.to_string(),
+                impid: "imp-1".to_string(),
+                adm: adm.map(|s| s.to_string()),
+                ..Default::default()
+            },
+            bid_type,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_modify_bids_for_events_banner() {
+        let et = default_tracking();
+        let mut seat_bids = HashMap::new();
+        seat_bids.insert(
+            "appnexus".to_string(),
+            PbsOrtbSeatBid {
+                bids: vec![make_pbs_bid("bid-1", BidType::Banner, None)],
+                seat: "appnexus".to_string(),
+                ..Default::default()
+            },
+        );
+
+        et.modify_bids_for_events(&mut seat_bids);
+
+        let bid = &seat_bids["appnexus"].bids[0];
+        assert!(bid.bid_events.is_some());
+        let events = bid.bid_events.as_ref().unwrap();
+        assert!(events.win.as_ref().unwrap().contains("t=win"));
+        assert!(events.imp.as_ref().unwrap().contains("t=imp"));
+    }
+
+    #[test]
+    fn test_modify_bids_for_events_video_no_vast_mod() {
+        let et = default_tracking();
+        // No bidder info -> VAST modification not allowed
+        let mut seat_bids = HashMap::new();
+        let vast = r#"<VAST version="3.0"><Ad><InLine><Creatives></Creatives></InLine></Ad></VAST>"#;
+        seat_bids.insert(
+            "appnexus".to_string(),
+            PbsOrtbSeatBid {
+                bids: vec![make_pbs_bid("bid-1", BidType::Video, Some(vast))],
+                seat: "appnexus".to_string(),
+                ..Default::default()
+            },
+        );
+
+        et.modify_bids_for_events(&mut seat_bids);
+
+        let bid = &seat_bids["appnexus"].bids[0];
+        // Video bids get no bid_events
+        assert!(bid.bid_events.is_none());
+        // VAST not modified (no bidder info allowing it)
+        assert_eq!(bid.bid.adm.as_deref().unwrap(), vast);
+    }
+
+    #[test]
+    fn test_modify_bids_for_events_video_with_vast_mod() {
+        let mut et = default_tracking();
+        et.bidder_infos.insert(
+            "appnexus".to_string(),
+            BidderEventInfo {
+                modifying_vast_xml_allowed: true,
+            },
+        );
+        let vast = r#"<VAST version="3.0"><Ad><InLine><Creatives></Creatives></InLine></Ad></VAST>"#;
+        let mut seat_bids = HashMap::new();
+        seat_bids.insert(
+            "appnexus".to_string(),
+            PbsOrtbSeatBid {
+                bids: vec![make_pbs_bid("bid-1", BidType::Video, Some(vast))],
+                seat: "appnexus".to_string(),
+                ..Default::default()
+            },
+        );
+
+        et.modify_bids_for_events(&mut seat_bids);
+
+        let bid = &seat_bids["appnexus"].bids[0];
+        // Video bids get no bid_events (skipped for video)
+        assert!(bid.bid_events.is_none());
+        // But VAST should be modified with impression tracker
+        let modified_adm = bid.bid.adm.as_ref().unwrap();
+        assert!(modified_adm.contains("<Impression><![CDATA["));
+        assert!(modified_adm.contains("t=imp"));
+    }
+
+    #[test]
+    fn test_modify_bids_for_events_uses_generated_bid_id() {
+        let et = default_tracking();
+        let mut seat_bids = HashMap::new();
+        let mut bid = make_pbs_bid("original-id", BidType::Banner, None);
+        bid.generated_bid_id = "generated-id".to_string();
+        seat_bids.insert(
+            "appnexus".to_string(),
+            PbsOrtbSeatBid {
+                bids: vec![bid],
+                seat: "appnexus".to_string(),
+                ..Default::default()
+            },
+        );
+
+        et.modify_bids_for_events(&mut seat_bids);
+
+        let events = seat_bids["appnexus"].bids[0].bid_events.as_ref().unwrap();
+        // URLs should contain the generated bid ID, not the original
+        assert!(events.win.as_ref().unwrap().contains("b=generated-id"));
+        assert!(events.imp.as_ref().unwrap().contains("b=generated-id"));
+    }
+
+    // -----------------------------------------------------------------------
+    // modify_bid_json tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_modify_bid_json_banner() {
+        let et = default_tracking();
+        let bid = make_pbs_bid("bid-1", BidType::Banner, None);
+        let json_bytes = br#"{"id":"bid-1","impid":"imp-1","price":1.5}"#;
+
+        let result = et.modify_bid_json(&bid, "appnexus", json_bytes).unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&result).unwrap();
+        assert!(parsed.get("wurl").is_some());
+        assert!(parsed["wurl"].as_str().unwrap().contains("t=win"));
+    }
+
+    #[test]
+    fn test_modify_bid_json_video_unchanged() {
+        let et = default_tracking();
+        let bid = make_pbs_bid("bid-1", BidType::Video, None);
+        let json_bytes = br#"{"id":"bid-1","impid":"imp-1","price":1.5}"#;
+
+        let result = et.modify_bid_json(&bid, "appnexus", json_bytes).unwrap();
+        assert_eq!(result, json_bytes.to_vec());
+    }
+
+    #[test]
+    fn test_modify_bid_json_uses_precomputed_events() {
+        let et = default_tracking();
+        let mut bid = make_pbs_bid("bid-1", BidType::Banner, None);
+        bid.bid_events = Some(ExtBidPrebidEvents {
+            win: Some("https://precomputed.win.url".to_string()),
+            imp: Some("https://precomputed.imp.url".to_string()),
+        });
+        let json_bytes = br#"{"id":"bid-1","impid":"imp-1","price":1.5}"#;
+
+        let result = et.modify_bid_json(&bid, "appnexus", json_bytes).unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&result).unwrap();
+        assert_eq!(parsed["wurl"].as_str().unwrap(), "https://precomputed.win.url");
+    }
+
+    #[test]
+    fn test_modify_bid_json_events_disabled() {
+        let mut et = default_tracking();
+        et.enabled_for_account = false;
+        et.enabled_for_request = false;
+        let bid = make_pbs_bid("bid-1", BidType::Banner, None);
+        let json_bytes = br#"{"id":"bid-1","impid":"imp-1","price":1.5}"#;
+
+        let result = et.modify_bid_json(&bid, "appnexus", json_bytes).unwrap();
+        assert_eq!(result, json_bytes.to_vec());
+    }
+
+    // -----------------------------------------------------------------------
+    // effective_bid_id tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_effective_bid_id_uses_generated() {
+        let et = default_tracking();
+        let mut bid = make_pbs_bid("original", BidType::Banner, None);
+        bid.generated_bid_id = "generated".to_string();
+        assert_eq!(et.effective_bid_id(&bid), "generated");
+    }
+
+    #[test]
+    fn test_effective_bid_id_falls_back_to_bid_id() {
+        let et = default_tracking();
+        let bid = make_pbs_bid("original", BidType::Banner, None);
+        assert_eq!(et.effective_bid_id(&bid), "original");
     }
 }

@@ -415,22 +415,60 @@ pub struct ActivityRule {
 }
 
 /// A condition within an activity rule.
+///
+/// Mirrors Go `privacy.ConditionRule` — supports component name/type matching
+/// and GPP SID matching.
 #[derive(Debug, Clone)]
 pub struct ActivityCondition {
     /// Component names that match (empty = match all).
     pub component_name: Vec<String>,
     /// Component types that match (empty = match all).
     pub component_type: Vec<String>,
+    /// GPP Section IDs that must be present for this condition to match (empty = match all).
+    pub gpp_sid: Vec<i8>,
+}
+
+/// Context for activity evaluation, carrying GPP SID from the request.
+///
+/// Mirrors Go `privacy.ActivityRequest`.
+#[derive(Debug, Clone, Default)]
+pub struct ActivityRequest {
+    /// GPP Section IDs from the bid request's `regs.gpp_sid`.
+    pub gpp_sid: Vec<i8>,
 }
 
 impl ActivityCondition {
-    /// Check if a component matches this condition.
-    pub fn matches(&self, component: &ActivityComponent) -> bool {
+    /// Check if a component matches this condition, including GPP SID matching.
+    ///
+    /// Mirrors Go `ConditionRule.Evaluate`:
+    /// - Component name: empty = match all, otherwise case-insensitive match.
+    /// - Component type: empty = match all, otherwise case-insensitive match.
+    /// - GPP SID: empty = match all, otherwise at least one SID must match.
+    pub fn matches_with_request(
+        &self,
+        component: &ActivityComponent,
+        request: &ActivityRequest,
+    ) -> bool {
         let name_ok = self.component_name.is_empty()
-            || self.component_name.contains(&component.component_name);
+            || self.component_name.iter().any(|n| n.eq_ignore_ascii_case(&component.component_name));
+        if !name_ok {
+            return false;
+        }
+
         let type_ok = self.component_type.is_empty()
-            || self.component_type.contains(&component.component_type);
-        name_ok && type_ok
+            || self.component_type.iter().any(|t| t.eq_ignore_ascii_case(&component.component_type));
+        if !type_ok {
+            return false;
+        }
+
+        let gpp_ok = self.gpp_sid.is_empty()
+            || self.gpp_sid.iter().any(|sid| request.gpp_sid.contains(sid));
+        gpp_ok
+    }
+
+    /// Check if a component matches this condition (without GPP SID).
+    pub fn matches(&self, component: &ActivityComponent) -> bool {
+        self.matches_with_request(component, &ActivityRequest::default())
     }
 }
 
@@ -668,6 +706,303 @@ fn scrub_ext_field(ext: &mut Option<serde_json::Value>, field: &str) {
         map.remove(field);
     }
 }
+
+// ---------------------------------------------------------------------------
+// PolicyWriter — mirrors Go privacy/writer.go
+// ---------------------------------------------------------------------------
+
+/// Trait for writing privacy policy information into a BidRequest.
+///
+/// Mirrors Go `privacy.PolicyWriter`.
+pub trait PolicyWriter: Send + Sync {
+    /// Mutate a bid request with the policy's regulatory information.
+    fn write(&self, req: &mut openrtb::BidRequest) -> Result<(), String>;
+}
+
+/// No-op policy writer that performs no action.
+///
+/// Mirrors Go `privacy.NilPolicyWriter`.
+pub struct NilPolicyWriter;
+
+impl PolicyWriter for NilPolicyWriter {
+    fn write(&self, _req: &mut openrtb::BidRequest) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PolicyEnforcer — mirrors Go privacy/policyenforcer.go
+// ---------------------------------------------------------------------------
+
+/// Trait for determining if PII should be removed per a privacy policy.
+///
+/// Mirrors Go `privacy.PolicyEnforcer`.
+pub trait PolicyEnforcer: Send + Sync {
+    /// Returns true when policy information is specifically provided.
+    fn can_enforce(&self) -> bool;
+    /// Returns true when PII should be removed/anonymized for this bidder.
+    fn should_enforce(&self, bidder: &str) -> bool;
+}
+
+/// No-op enforcer that never enforces.
+///
+/// Mirrors Go `privacy.NilPolicyEnforcer`.
+pub struct NilPolicyEnforcer;
+
+impl PolicyEnforcer for NilPolicyEnforcer {
+    fn can_enforce(&self) -> bool {
+        false
+    }
+    fn should_enforce(&self, _bidder: &str) -> bool {
+        false
+    }
+}
+
+/// Wraps a PolicyEnforcer with an enabled flag.
+///
+/// Mirrors Go `privacy.EnabledPolicyEnforcer`.
+pub struct EnabledPolicyEnforcer<P: PolicyEnforcer> {
+    pub enabled: bool,
+    pub enforcer: P,
+}
+
+impl<P: PolicyEnforcer> PolicyEnforcer for EnabledPolicyEnforcer<P> {
+    fn can_enforce(&self) -> bool {
+        self.enforcer.can_enforce()
+    }
+    fn should_enforce(&self, bidder: &str) -> bool {
+        if self.enabled {
+            self.enforcer.should_enforce(bidder)
+        } else {
+            false
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Component type constants — mirrors Go privacy/component.go
+// ---------------------------------------------------------------------------
+
+/// Component type for bidder adapters.
+pub const COMPONENT_TYPE_BIDDER: &str = "bidder";
+/// Component type for analytics modules.
+pub const COMPONENT_TYPE_ANALYTICS: &str = "analytics";
+/// Component type for real-time data modules.
+pub const COMPONENT_TYPE_RTD: &str = "rtd";
+/// Component type for general components.
+pub const COMPONENT_TYPE_GENERAL: &str = "general";
+
+// ---------------------------------------------------------------------------
+// GDPR Consent Writer — mirrors Go privacy/gdpr/consentwriter.go
+// ---------------------------------------------------------------------------
+
+/// Writes GDPR TCF consent into a BidRequest.
+///
+/// Mirrors Go `gdpr.ConsentWriter`.
+pub struct GdprConsentWriter {
+    pub consent: String,
+    pub gdpr: Option<i8>,
+}
+
+impl PolicyWriter for GdprConsentWriter {
+    fn write(&self, req: &mut openrtb::BidRequest) -> Result<(), String> {
+        if let Some(gdpr_val) = self.gdpr {
+            let regs = req.regs.get_or_insert_with(Default::default);
+            regs.gdpr = Some(gdpr_val);
+        }
+        if !self.consent.is_empty() {
+            let user = req.user.get_or_insert_with(Default::default);
+            user.consent = Some(self.consent.clone());
+        }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CCPA Consent Writer — mirrors Go privacy/ccpa/consentwriter.go
+// ---------------------------------------------------------------------------
+
+/// Writes CCPA US Privacy consent into a BidRequest.
+///
+/// Mirrors Go `ccpa.ConsentWriter`.
+pub struct CcpaConsentWriter {
+    pub consent: String,
+}
+
+impl PolicyWriter for CcpaConsentWriter {
+    fn write(&self, req: &mut openrtb::BidRequest) -> Result<(), String> {
+        if !self.consent.is_empty() {
+            let regs = req.regs.get_or_insert_with(Default::default);
+            regs.us_privacy = Some(self.consent.clone());
+        }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// LMT iOS modification — mirrors Go privacy/lmt/ios.go
+// ---------------------------------------------------------------------------
+
+/// LMT tracking signal constants.
+const LMT_TRACKING_UNRESTRICTED: i32 = 0;
+const LMT_TRACKING_RESTRICTED: i32 = 1;
+
+/// Modify the LMT flag for iOS devices based on the iOS version and device IFA.
+///
+/// Mirrors Go `lmt.ModifyForIOS()`:
+/// - iOS 14.0-14.1: Set LMT based on IFA (empty/zero IFA = restricted)
+/// - iOS >= 14.2: Set LMT based on ATT status from device.ext.atts
+pub fn modify_lmt_for_ios(req: &mut openrtb::BidRequest) {
+    if !is_request_for_ios(req) {
+        return;
+    }
+
+    let osv = match req.device.as_ref().and_then(|d| d.osv.as_deref()) {
+        Some(v) => v.to_string(),
+        None => return,
+    };
+
+    let version_class = detect_ios_version_classification(&osv);
+    match version_class {
+        IosVersionClass::Version14_0 | IosVersionClass::Version14_1 => {
+            modify_for_ios_14x(req);
+        }
+        IosVersionClass::Version14_2OrGreater => {
+            modify_for_ios_14_2_or_greater(req);
+        }
+        IosVersionClass::Other => {}
+    }
+}
+
+fn is_request_for_ios(req: &openrtb::BidRequest) -> bool {
+    req.app.is_some()
+        && req.device.as_ref().map_or(false, |d| {
+            d.os.as_deref()
+                .map_or(false, |os| os.eq_ignore_ascii_case("ios"))
+        })
+}
+
+#[derive(Debug, PartialEq)]
+enum IosVersionClass {
+    Version14_0,
+    Version14_1,
+    Version14_2OrGreater,
+    Other,
+}
+
+fn detect_ios_version_classification(osv: &str) -> IosVersionClass {
+    let parts: Vec<&str> = osv.split('.').collect();
+    let major: u32 = parts.first().and_then(|p| p.parse().ok()).unwrap_or(0);
+    let minor: u32 = parts.get(1).and_then(|p| p.parse().ok()).unwrap_or(0);
+
+    if major < 14 {
+        return IosVersionClass::Other;
+    }
+    if major > 14 {
+        return IosVersionClass::Version14_2OrGreater;
+    }
+    // major == 14
+    match minor {
+        0 => IosVersionClass::Version14_0,
+        1 => IosVersionClass::Version14_1,
+        _ => IosVersionClass::Version14_2OrGreater,
+    }
+}
+
+fn modify_for_ios_14x(req: &mut openrtb::BidRequest) {
+    if let Some(device) = &mut req.device {
+        let ifa = device.ifa.as_deref().unwrap_or("");
+        if ifa.is_empty() || ifa == "00000000-0000-0000-0000-000000000000" {
+            device.lmt = Some(LMT_TRACKING_RESTRICTED);
+        } else {
+            device.lmt = Some(LMT_TRACKING_UNRESTRICTED);
+        }
+    }
+}
+
+fn modify_for_ios_14_2_or_greater(req: &mut openrtb::BidRequest) {
+    let atts = req
+        .device
+        .as_ref()
+        .and_then(|d| d.ext.as_ref())
+        .and_then(|ext| ext.get("atts"))
+        .and_then(|v| v.as_i64());
+
+    let atts = match atts {
+        Some(v) => v,
+        None => return,
+    };
+
+    if let Some(device) = &mut req.device {
+        // ATT status values per Apple's ATTrackingManager:
+        // 0 = Not Determined, 1 = Restricted, 2 = Denied, 3 = Authorized
+        match atts {
+            0 | 1 | 2 => device.lmt = Some(LMT_TRACKING_RESTRICTED),
+            3 => device.lmt = Some(LMT_TRACKING_UNRESTRICTED),
+            _ => {} // Unknown value, don't modify
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GDPR Signal — mirrors Go gdpr/signal.go
+// ---------------------------------------------------------------------------
+
+/// GDPR signal values from request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GdprSignal {
+    Ambiguous = -1,
+    No = 0,
+    Yes = 1,
+}
+
+impl GdprSignal {
+    /// Parse a GDPR signal from a string value.
+    pub fn from_str_signal(s: &str) -> Result<Self, String> {
+        if s.is_empty() {
+            return Ok(GdprSignal::Ambiguous);
+        }
+        match s.parse::<i32>() {
+            Ok(0) => Ok(GdprSignal::No),
+            Ok(1) => Ok(GdprSignal::Yes),
+            _ => Err("GDPR signal should be integer 0 or 1".to_string()),
+        }
+    }
+
+    /// Parse a GDPR signal from an integer value.
+    pub fn from_int(i: i32) -> Result<Self, String> {
+        match i {
+            0 => Ok(GdprSignal::No),
+            1 => Ok(GdprSignal::Yes),
+            _ => Err("GDPR signal should be integer 0 or 1".to_string()),
+        }
+    }
+
+    /// Normalize ambiguous signal to a definite yes/no based on default.
+    pub fn normalize(self, default_value: &str) -> GdprSignal {
+        if self != GdprSignal::Ambiguous {
+            return self;
+        }
+        if default_value == "0" {
+            GdprSignal::No
+        } else {
+            GdprSignal::Yes
+        }
+    }
+}
+
+/// Check if GDPR should be enforced for a given signal and channel enabled status.
+///
+/// Mirrors Go `gdpr.EnforceGDPR()`.
+pub fn enforce_gdpr(signal: GdprSignal, default_value: GdprSignal, channel_enabled: bool) -> bool {
+    let gdpr_applies =
+        signal == GdprSignal::Yes || (signal == GdprSignal::Ambiguous && default_value == GdprSignal::Yes);
+    gdpr_applies && channel_enabled
+}
+
+// ---------------------------------------------------------------------------
+// COPPA sanitization
+// ---------------------------------------------------------------------------
 
 /// Sanitize a `BidRequest` for COPPA compliance by stripping user and device
 /// identifiers before the request is forwarded to bidders.
@@ -1027,5 +1362,256 @@ mod tests {
         let cfg = extract_privacy_config(&req);
         assert_eq!(cfg.gpp.consent_string.as_deref(), Some("GPP_STRING"));
         assert_eq!(cfg.gpp.section_ids, vec![2, 6]);
+    }
+
+    // -----------------------------------------------------------------------
+    // ActivityCondition GPP SID matching tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_condition_matches_with_gpp_sid() {
+        let cond = ActivityCondition {
+            component_name: vec![],
+            component_type: vec![],
+            gpp_sid: vec![2, 6],
+        };
+        let component = ActivityComponent {
+            component_type: "bidder".to_string(),
+            component_name: "appnexus".to_string(),
+        };
+
+        // Matching SID
+        let req = ActivityRequest { gpp_sid: vec![2] };
+        assert!(cond.matches_with_request(&component, &req));
+
+        // Non-matching SID
+        let req = ActivityRequest { gpp_sid: vec![7] };
+        assert!(!cond.matches_with_request(&component, &req));
+
+        // Empty request SID
+        let req = ActivityRequest { gpp_sid: vec![] };
+        assert!(!cond.matches_with_request(&component, &req));
+    }
+
+    #[test]
+    fn test_condition_empty_gpp_sid_matches_all() {
+        let cond = ActivityCondition {
+            component_name: vec![],
+            component_type: vec![],
+            gpp_sid: vec![],
+        };
+        let component = ActivityComponent {
+            component_type: "bidder".to_string(),
+            component_name: "appnexus".to_string(),
+        };
+        let req = ActivityRequest { gpp_sid: vec![2] };
+        assert!(cond.matches_with_request(&component, &req));
+    }
+
+    #[test]
+    fn test_condition_case_insensitive_name() {
+        let cond = ActivityCondition {
+            component_name: vec!["AppNexus".to_string()],
+            component_type: vec![],
+            gpp_sid: vec![],
+        };
+        let component = ActivityComponent {
+            component_type: "bidder".to_string(),
+            component_name: "appnexus".to_string(),
+        };
+        assert!(cond.matches(&component));
+    }
+
+    #[test]
+    fn test_condition_case_insensitive_type() {
+        let cond = ActivityCondition {
+            component_name: vec![],
+            component_type: vec!["Bidder".to_string()],
+            gpp_sid: vec![],
+        };
+        let component = ActivityComponent {
+            component_type: "bidder".to_string(),
+            component_name: "appnexus".to_string(),
+        };
+        assert!(cond.matches(&component));
+    }
+
+    // -----------------------------------------------------------------------
+    // PolicyEnforcer tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_nil_policy_enforcer() {
+        let enforcer = NilPolicyEnforcer;
+        assert!(!enforcer.can_enforce());
+        assert!(!enforcer.should_enforce("appnexus"));
+    }
+
+    #[test]
+    fn test_enabled_policy_enforcer_disabled() {
+        let enforcer = EnabledPolicyEnforcer {
+            enabled: false,
+            enforcer: NilPolicyEnforcer,
+        };
+        assert!(!enforcer.should_enforce("appnexus"));
+    }
+
+    // -----------------------------------------------------------------------
+    // PolicyWriter tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_nil_policy_writer() {
+        let writer = NilPolicyWriter;
+        let mut req = openrtb::BidRequest::default();
+        assert!(writer.write(&mut req).is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // GDPR/CCPA Consent Writer tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_gdpr_consent_writer() {
+        let writer = GdprConsentWriter {
+            consent: "BOEFEAyOEFEAy".to_string(),
+            gdpr: Some(1),
+        };
+        let mut req = openrtb::BidRequest::default();
+        writer.write(&mut req).unwrap();
+        assert_eq!(req.regs.as_ref().unwrap().gdpr, Some(1));
+        assert_eq!(
+            req.user.as_ref().unwrap().consent.as_deref(),
+            Some("BOEFEAyOEFEAy")
+        );
+    }
+
+    #[test]
+    fn test_ccpa_consent_writer() {
+        let writer = CcpaConsentWriter {
+            consent: "1YNN".to_string(),
+        };
+        let mut req = openrtb::BidRequest::default();
+        writer.write(&mut req).unwrap();
+        assert_eq!(
+            req.regs.as_ref().unwrap().us_privacy.as_deref(),
+            Some("1YNN")
+        );
+    }
+
+    #[test]
+    fn test_ccpa_consent_writer_empty() {
+        let writer = CcpaConsentWriter {
+            consent: String::new(),
+        };
+        let mut req = openrtb::BidRequest::default();
+        writer.write(&mut req).unwrap();
+        assert!(req.regs.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // LMT iOS tests
+    // -----------------------------------------------------------------------
+
+    fn make_ios_request(osv: &str, ifa: Option<&str>) -> openrtb::BidRequest {
+        openrtb::BidRequest {
+            app: Some(openrtb::App::default()),
+            device: Some(openrtb::Device {
+                os: Some("iOS".to_string()),
+                osv: Some(osv.to_string()),
+                ifa: ifa.map(|s| s.to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_lmt_ios14_0_no_ifa() {
+        let mut req = make_ios_request("14.0", None);
+        modify_lmt_for_ios(&mut req);
+        assert_eq!(req.device.unwrap().lmt, Some(1));
+    }
+
+    #[test]
+    fn test_lmt_ios14_0_zero_ifa() {
+        let mut req = make_ios_request("14.0", Some("00000000-0000-0000-0000-000000000000"));
+        modify_lmt_for_ios(&mut req);
+        assert_eq!(req.device.unwrap().lmt, Some(1));
+    }
+
+    #[test]
+    fn test_lmt_ios14_1_valid_ifa() {
+        let mut req = make_ios_request("14.1", Some("valid-ifa-string"));
+        modify_lmt_for_ios(&mut req);
+        assert_eq!(req.device.unwrap().lmt, Some(0));
+    }
+
+    #[test]
+    fn test_lmt_ios14_2_atts_denied() {
+        let mut req = make_ios_request("14.2", Some("ifa"));
+        req.device.as_mut().unwrap().ext = Some(serde_json::json!({"atts": 2}));
+        modify_lmt_for_ios(&mut req);
+        assert_eq!(req.device.unwrap().lmt, Some(1));
+    }
+
+    #[test]
+    fn test_lmt_ios14_2_atts_authorized() {
+        let mut req = make_ios_request("14.2", Some("ifa"));
+        req.device.as_mut().unwrap().ext = Some(serde_json::json!({"atts": 3}));
+        modify_lmt_for_ios(&mut req);
+        assert_eq!(req.device.unwrap().lmt, Some(0));
+    }
+
+    #[test]
+    fn test_lmt_ios_not_ios() {
+        let mut req = openrtb::BidRequest {
+            app: Some(openrtb::App::default()),
+            device: Some(openrtb::Device {
+                os: Some("android".to_string()),
+                osv: Some("14.0".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        modify_lmt_for_ios(&mut req);
+        assert!(req.device.unwrap().lmt.is_none());
+    }
+
+    #[test]
+    fn test_lmt_ios13_no_modification() {
+        let mut req = make_ios_request("13.7", Some("ifa"));
+        modify_lmt_for_ios(&mut req);
+        assert!(req.device.unwrap().lmt.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // GDPR Signal tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_gdpr_signal_parse_str() {
+        assert_eq!(GdprSignal::from_str_signal("").unwrap(), GdprSignal::Ambiguous);
+        assert_eq!(GdprSignal::from_str_signal("0").unwrap(), GdprSignal::No);
+        assert_eq!(GdprSignal::from_str_signal("1").unwrap(), GdprSignal::Yes);
+        assert!(GdprSignal::from_str_signal("2").is_err());
+        assert!(GdprSignal::from_str_signal("abc").is_err());
+    }
+
+    #[test]
+    fn test_gdpr_signal_normalize() {
+        assert_eq!(GdprSignal::Ambiguous.normalize("0"), GdprSignal::No);
+        assert_eq!(GdprSignal::Ambiguous.normalize("1"), GdprSignal::Yes);
+        assert_eq!(GdprSignal::Yes.normalize("0"), GdprSignal::Yes);
+        assert_eq!(GdprSignal::No.normalize("1"), GdprSignal::No);
+    }
+
+    #[test]
+    fn test_enforce_gdpr() {
+        assert!(enforce_gdpr(GdprSignal::Yes, GdprSignal::No, true));
+        assert!(!enforce_gdpr(GdprSignal::Yes, GdprSignal::No, false));
+        assert!(!enforce_gdpr(GdprSignal::No, GdprSignal::Yes, true));
+        assert!(enforce_gdpr(GdprSignal::Ambiguous, GdprSignal::Yes, true));
+        assert!(!enforce_gdpr(GdprSignal::Ambiguous, GdprSignal::No, true));
     }
 }

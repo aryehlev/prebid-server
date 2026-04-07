@@ -22,6 +22,8 @@ pub mod privacy;
 pub mod seat_non_bids;
 pub mod tmax;
 pub mod usersync;
+pub mod cookie_sync;
+pub mod setuid;
 pub mod account;
 pub mod adapter_util;
 pub mod amp;
@@ -45,6 +47,8 @@ pub mod stored_responses;
 pub mod targeting;
 pub mod validation;
 pub mod vast;
+pub mod category_mapping;
+pub mod deals;
 
 #[cfg(test)]
 mod tests;
