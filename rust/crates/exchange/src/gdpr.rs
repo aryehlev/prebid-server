@@ -1201,6 +1201,136 @@ pub fn should_block_bidder_gdpr(
 }
 
 // ---------------------------------------------------------------------------
+// GDPR utilities — mirrors Go gdpr/utils.go
+// ---------------------------------------------------------------------------
+
+use crate::privacy::GPP_SID_TCF_EU2;
+
+/// Extract the GDPR signal from a bid request.
+///
+/// If `regs.gpp_sid` contains SID 2 (TCF EU v2), returns `Yes`.
+/// If `gpp_sid` is present but does not contain SID 2, returns `No`.
+/// Otherwise falls back to `regs.gdpr`, or `Ambiguous` if not set.
+///
+/// Mirrors Go `gdpr.GetGDPR()`.
+pub fn get_gdpr_signal(req: &openrtb::BidRequest) -> Result<GdprSignal, String> {
+    if let Some(ref regs) = req.regs {
+        if let Some(ref gpp_sid) = regs.gpp_sid {
+            if !gpp_sid.is_empty() {
+                if gpp_sid.contains(&GPP_SID_TCF_EU2) {
+                    return Ok(GdprSignal::Yes);
+                }
+                return Ok(GdprSignal::No);
+            }
+        }
+        if let Some(gdpr) = regs.gdpr {
+            return match gdpr {
+                0 => Ok(GdprSignal::No),
+                1 => Ok(GdprSignal::Yes),
+                other => Err(format!(
+                    "GDPR signal should be integer 0 or 1, got {}",
+                    other
+                )),
+            };
+        }
+    }
+    Ok(GdprSignal::Ambiguous)
+}
+
+/// Extract the GDPR consent string from a bid request.
+///
+/// If `regs.gpp_sid` contains SID 2 (TCF EU v2) and `regs.gpp` is set, returns
+/// the GPP consent string. Otherwise falls back to `user.consent`.
+///
+/// Note: The Go version parses individual GPP sections via a library. Since a full
+/// GPP section parser is not yet available in Rust, this returns the raw `regs.gpp`
+/// string when TCF EU v2 is indicated (which is the overall GPP consent string).
+///
+/// Mirrors Go `gdpr.GetConsent()`.
+pub fn get_consent(req: &openrtb::BidRequest) -> String {
+    // Check GPP: if TCF EU2 section is indicated, use gpp consent string
+    if let Some(ref regs) = req.regs {
+        if let Some(ref gpp_sid) = regs.gpp_sid {
+            if gpp_sid.contains(&GPP_SID_TCF_EU2) {
+                if let Some(ref gpp) = regs.gpp {
+                    if !gpp.is_empty() {
+                        return gpp.clone();
+                    }
+                }
+            }
+        }
+    }
+    // Fallback to user.consent
+    if let Some(ref user) = req.user {
+        if let Some(ref consent) = user.consent {
+            return consent.clone();
+        }
+    }
+    String::new()
+}
+
+/// Select which EEA country list to use: account-level takes precedence over host-level.
+///
+/// Mirrors Go `gdpr.SelectEEACountries()`.
+pub fn select_eea_countries(host: &[String], account: &[String]) -> Vec<String> {
+    if !account.is_empty() {
+        return account.to_vec();
+    }
+    host.to_vec()
+}
+
+/// Check if the given country is part of the EEA countries list (case-insensitive).
+///
+/// Mirrors Go `gdpr.isEEACountry()`.
+pub fn is_eea_country(country: &str, eea_countries: &[String]) -> bool {
+    if eea_countries.is_empty() {
+        return false;
+    }
+    let country_upper = country.to_uppercase();
+    eea_countries
+        .iter()
+        .any(|c| c.to_uppercase() == country_upper)
+}
+
+/// Determine the default GDPR signal based on geo location and EEA country list.
+///
+/// If a geo country (from user or device) is in the EEA list, returns `Yes`.
+/// If the country code is properly formatted (3 characters) but not in the EEA, returns `No`.
+/// Otherwise returns `Yes` if `cfg_default` is "1", `No` if "0".
+///
+/// Mirrors Go `gdpr.ParseGDPRDefaultValue()`.
+pub fn parse_gdpr_default_value(
+    req: &openrtb::BidRequest,
+    cfg_default: &str,
+    eea_countries: &[String],
+) -> GdprSignal {
+    let mut gdpr_default = if cfg_default == "0" {
+        GdprSignal::No
+    } else {
+        GdprSignal::Yes
+    };
+
+    // Try user.geo first, then device.geo
+    let geo = req
+        .user
+        .as_ref()
+        .and_then(|u| u.geo.as_ref())
+        .or_else(|| req.device.as_ref().and_then(|d| d.geo.as_ref()));
+
+    if let Some(geo) = geo {
+        if let Some(ref country) = geo.country {
+            if is_eea_country(country, eea_countries) {
+                gdpr_default = GdprSignal::Yes;
+            } else if country.len() == 3 {
+                gdpr_default = GdprSignal::No;
+            }
+        }
+    }
+
+    gdpr_default
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1624,5 +1754,175 @@ mod tests {
         assert!(tcf.has_vendor_consent(6));
         assert!(!tcf.has_vendor_consent(3));
         assert!(!tcf.has_vendor_consent(7));
+    }
+
+    // -- Tests for GDPR utility functions (mirrors Go gdpr/utils_test.go) --
+
+    fn make_bid_request() -> openrtb::BidRequest {
+        openrtb::BidRequest::default()
+    }
+
+    #[test]
+    fn test_get_gdpr_signal_gpp_sid_contains_tcf_eu2() {
+        let mut req = make_bid_request();
+        req.regs = Some(openrtb::Regs {
+            gpp_sid: Some(vec![2, 6]),
+            ..Default::default()
+        });
+        assert_eq!(get_gdpr_signal(&req).unwrap(), GdprSignal::Yes);
+    }
+
+    #[test]
+    fn test_get_gdpr_signal_gpp_sid_without_tcf_eu2() {
+        let mut req = make_bid_request();
+        req.regs = Some(openrtb::Regs {
+            gpp_sid: Some(vec![6]),
+            ..Default::default()
+        });
+        assert_eq!(get_gdpr_signal(&req).unwrap(), GdprSignal::No);
+    }
+
+    #[test]
+    fn test_get_gdpr_signal_from_regs_gdpr() {
+        let mut req = make_bid_request();
+        req.regs = Some(openrtb::Regs {
+            gdpr: Some(1),
+            ..Default::default()
+        });
+        assert_eq!(get_gdpr_signal(&req).unwrap(), GdprSignal::Yes);
+
+        req.regs = Some(openrtb::Regs {
+            gdpr: Some(0),
+            ..Default::default()
+        });
+        assert_eq!(get_gdpr_signal(&req).unwrap(), GdprSignal::No);
+    }
+
+    #[test]
+    fn test_get_gdpr_signal_invalid_value() {
+        let mut req = make_bid_request();
+        req.regs = Some(openrtb::Regs {
+            gdpr: Some(5),
+            ..Default::default()
+        });
+        assert!(get_gdpr_signal(&req).is_err());
+    }
+
+    #[test]
+    fn test_get_gdpr_signal_ambiguous() {
+        let req = make_bid_request();
+        assert_eq!(get_gdpr_signal(&req).unwrap(), GdprSignal::Ambiguous);
+    }
+
+    #[test]
+    fn test_get_consent_from_gpp() {
+        let mut req = make_bid_request();
+        req.regs = Some(openrtb::Regs {
+            gpp: Some("DBACNYA~CPXxRfAPXxRfAAfKABENB-CgAAAAAAAAAAYgAAAAAAAA~1YNN".to_string()),
+            gpp_sid: Some(vec![2]),
+            ..Default::default()
+        });
+        req.user = Some(openrtb::User {
+            consent: Some("old-consent".to_string()),
+            ..Default::default()
+        });
+        // GPP takes precedence over user.consent
+        let consent = get_consent(&req);
+        assert_eq!(consent, "DBACNYA~CPXxRfAPXxRfAAfKABENB-CgAAAAAAAAAAYgAAAAAAAA~1YNN");
+    }
+
+    #[test]
+    fn test_get_consent_fallback_to_user_consent() {
+        let mut req = make_bid_request();
+        req.user = Some(openrtb::User {
+            consent: Some("user-consent-string".to_string()),
+            ..Default::default()
+        });
+        assert_eq!(get_consent(&req), "user-consent-string");
+    }
+
+    #[test]
+    fn test_get_consent_empty() {
+        let req = make_bid_request();
+        assert_eq!(get_consent(&req), "");
+    }
+
+    #[test]
+    fn test_select_eea_countries_account_takes_precedence() {
+        let host = vec!["DEU".to_string(), "FRA".to_string()];
+        let account = vec!["ITA".to_string()];
+        assert_eq!(select_eea_countries(&host, &account), vec!["ITA".to_string()]);
+    }
+
+    #[test]
+    fn test_select_eea_countries_fallback_to_host() {
+        let host = vec!["DEU".to_string(), "FRA".to_string()];
+        let account: Vec<String> = vec![];
+        assert_eq!(select_eea_countries(&host, &account), host);
+    }
+
+    #[test]
+    fn test_is_eea_country_case_insensitive() {
+        let countries = vec!["DEU".to_string(), "FRA".to_string()];
+        assert!(is_eea_country("deu", &countries));
+        assert!(is_eea_country("DEU", &countries));
+        assert!(is_eea_country("Deu", &countries));
+        assert!(!is_eea_country("USA", &countries));
+    }
+
+    #[test]
+    fn test_is_eea_country_empty_list() {
+        assert!(!is_eea_country("DEU", &[]));
+    }
+
+    #[test]
+    fn test_parse_gdpr_default_value_eea_country() {
+        let mut req = make_bid_request();
+        req.user = Some(openrtb::User {
+            geo: Some(openrtb::Geo {
+                country: Some("DEU".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let eea = vec!["DEU".to_string(), "FRA".to_string()];
+        assert_eq!(parse_gdpr_default_value(&req, "0", &eea), GdprSignal::Yes);
+    }
+
+    #[test]
+    fn test_parse_gdpr_default_value_non_eea_3char() {
+        let mut req = make_bid_request();
+        req.device = Some(openrtb::Device {
+            geo: Some(openrtb::Geo {
+                country: Some("USA".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let eea = vec!["DEU".to_string(), "FRA".to_string()];
+        assert_eq!(parse_gdpr_default_value(&req, "1", &eea), GdprSignal::No);
+    }
+
+    #[test]
+    fn test_parse_gdpr_default_value_no_geo() {
+        let req = make_bid_request();
+        assert_eq!(parse_gdpr_default_value(&req, "1", &[]), GdprSignal::Yes);
+        assert_eq!(parse_gdpr_default_value(&req, "0", &[]), GdprSignal::No);
+    }
+
+    #[test]
+    fn test_parse_gdpr_default_value_short_country() {
+        // Country code not 3 chars: use config default
+        let mut req = make_bid_request();
+        req.user = Some(openrtb::User {
+            geo: Some(openrtb::Geo {
+                country: Some("US".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let eea = vec!["DEU".to_string()];
+        assert_eq!(parse_gdpr_default_value(&req, "1", &eea), GdprSignal::Yes);
+        assert_eq!(parse_gdpr_default_value(&req, "0", &eea), GdprSignal::No);
     }
 }
