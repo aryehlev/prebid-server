@@ -1,3 +1,6 @@
+pub mod account;
+pub mod bidder_info;
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -931,6 +934,9 @@ pub struct AccountGdprConfig {
 /// Per-purpose GDPR enforcement at the account level.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AccountGdprPurposeConfig {
+    /// Enforcement algorithm ("basic" or "full").
+    #[serde(default)]
+    pub enforce_algo: String,
     #[serde(default)]
     pub enforce_purpose: bool,
     #[serde(default)]
@@ -1011,6 +1017,8 @@ pub struct AccountFloorFetchConfig {
     pub max_age_sec: u32,
     #[serde(default)]
     pub period_sec: u32,
+    #[serde(default)]
+    pub max_schema_dims: u32,
 }
 
 /// Bid adjustments configuration.
