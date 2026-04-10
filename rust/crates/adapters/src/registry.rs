@@ -1,18 +1,32 @@
 use std::collections::HashMap;
 use crate::Bidder;
 
+/// Directories to search for bidder-info YAML files, in order of preference.
+const BIDDER_INFO_DIRS: &[&str] = &[
+    "/home/user/prebid-server/static/bidder-info",
+    "static/bidder-info",
+    "../static/bidder-info",
+];
+
+/// Find the bidder-info directory that actually exists on disk.
+fn find_bidder_info_dir() -> Option<&'static str> {
+    for dir in BIDDER_INFO_DIRS {
+        if std::path::Path::new(dir).is_dir() {
+            return Some(dir);
+        }
+    }
+    None
+}
+
 fn read_endpoint(name: &str, default: &str) -> String {
-    let paths = [
-        format!("/home/user/prebid-server/static/bidder-info/{}.yaml", name),
-        format!("static/bidder-info/{}.yaml", name),
-        format!("../static/bidder-info/{}.yaml", name),
-    ];
-    for path in &paths {
-        if let Ok(content) = std::fs::read_to_string(path) {
+    for dir in BIDDER_INFO_DIRS {
+        let path = format!("{}/{}.yaml", dir, name);
+        if let Ok(content) = std::fs::read_to_string(&path) {
             for line in content.lines() {
                 let line = line.trim();
                 if line.starts_with("endpoint:") && !line.starts_with('#') {
-                    let val = line.trim_start_matches("endpoint:").trim().trim_matches('"');
+                    let val = line.trim_start_matches("endpoint:").trim()
+                        .trim_matches('"').trim_matches('\'');
                     if !val.is_empty() {
                         return val.to_string();
                     }
@@ -23,7 +37,71 @@ fn read_endpoint(name: &str, default: &str) -> String {
     default.to_string()
 }
 
+/// Read the `aliasOf` field from a bidder's YAML file, if present.
+#[cfg(test)]
+fn read_alias_of(name: &str) -> Option<String> {
+    for dir in BIDDER_INFO_DIRS {
+        let path = format!("{}/{}.yaml", dir, name);
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            for line in content.lines() {
+                let line = line.trim();
+                if line.starts_with("aliasOf:") {
+                    let val = line.trim_start_matches("aliasOf:").trim()
+                        .trim_matches('"').trim_matches('\'');
+                    if !val.is_empty() {
+                        return Some(val.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Scan the bidder-info directory for all YAML-defined aliases.
+/// Returns a list of (alias_name, parent_bidder_name) pairs.
+fn discover_yaml_aliases() -> Vec<(String, String)> {
+    let dir = match find_bidder_info_dir() {
+        Some(d) => d,
+        None => return Vec::new(),
+    };
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+    let mut aliases = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
+            continue;
+        }
+        let bidder_name = match path.file_stem().and_then(|s| s.to_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            for line in content.lines() {
+                let line = line.trim();
+                if line.starts_with("aliasOf:") {
+                    let parent = line.trim_start_matches("aliasOf:").trim()
+                        .trim_matches('"').trim_matches('\'');
+                    if !parent.is_empty() {
+                        aliases.push((bidder_name.clone(), parent.to_string()));
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    aliases
+}
+
 fn ep(name: &str) -> String { read_endpoint(name, "") }
+
+/// A builder function that creates a bidder adapter given an endpoint URL.
+/// This mirrors Go's `adapters.Builder` type, enabling aliases to reuse
+/// their parent bidder's adapter logic with a different endpoint.
+type AdapterBuilder = Box<dyn Fn(String) -> Box<dyn Bidder>>;
 
 struct GenericAdapter { endpoint: String }
 impl GenericAdapter {
@@ -55,30 +133,56 @@ impl Bidder for GenericAdapter {
 
 pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     let mut m: HashMap<String, Box<dyn Bidder>> = HashMap::new();
+
+    // Builder registry: maps canonical bidder names to factory functions.
+    // When a YAML alias references a parent, we look up the parent's builder
+    // here and create a new adapter instance with the alias's endpoint.
+    // This mirrors Go's `setAliasBuilder` in exchange/adapter_util.go.
+    let mut builders: HashMap<String, AdapterBuilder> = HashMap::new();
+
+    // Register a bidder with both an adapter instance and a builder function.
     macro_rules! reg {
         ($key:expr, $adapter:expr) => { m.insert($key.to_string(), Box::new($adapter)); };
+    }
+    macro_rules! reg_with_builder {
+        ($key:expr, $adapter:expr, $builder:expr) => {
+            m.insert($key.to_string(), Box::new($adapter));
+            builders.insert($key.to_string(), Box::new($builder));
+        };
     }
     macro_rules! gen {
         ($key:expr) => { m.insert($key.to_string(), GenericAdapter::boxed(ep($key))); };
     }
 
     // adapters/ — real implementations
-    reg!("appnexus", crate::adapters::AppnexusAdapter::new(ep("appnexus")));
-    reg!("sovrn", crate::adapters::SovrnAdapter::new(ep("sovrn")));
-    reg!("rubicon", crate::adapters::RubiconAdapter::new(ep("rubicon"), String::new(), String::new()));
-    reg!("ix", crate::adapters::IxAdapter::new(ep("ix")));
-    reg!("openx", crate::adapters::OpenxAdapter::new(ep("openx"), "openx".to_string()));
-    reg!("pubmatic", crate::adapters::PubmaticAdapter::new(ep("pubmatic")));
-    reg!("33across", crate::adapters::Across33Adapter::new(ep("33across")));
-    reg!("beachfront", crate::adapters::BeachfrontAdapter::new(
+    // Adapters that are known parents of YAML aliases use reg_with_builder!
+    // so aliases can reuse the parent's adapter logic with a different endpoint.
+    reg_with_builder!("appnexus", crate::adapters::AppnexusAdapter::new(ep("appnexus")),
+        |endpoint| Box::new(crate::adapters::AppnexusAdapter::new(endpoint)));
+    reg_with_builder!("sovrn", crate::adapters::SovrnAdapter::new(ep("sovrn")),
+        |endpoint| Box::new(crate::adapters::SovrnAdapter::new(endpoint)));
+    reg_with_builder!("rubicon", crate::adapters::RubiconAdapter::new(ep("rubicon"), String::new(), String::new()),
+        |endpoint| Box::new(crate::adapters::RubiconAdapter::new(endpoint, String::new(), String::new())));
+    reg_with_builder!("ix", crate::adapters::IxAdapter::new(ep("ix")),
+        |endpoint| Box::new(crate::adapters::IxAdapter::new(endpoint)));
+    reg_with_builder!("openx", crate::adapters::OpenxAdapter::new(ep("openx"), "openx".to_string()),
+        |endpoint| Box::new(crate::adapters::OpenxAdapter::new(endpoint, "openx".to_string())));
+    reg_with_builder!("pubmatic", crate::adapters::PubmaticAdapter::new(ep("pubmatic")),
+        |endpoint| Box::new(crate::adapters::PubmaticAdapter::new(endpoint)));
+    reg_with_builder!("33across", crate::adapters::Across33Adapter::new(ep("33across")),
+        |endpoint| Box::new(crate::adapters::Across33Adapter::new(endpoint)));
+    reg_with_builder!("beachfront", crate::adapters::BeachfrontAdapter::new(
         ep("beachfront"),
         "https://reachms.bfmio.com/bid.json?exchange_id".to_string(),
-    ));
-    reg!("criteo", crate::adapters::CriteoAdapter::new(ep("criteo")));
-    reg!("sharethrough", crate::adapters::SharethroughAdapter::new(ep("sharethrough")));
+    ), |endpoint| Box::new(crate::adapters::BeachfrontAdapter::new(endpoint, "https://reachms.bfmio.com/bid.json?exchange_id".to_string())));
+    reg_with_builder!("criteo", crate::adapters::CriteoAdapter::new(ep("criteo")),
+        |endpoint| Box::new(crate::adapters::CriteoAdapter::new(endpoint)));
+    reg_with_builder!("sharethrough", crate::adapters::SharethroughAdapter::new(ep("sharethrough")),
+        |endpoint| Box::new(crate::adapters::SharethroughAdapter::new(endpoint)));
 
     // adapters2/
-    reg!("smartadserver", crate::adapters2::SmartadserverAdapter::new(ep("smartadserver")));
+    reg_with_builder!("smartadserver", crate::adapters2::SmartadserverAdapter::new(ep("smartadserver")),
+        |endpoint| Box::new(crate::adapters2::SmartadserverAdapter::new(endpoint)));
     reg!("triplelift", crate::adapters2::TripleliftAdapter::new(ep("triplelift")));
     reg!("taboola", crate::adapters2::TaboolaAdapter::new(ep("taboola")));
     reg!("outbrain", crate::adapters2::OutbrainAdapter::new(ep("outbrain")));
@@ -87,7 +191,8 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     reg!("richaudience", crate::adapters2::RichaudienceAdapter::new(ep("richaudience")));
     reg!("pulsepoint", crate::adapters2::PulsepointAdapter::new(ep("pulsepoint")));
     reg!("rtbhouse", crate::adapters2::RtbhouseAdapter::new(ep("rtbhouse")));
-    reg!("conversant", crate::adapters2::ConversantAdapter::new(ep("conversant")));
+    reg_with_builder!("conversant", crate::adapters2::ConversantAdapter::new(ep("conversant")),
+        |endpoint| Box::new(crate::adapters2::ConversantAdapter::new(endpoint)));
     reg!("emx_digital", crate::adapters2::EmxDigitalAdapter::new(ep("emx_digital")));
     reg!("yandex", crate::adapters2::YandexAdapter::new(ep("yandex")));
     reg!("onetag", crate::adapters2::OnetagAdapter::new(ep("onetag")));
@@ -106,15 +211,18 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     // adapters3/
     reg!("teads", crate::adapters3::TeadsAdapter::new(ep("teads")));
     reg!("revcontent", crate::adapters3::RevcontentAdapter::new(ep("revcontent")));
-    reg!("adtelligent", crate::adapters3::AdtelligentAdapter::new(ep("adtelligent")));
-    reg!("adkernel", crate::adapters3::AdkernelAdapter::new(ep("adkernel")));
+    reg_with_builder!("adtelligent", crate::adapters3::AdtelligentAdapter::new(ep("adtelligent")),
+        |endpoint| Box::new(crate::adapters3::AdtelligentAdapter::new(endpoint)));
+    reg_with_builder!("adkernel", crate::adapters3::AdkernelAdapter::new(ep("adkernel")),
+        |endpoint| Box::new(crate::adapters3::AdkernelAdapter::new(endpoint)));
     reg!("admixer", crate::adapters3::AdmixerAdapter::new(ep("admixer")));
     reg!("adman", crate::adapters3::AdmanAdapter::new(ep("adman")));
     reg!("nativo", crate::adapters3::NativoAdapter::new(ep("nativo")));
     reg!("nobid", crate::adapters3::NobidAdapter::new(ep("nobid")));
     reg!("eplanning", crate::adapters3::EplanningAdapter::new(ep("eplanning")));
     reg!("loopme", crate::adapters3::LoopmeAdapter::new(ep("loopme")));
-    reg!("vidazoo", crate::adapters3::VidazooAdapter::new(ep("vidazoo")));
+    reg_with_builder!("vidazoo", crate::adapters3::VidazooAdapter::new(ep("vidazoo")),
+        |endpoint| Box::new(crate::adapters3::VidazooAdapter::new(endpoint)));
     reg!("triplelift_native", crate::adapters3::TripleliftNativeAdapter::new(ep("triplelift_native")));
 
     // adapters4/
@@ -151,11 +259,13 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     reg!("acuityads", crate::adapters6::AcuityadsAdapter::new(ep("acuityads")));
     reg!("adagio", crate::adapters6::AdagioAdapter::new(ep("adagio")));
     reg!("adelement", crate::adapters6::AdelementAdapter::new(ep("adelement")));
-    reg!("adf", crate::adapters6::AdfAdapter::new(ep("adf")));
+    reg_with_builder!("adf", crate::adapters6::AdfAdapter::new(ep("adf")),
+        |endpoint| Box::new(crate::adapters6::AdfAdapter::new(endpoint)));
     reg!("adgeneration", crate::adapters6::AdgenerationAdapter::new(ep("adgeneration")));
     reg!("adhese", crate::adapters6::AdheseAdapter::new(ep("adhese")));
     reg!("adkernelAdn", crate::adapters6::AdkernelAdnAdapter::new(ep("adkernelAdn")));
-    reg!("admatic", crate::adapters6::AdmaticAdapter::new(ep("admatic")));
+    reg_with_builder!("admatic", crate::adapters6::AdmaticAdapter::new(ep("admatic")),
+        |endpoint| Box::new(crate::adapters6::AdmaticAdapter::new(endpoint)));
     reg!("adnuntius", crate::adapters6::AdnuntiusAdapter::new(ep("adnuntius")));
     reg!("adot", crate::adapters6::AdotAdapter::new(ep("adot")));
     reg!("adpone", crate::adapters6::AdponeAdapter::new(ep("adpone")));
@@ -169,7 +279,8 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
 
     // adapters7/
     reg!("advangelists", crate::adapters7::AdvangelistsAdapter::new(ep("advangelists")));
-    reg!("adverxo", crate::adapters7::AdverxoAdapter::new(ep("adverxo")));
+    reg_with_builder!("adverxo", crate::adapters7::AdverxoAdapter::new(ep("adverxo")),
+        |endpoint| Box::new(crate::adapters7::AdverxoAdapter::new(endpoint)));
     reg!("adview", crate::adapters7::AdviewAdapter::new(ep("adview")));
     reg!("adxcg", crate::adapters7::AdxcgAdapter::new(ep("adxcg")));
     reg!("adyoulike", crate::adapters7::AdyoulikeAdapter::new(ep("adyoulike")));
@@ -181,9 +292,11 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     reg!("alkimi", crate::adapters7::AlkimiAdapter::new(ep("alkimi")));
     reg!("alliance_gravity", crate::adapters7::AllianceGravityAdapter::new(ep("alliance_gravity")));
     reg!("amx", crate::adapters7::AmxAdapter::new(ep("amx")));
-    reg!("apacdex", crate::adapters7::ApacdexAdapter::new(ep("apacdex")));
+    reg_with_builder!("apacdex", crate::adapters7::ApacdexAdapter::new(ep("apacdex")),
+        |endpoint| Box::new(crate::adapters7::ApacdexAdapter::new(endpoint)));
     reg!("appush", crate::adapters7::AppushAdapter::new(ep("appush")));
-    reg!("aso", crate::adapters7::AsoAdapter::new(ep("aso")));
+    reg_with_builder!("aso", crate::adapters7::AsoAdapter::new(ep("aso")),
+        |endpoint| Box::new(crate::adapters7::AsoAdapter::new(endpoint)));
     reg!("audienceNetwork", crate::adapters7::AudienceNetworkAdapter::new(ep("audienceNetwork")));
     reg!("automatad", crate::adapters7::AutomatadAdapter::new(ep("automatad")));
     reg!("avocet", crate::adapters7::AvocetAdapter::new(ep("avocet")));
@@ -226,12 +339,14 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     reg!("e_volution", crate::adapters10::EvolutionAdapter::new(ep("e_volution")));
     reg!("elementaltv", crate::adapters10::ElementaltvAdapter::new(ep("elementaltv")));
     reg!("escalax", crate::adapters10::EscalaxAdapter::new(ep("escalax")));
-    reg!("freewheelssp", crate::adapters10::FreewheelsspAdapter::new(ep("freewheelssp")));
+    reg_with_builder!("freewheelssp", crate::adapters10::FreewheelsspAdapter::new(ep("freewheelssp")),
+        |endpoint| Box::new(crate::adapters10::FreewheelsspAdapter::new(endpoint)));
     reg!("frvradn", crate::adapters10::FrvradnAdapter::new(ep("frvradn")));
     reg!("fwssp", crate::adapters10::FwsspAdapter::new(ep("fwssp")));
     reg!("globalsun", crate::adapters10::GlobalsunAdapter::new(ep("globalsun")));
     reg!("huaweiads", crate::adapters10::HuaweiadsAdapter::new(ep("huaweiads")));
-    reg!("imds", crate::adapters10::ImdsAdapter::new(ep("imds")));
+    reg_with_builder!("imds", crate::adapters10::ImdsAdapter::new(ep("imds")),
+        |endpoint| Box::new(crate::adapters10::ImdsAdapter::new(endpoint)));
 
     // adapters11/
     reg!("logicad", crate::adapters11::LogicadAdapter::new(ep("logicad")));
@@ -309,7 +424,8 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     reg!("mobilefuse", crate::adapters14::MobilefuseAdapter::new(ep("mobilefuse")));
     reg!("mobkoi", crate::adapters14::MobkoiAdapter::new(ep("mobkoi")));
     reg!("motorik", crate::adapters14::MotorikAdapter::new(ep("motorik")));
-    reg!("nexx360", crate::adapters14::Nexx360Adapter::new(ep("nexx360")));
+    reg_with_builder!("nexx360", crate::adapters14::Nexx360Adapter::new(ep("nexx360")),
+        |endpoint| Box::new(crate::adapters14::Nexx360Adapter::new(endpoint)));
     reg!("pubnative", crate::adapters14::PubnativeAdapter::new(ep("pubnative")));
     reg!("pubrise", crate::adapters14::PubriseAdapter::new(ep("pubrise")));
     reg!("pwbid", crate::adapters14::PwbidAdapter::new(ep("pwbid")));
@@ -318,9 +434,11 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     reg!("rediads", crate::adapters14::RediadsAdapter::new(ep("rediads")));
     reg!("relevantdigital", crate::adapters14::RelevantdigitalAdapter::new(ep("relevantdigital")));
     reg!("rise", crate::adapters14::RiseAdapter::new(ep("rise")));
-    reg!("showheroes", crate::adapters14::ShowheroesAdapter::new(ep("showheroes")));
+    reg_with_builder!("showheroes", crate::adapters14::ShowheroesAdapter::new(ep("showheroes")),
+        |endpoint| Box::new(crate::adapters14::ShowheroesAdapter::new(endpoint)));
     reg!("silvermob", crate::adapters14::SilvermobAdapter::new(ep("silvermob")));
-    reg!("smarthub", crate::adapters14::SmarthubAdapter::new(ep("smarthub")));
+    reg_with_builder!("smarthub", crate::adapters14::SmarthubAdapter::new(ep("smarthub")),
+        |endpoint| Box::new(crate::adapters14::SmarthubAdapter::new(endpoint)));
     reg!("smartrtb", crate::adapters14::SmartrtbAdapter::new(ep("smartrtb")));
     reg!("smartx", crate::adapters14::SmartxAdapter::new(ep("smartx")));
     reg!("smartyads", crate::adapters14::SmartyadsAdapter::new(ep("smartyads")));
@@ -333,9 +451,11 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     reg!("startio", crate::adapters14::StartioAdapter::new(ep("startio")));
     reg!("stroeer_core", crate::adapters14::StroeerCoreAdapter::new(ep("stroeer_core")));
     reg!("tappx", crate::adapters14::TappxAdapter::new(ep("tappx")));
-    reg!("teqblaze", crate::adapters14::TeqblazeAdapter::new(ep("teqblaze")));
+    reg_with_builder!("teqblaze", crate::adapters14::TeqblazeAdapter::new(ep("teqblaze")),
+        |endpoint| Box::new(crate::adapters14::TeqblazeAdapter::new(endpoint)));
     reg!("theadx", crate::adapters14::TheadxAdapter::new(ep("theadx")));
-    reg!("thetradedesk", crate::adapters14::ThetradedeskAdapter::new(ep("thetradedesk")));
+    reg_with_builder!("thetradedesk", crate::adapters14::ThetradedeskAdapter::new(ep("thetradedesk")),
+        |endpoint| Box::new(crate::adapters14::ThetradedeskAdapter::new(endpoint)));
     reg!("tpmn", crate::adapters14::TpmnAdapter::new(ep("tpmn")));
     reg!("tradplus", crate::adapters14::TradplusAdapter::new(ep("tradplus")));
     reg!("trafficgate", crate::adapters14::TrafficgateAdapter::new(ep("trafficgate")));
@@ -351,7 +471,8 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     reg!("vox", crate::adapters14::VoxAdapter::new(ep("vox")));
     reg!("vrtcal", crate::adapters14::VrtcalAdapter::new(ep("vrtcal")));
     reg!("vungle", crate::adapters14::VungleAdapter::new(ep("vungle")));
-    reg!("xeworks", crate::adapters14::XeworksAdapter::new(ep("xeworks")));
+    reg_with_builder!("xeworks", crate::adapters14::XeworksAdapter::new(ep("xeworks")),
+        |endpoint| Box::new(crate::adapters14::XeworksAdapter::new(endpoint)));
     reg!("yahoo_ads", crate::adapters14::YahooAdsAdapter::new(ep("yahoo_ads")));
     reg!("yeahmobi", crate::adapters14::YeahmobiAdapter::new(ep("yeahmobi")));
     reg!("yieldmo", crate::adapters14::YieldmoAdapter::new(ep("yieldmo")));
@@ -361,101 +482,128 @@ pub fn build_adapter_map() -> HashMap<String, Box<dyn Bidder>> {
     reg!("zeta_global_ssp", crate::adapters14::ZetaGlobalSspAdapter::new(ep("zeta_global_ssp")));
     reg!("zmaticoo", crate::adapters14::ZmaticooAdapter::new(ep("zmaticoo")));
 
-    // Additional missing bidders (aliases and generics)
-    gen!("152media");
-    gen!("1accord");
-    gen!("360playvid");
-    gen!("adastra");
-    gen!("addigi");
-    // adkernelAdn uses real adapter registered above
-    gen!("admaticde");
-    gen!("adport");
-    gen!("ads_interactive");
-    gen!("adsinteractive");
-    gen!("adsyield");
-    gen!("adt");
-    gen!("adtg_org");
-    gen!("alchemyx");
-    gen!("altstar");
-    gen!("anzuExchange");
-    gen!("appStockSSP");
-    gen!("appstock");
-    gen!("artechnology");
-    gen!("bcmint");
-    gen!("bidfuse");
-    gen!("bidgency");
-    gen!("bidsmind");
-    gen!("connektai");
-    gen!("copper6");
-    gen!("easybid");
-    gen!("embimedia");
-    gen!("epsilon");
-    gen!("equativ");
-    gen!("evtech");
-    gen!("felixads");
-    gen!("filmzie");
-    gen!("finative");
-    reg!("freewheel-ssp", crate::adapters10::FreewheelsspAdapter::new(ep("freewheelssp")));
-    gen!("gravite");
-    gen!("greedygame");
-    gen!("iionads");
-    gen!("indicue");
-    gen!("jambojar");
-    gen!("janet");
-    gen!("jdpmedia");
-    gen!("kuantyx");
-    reg!("limelightDigital", crate::adapters14::LimelightDigitalAdapter::new(ep("limelightDigital")));
-    gen!("magnite");
-    gen!("markapp");
-    gen!("mediayo");
-    reg!("mgidX", crate::adapters14::MgidXAdapter::new(ep("mgid_x")));
-    gen!("monetixads");
-    gen!("netaddiction");
-    gen!("nuba");
-    gen!("omnidex");
-    gen!("orangeclickmedia");
-    gen!("oveeo");
-    gen!("performist");
-    gen!("pgam");
-    gen!("pinkLion");
-    gen!("pixad");
-    gen!("prismassp");
-    gen!("programmaticX");
-    gen!("progx");
-    gen!("quantumdex");
-    gen!("radiantfusion");
-    gen!("robustApps");
-    gen!("rocketlab");
-    gen!("rtbdemand");
-    gen!("rxnetwork");
-    gen!("screencore");
-    reg!("seedingAlliance", crate::adapters14::SeedingAllianceAdapter::new(ep("seedingAlliance")));
-    gen!("showheroes-bs");
-    gen!("showheroesBs");
-    gen!("smootai");
-    reg!("sovrnXsp", crate::adapters14::SovrnXspAdapter::new(ep("sovrnXsp")));
+    // Non-alias bidders without custom adapters (use generic fallback)
     gen!("sspBC");
-    gen!("streamkey");
-    gen!("streamlyn");
-    gen!("streamvision");
-    gen!("stroeerCore");
-    gen!("suntContent");
-    gen!("tagoras");
-    gen!("tgm");
-    gen!("tredio");
-    gen!("ttd");
-    gen!("valueimpression");
-    gen!("velonium");
-    gen!("viewdeos");
-    gen!("xapads");
-    gen!("xtrmqb");
-    reg!("yahooAds", crate::adapters14::YahooAdsAdapter::new(ep("yahooAds")));
-    gen!("yahooAdvertising");
-    gen!("yahoossp");
-    gen!("yobee");
-    gen!("adform");
-    gen!("adinify");
-    gen!("adipolo");
+
+    // Explicitly registered adapters with variant/alternate names
+    reg_with_builder!("limelightDigital", crate::adapters14::LimelightDigitalAdapter::new(ep("limelightDigital")),
+        |endpoint| Box::new(crate::adapters14::LimelightDigitalAdapter::new(endpoint)));
+    reg!("mgidX", crate::adapters14::MgidXAdapter::new(ep("mgid_x")));
+    reg_with_builder!("seedingAlliance", crate::adapters14::SeedingAllianceAdapter::new(ep("seedingAlliance")),
+        |endpoint| Box::new(crate::adapters14::SeedingAllianceAdapter::new(endpoint)));
+    reg!("sovrnXsp", crate::adapters14::SovrnXspAdapter::new(ep("sovrnXsp")));
+    reg_with_builder!("yahooAds", crate::adapters14::YahooAdsAdapter::new(ep("yahooAds")),
+        |endpoint| Box::new(crate::adapters14::YahooAdsAdapter::new(endpoint)));
+    reg!("freewheel-ssp", crate::adapters10::FreewheelsspAdapter::new(ep("freewheelssp")));
+
+    // -----------------------------------------------------------------------
+    // Alias resolution: scan YAML bidder-info files for `aliasOf` entries
+    // and create adapter instances using the parent bidder's builder.
+    // This mirrors Go's `setAliasBuilder` in exchange/adapter_util.go.
+    //
+    // Any bidder with `aliasOf: <parent>` in its YAML file will get an
+    // instance of the parent's adapter (with the alias's own endpoint).
+    // Bidders without a YAML alias or without a registered parent builder
+    // fall through to the generic adapter.
+    // -----------------------------------------------------------------------
+    let yaml_aliases = discover_yaml_aliases();
+    for (alias_name, parent_name) in &yaml_aliases {
+        // Skip if this alias is already explicitly registered above.
+        if m.contains_key(alias_name) {
+            continue;
+        }
+        let alias_endpoint = ep(alias_name);
+        if let Some(builder) = builders.get(parent_name) {
+            // Use the parent's builder to create an adapter with the alias's endpoint.
+            // If the alias has no endpoint in its YAML, use the parent's endpoint.
+            let endpoint = if alias_endpoint.is_empty() {
+                ep(parent_name)
+            } else {
+                alias_endpoint
+            };
+            m.insert(alias_name.clone(), builder(endpoint));
+        } else {
+            // Parent builder not registered — fall back to generic adapter.
+            let endpoint = if alias_endpoint.is_empty() {
+                ep(parent_name)
+            } else {
+                alias_endpoint
+            };
+            m.insert(alias_name.clone(), GenericAdapter::boxed(endpoint));
+        }
+    }
 
     m
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_read_alias_of_returns_none_for_non_alias() {
+        // appnexus is not an alias
+        assert!(read_alias_of("appnexus").is_none());
+    }
+
+    #[test]
+    fn test_read_alias_of_returns_parent_for_alias() {
+        // magnite is aliasOf rubicon
+        if let Some(parent) = read_alias_of("magnite") {
+            assert_eq!(parent, "rubicon");
+        }
+        // equativ is aliasOf smartadserver
+        if let Some(parent) = read_alias_of("equativ") {
+            assert_eq!(parent, "smartadserver");
+        }
+    }
+
+    #[test]
+    fn test_discover_yaml_aliases_finds_aliases() {
+        let aliases = discover_yaml_aliases();
+        if find_bidder_info_dir().is_some() {
+            assert!(!aliases.is_empty(), "should discover YAML aliases");
+            let has_magnite = aliases.iter().any(|(name, parent)| name == "magnite" && parent == "rubicon");
+            assert!(has_magnite, "magnite -> rubicon alias should be discovered");
+        }
+    }
+
+    #[test]
+    fn test_build_adapter_map_aliases_use_parent_adapter() {
+        let map = build_adapter_map();
+
+        // magnite is an alias of rubicon — it should be registered
+        assert!(map.contains_key("magnite"), "magnite alias should be in adapter map");
+
+        // equativ is an alias of smartadserver
+        assert!(map.contains_key("equativ"), "equativ alias should be in adapter map");
+
+        // The parent bidders should also exist
+        assert!(map.contains_key("rubicon"), "rubicon parent should be in adapter map");
+        assert!(map.contains_key("smartadserver"), "smartadserver parent should be in adapter map");
+    }
+
+    #[test]
+    fn test_build_adapter_map_alias_produces_valid_requests() {
+        let map = build_adapter_map();
+
+        // magnite (alias of rubicon) should produce requests using RubiconAdapter logic
+        if let Some(adapter) = map.get("magnite") {
+            let mut imp = openrtb::Imp::default();
+            imp.id = "imp1".to_string();
+            imp.banner = Some(openrtb::Banner::default());
+            imp.ext = Some(serde_json::json!({"bidder": {"accountId": 1, "siteId": 2, "zoneId": 3}}));
+            let req = openrtb::BidRequest {
+                id: "test-alias".to_string(),
+                imp: vec![imp],
+                ..Default::default()
+            };
+            let (requests, _errors) = adapter.make_requests(&req, &crate::ExtraRequestInfo::default());
+            // RubiconAdapter adds an Authorization header; GenericAdapter does not.
+            if !requests.is_empty() {
+                let has_auth = requests[0].headers.contains_key("Authorization");
+                assert!(has_auth, "magnite (alias of rubicon) should use RubiconAdapter logic with auth header");
+            }
+        }
+    }
 }
