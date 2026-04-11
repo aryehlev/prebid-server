@@ -1,5 +1,7 @@
 pub mod account;
+pub mod account_fetcher;
 pub mod bidder_info;
+pub mod env_config;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

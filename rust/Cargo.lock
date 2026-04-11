@@ -1094,6 +1094,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "json-patch"
+version = "1.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec9ad60d674508f3ca8f380a928cfe7b096bc729c4e2dbfe3852bc45da3ab30b"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "json5"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1434,10 +1445,15 @@ name = "pbs-config"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "config",
+ "json-patch",
  "serde",
  "serde_json",
  "serde_yaml",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
  "toml",
  "tracing",
 ]
@@ -1527,6 +1543,27 @@ dependencies = [
  "once_cell",
  "prometheus",
  "serde",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "pbs-ortb"
+version = "0.1.0"
+dependencies = [
+ "openrtb",
+ "openrtb-ext",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "pbs-privacy"
+version = "0.1.0"
+dependencies = [
+ "openrtb",
+ "openrtb-ext",
+ "serde",
+ "serde_json",
  "thiserror 1.0.69",
 ]
 

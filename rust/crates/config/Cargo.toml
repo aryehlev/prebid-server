@@ -11,3 +11,10 @@ config = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 toml = { workspace = true }
+json-patch = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tempfile = "3"

@@ -43,6 +43,7 @@ pub mod privacysandbox;
 pub mod request_validator;
 pub mod schain;
 pub mod stored_requests;
+pub mod stored_requests_http;
 pub mod stored_responses;
 pub mod targeting;
 pub mod validation;
