@@ -1,5 +1,10 @@
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+
+use async_trait::async_trait;
 use serde::Deserialize;
+use tracing::{debug, warn};
 
 /// PriceFloors holds floor configuration from req.ext.prebid.floors
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -287,6 +292,240 @@ impl FloorFetcher {
             }
         }
         Some(floors)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FloorDataFetcher trait & implementations — async HTTP fetch with caching
+// ---------------------------------------------------------------------------
+
+/// Errors that can occur during floor data fetching.
+#[derive(Debug, thiserror::Error)]
+pub enum FetchError {
+    #[error("HTTP request failed: {0}")]
+    Http(#[from] reqwest::Error),
+    #[error("server returned non-success status {0}")]
+    Status(u16),
+    #[error("response body too large: {size} bytes (max {max})")]
+    TooLarge { size: usize, max: usize },
+    #[error("failed to parse floor JSON: {0}")]
+    Parse(#[from] serde_json::Error),
+    #[error("fetched floor data contains no data field")]
+    EmptyData,
+    #[error("validation failed: {0}")]
+    Validation(String),
+}
+
+/// Async trait for fetching floor data from a URL.
+///
+/// Implementations may perform HTTP requests, read from cache, or combine both.
+#[async_trait]
+pub trait FloorDataFetcher: Send + Sync + 'static {
+    /// Fetch floor data from the given URL.
+    async fn fetch_floor_data(&self, url: &str) -> Result<FloorData, FetchError>;
+}
+
+// ---------------------------------------------------------------------------
+// HttpFloorFetcher — plain HTTP fetcher using reqwest
+// ---------------------------------------------------------------------------
+
+/// Fetches floor data over HTTP. No caching — every call hits the network.
+///
+/// Mirrors the core HTTP fetch in the Go `fetchFloorRulesFromURL` but uses
+/// `reqwest` instead of the Go `http.Client`.
+#[derive(Debug, Clone)]
+pub struct HttpFloorFetcher {
+    client: reqwest::Client,
+    /// Maximum acceptable response body size in bytes.
+    max_body_bytes: usize,
+    /// Maximum number of floor rules per model group to retain.
+    max_rules: usize,
+}
+
+impl HttpFloorFetcher {
+    /// Create a new HTTP floor fetcher.
+    ///
+    /// * `timeout` — per-request timeout.
+    /// * `max_body_bytes` — reject responses larger than this (0 = no limit).
+    /// * `max_rules` — trim model group value maps that exceed this count.
+    pub fn new(timeout: Duration, max_body_bytes: usize, max_rules: usize) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(timeout)
+            .build()
+            .expect("failed to build reqwest client");
+        Self {
+            client,
+            max_body_bytes,
+            max_rules,
+        }
+    }
+
+    /// Build from an existing `reqwest::Client` (useful for testing / shared
+    /// connection pools).
+    pub fn with_client(
+        client: reqwest::Client,
+        max_body_bytes: usize,
+        max_rules: usize,
+    ) -> Self {
+        Self {
+            client,
+            max_body_bytes,
+            max_rules,
+        }
+    }
+
+    /// Build from a [`FloorFetchConfig`].
+    pub fn from_config(config: &FloorFetchConfig) -> Self {
+        Self::new(
+            Duration::from_millis(config.timeout_ms),
+            0, // no body-size limit by default — caller can override
+            config.max_rules,
+        )
+    }
+}
+
+#[async_trait]
+impl FloorDataFetcher for HttpFloorFetcher {
+    async fn fetch_floor_data(&self, url: &str) -> Result<FloorData, FetchError> {
+        debug!(url, "fetching floor data");
+
+        let resp = self.client.get(url).send().await?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(FetchError::Status(status.as_u16()));
+        }
+
+        let body = resp.bytes().await?;
+
+        if self.max_body_bytes > 0 && body.len() > self.max_body_bytes {
+            return Err(FetchError::TooLarge {
+                size: body.len(),
+                max: self.max_body_bytes,
+            });
+        }
+
+        let mut data: FloorData = serde_json::from_slice(&body)?;
+
+        // Enforce max-rules limit on every model group, mirroring Go
+        // `validateRules` / `parse_response` logic.
+        trim_floor_rules(&mut data, self.max_rules);
+
+        debug!(url, "floor data fetched successfully");
+        Ok(data)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CachedFloorFetcher — wraps any FloorDataFetcher with moka async cache
+// ---------------------------------------------------------------------------
+
+/// A floor data fetcher that keeps results in an async in-memory cache
+/// ([`moka::future::Cache`]).
+///
+/// On a cache miss the inner fetcher is invoked and the result is stored.
+/// On a cache hit the stored `FloorData` is returned immediately without
+/// any network I/O.
+///
+/// The cache uses the request URL as key and respects `time_to_live` as the
+/// maximum age for entries (analogous to Go's `maxAge`).
+pub struct CachedFloorFetcher {
+    inner: Arc<dyn FloorDataFetcher>,
+    cache: moka::future::Cache<String, FloorData>,
+}
+
+impl std::fmt::Debug for CachedFloorFetcher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CachedFloorFetcher")
+            .field("cache_entry_count", &self.cache.entry_count())
+            .finish()
+    }
+}
+
+impl CachedFloorFetcher {
+    /// Create a new cached fetcher.
+    ///
+    /// * `inner` — the underlying fetcher that performs the real work.
+    /// * `max_entries` — maximum number of URLs to cache.
+    /// * `time_to_live` — how long a fetched result is considered fresh.
+    pub fn new(
+        inner: Arc<dyn FloorDataFetcher>,
+        max_entries: u64,
+        time_to_live: Duration,
+    ) -> Self {
+        let cache = moka::future::Cache::builder()
+            .max_capacity(max_entries)
+            .time_to_live(time_to_live)
+            .build();
+        Self { inner, cache }
+    }
+
+    /// Build from a [`FloorFetchConfig`] and an inner fetcher.
+    pub fn from_config(inner: Arc<dyn FloorDataFetcher>, config: &FloorFetchConfig) -> Self {
+        Self::new(
+            inner,
+            1000, // sensible default for max cached URLs
+            Duration::from_secs(config.max_age_secs),
+        )
+    }
+
+    /// Invalidate the cached entry for the given URL.
+    pub async fn invalidate(&self, url: &str) {
+        self.cache.invalidate(url).await;
+    }
+
+    /// Return the number of entries currently in the cache.
+    pub fn entry_count(&self) -> u64 {
+        self.cache.entry_count()
+    }
+}
+
+#[async_trait]
+impl FloorDataFetcher for CachedFloorFetcher {
+    async fn fetch_floor_data(&self, url: &str) -> Result<FloorData, FetchError> {
+        // Fast path: check if the value is already cached.
+        if let Some(data) = self.cache.get(url).await {
+            debug!(url, "returning cached floor data");
+            return Ok(data);
+        }
+
+        // Cache miss — delegate to the inner fetcher.
+        debug!(url, "cache miss, fetching floor data from origin");
+        match self.inner.fetch_floor_data(url).await {
+            Ok(data) => {
+                self.cache.insert(url.to_owned(), data.clone()).await;
+                Ok(data)
+            }
+            Err(e) => {
+                warn!(url, error = %e, "floor data fetch failed");
+                Err(e)
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// helpers
+// ---------------------------------------------------------------------------
+
+/// Trim model group value maps so that no group exceeds `max_rules`.
+fn trim_floor_rules(data: &mut FloorData, max_rules: usize) {
+    if max_rules == 0 {
+        return;
+    }
+    if let Some(groups) = &mut data.modelgroups {
+        for group in groups.iter_mut() {
+            if let Some(values) = &mut group.values {
+                if values.len() > max_rules {
+                    let trimmed: HashMap<String, f64> = values
+                        .iter()
+                        .take(max_rules)
+                        .map(|(k, v)| (k.clone(), *v))
+                        .collect();
+                    *values = trimmed;
+                }
+            }
+        }
     }
 }
 
@@ -630,5 +869,323 @@ mod tests {
         let floors = FloorFetcher::parse_response(&body, 100).unwrap();
         assert_eq!(floors.floor_min, 1.0);
         assert!(floors.data.is_some());
+    }
+
+    // -----------------------------------------------------------------------
+    // FloorDataFetcher trait / HttpFloorFetcher / CachedFloorFetcher tests
+    // -----------------------------------------------------------------------
+
+    /// A mock fetcher that returns a pre-defined FloorData or an error.
+    #[derive(Clone)]
+    struct MockFloorFetcher {
+        data: Result<FloorData, String>,
+        call_count: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl MockFloorFetcher {
+        fn ok(data: FloorData) -> Self {
+            Self {
+                data: Ok(data),
+                call_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            }
+        }
+
+        fn err(msg: &str) -> Self {
+            Self {
+                data: Err(msg.to_string()),
+                call_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.call_count.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl FloorDataFetcher for MockFloorFetcher {
+        async fn fetch_floor_data(&self, _url: &str) -> Result<FloorData, FetchError> {
+            self.call_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            match &self.data {
+                Ok(d) => Ok(d.clone()),
+                Err(msg) => Err(FetchError::Validation(msg.clone())),
+            }
+        }
+    }
+
+    fn sample_floor_data() -> FloorData {
+        let mut values = HashMap::new();
+        values.insert("banner".to_string(), 1.5);
+        values.insert("video".to_string(), 3.0);
+        FloorData {
+            currency: Some("USD".to_string()),
+            schema: Some(FloorSchema {
+                fields: vec!["mediaType".to_string()],
+                delimiter: None,
+            }),
+            values: Some(values),
+            modelgroups: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_mock_fetcher_returns_data() {
+        let data = sample_floor_data();
+        let fetcher = MockFloorFetcher::ok(data.clone());
+        let result = fetcher
+            .fetch_floor_data("http://example.com/floors")
+            .await;
+        assert!(result.is_ok());
+        let fetched = result.unwrap();
+        assert_eq!(fetched.currency.as_deref(), Some("USD"));
+        assert_eq!(fetcher.calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_mock_fetcher_returns_error() {
+        let fetcher = MockFloorFetcher::err("boom");
+        let result = fetcher
+            .fetch_floor_data("http://example.com/floors")
+            .await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), FetchError::Validation(_)));
+    }
+
+    #[tokio::test]
+    async fn test_cached_fetcher_caches_result() {
+        let data = sample_floor_data();
+        let mock = Arc::new(MockFloorFetcher::ok(data));
+        let mock_ref = mock.clone();
+
+        let cached = CachedFloorFetcher::new(
+            mock.clone() as Arc<dyn FloorDataFetcher>,
+            10,
+            Duration::from_secs(300),
+        );
+
+        // First call -> cache miss -> delegates to inner
+        let r1 = cached
+            .fetch_floor_data("http://example.com/floors")
+            .await
+            .unwrap();
+        assert_eq!(r1.currency.as_deref(), Some("USD"));
+        assert_eq!(mock_ref.calls(), 1);
+
+        // Second call -> cache hit -> no additional inner call
+        let r2 = cached
+            .fetch_floor_data("http://example.com/floors")
+            .await
+            .unwrap();
+        assert_eq!(r2.currency.as_deref(), Some("USD"));
+        assert_eq!(mock_ref.calls(), 1); // still 1
+    }
+
+    #[tokio::test]
+    async fn test_cached_fetcher_does_not_cache_errors() {
+        let mock = Arc::new(MockFloorFetcher::err("transient"));
+        let mock_ref = mock.clone();
+
+        let cached = CachedFloorFetcher::new(
+            mock.clone() as Arc<dyn FloorDataFetcher>,
+            10,
+            Duration::from_secs(300),
+        );
+
+        let r1 = cached
+            .fetch_floor_data("http://example.com/floors")
+            .await;
+        assert!(r1.is_err());
+
+        let r2 = cached
+            .fetch_floor_data("http://example.com/floors")
+            .await;
+        assert!(r2.is_err());
+
+        // Inner was called twice because errors are not cached.
+        assert_eq!(mock_ref.calls(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_cached_fetcher_invalidate() {
+        let data = sample_floor_data();
+        let mock = Arc::new(MockFloorFetcher::ok(data));
+        let mock_ref = mock.clone();
+
+        let cached = CachedFloorFetcher::new(
+            mock.clone() as Arc<dyn FloorDataFetcher>,
+            10,
+            Duration::from_secs(300),
+        );
+
+        // Populate cache
+        let _ = cached
+            .fetch_floor_data("http://example.com/floors")
+            .await
+            .unwrap();
+        assert_eq!(mock_ref.calls(), 1);
+
+        // Invalidate
+        cached.invalidate("http://example.com/floors").await;
+
+        // Next call should miss the cache
+        let _ = cached
+            .fetch_floor_data("http://example.com/floors")
+            .await
+            .unwrap();
+        assert_eq!(mock_ref.calls(), 2);
+    }
+
+    #[test]
+    fn test_trim_floor_rules() {
+        let mut values = HashMap::new();
+        for i in 0..10 {
+            values.insert(format!("key{}", i), i as f64);
+        }
+        let mut data = FloorData {
+            modelgroups: Some(vec![FloorModelGroup {
+                values: Some(values),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+
+        trim_floor_rules(&mut data, 3);
+        let group = &data.modelgroups.as_ref().unwrap()[0];
+        assert_eq!(group.values.as_ref().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn test_trim_floor_rules_zero_max_is_noop() {
+        let mut values = HashMap::new();
+        values.insert("a".to_string(), 1.0);
+        values.insert("b".to_string(), 2.0);
+        let mut data = FloorData {
+            modelgroups: Some(vec![FloorModelGroup {
+                values: Some(values),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+
+        trim_floor_rules(&mut data, 0);
+        let group = &data.modelgroups.as_ref().unwrap()[0];
+        assert_eq!(group.values.as_ref().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_http_floor_fetcher_from_config() {
+        let config = FloorFetchConfig {
+            url: "http://example.com/floors".to_string(),
+            timeout_ms: 3000,
+            max_rules: 500,
+            enabled: true,
+            ..Default::default()
+        };
+        let fetcher = HttpFloorFetcher::from_config(&config);
+        assert_eq!(fetcher.max_rules, 500);
+        assert_eq!(fetcher.max_body_bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn test_http_floor_fetcher_with_wiremock() {
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        use wiremock::matchers::method;
+
+        let server = MockServer::start().await;
+
+        let floor_json = serde_json::json!({
+            "currency": "USD",
+            "modelgroups": [{
+                "values": { "banner": 2.0, "video": 4.0 },
+                "schema": { "fields": ["mediaType"] },
+                "modelWeight": 50
+            }]
+        });
+
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&floor_json))
+            .mount(&server)
+            .await;
+
+        let fetcher = HttpFloorFetcher::new(Duration::from_secs(5), 0, 1000);
+        let result = fetcher.fetch_floor_data(&server.uri()).await;
+        assert!(result.is_ok(), "fetch failed: {:?}", result.err());
+
+        let data = result.unwrap();
+        assert_eq!(data.currency.as_deref(), Some("USD"));
+        let groups = data.modelgroups.as_ref().unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].values.as_ref().unwrap().get("banner"), Some(&2.0));
+    }
+
+    #[tokio::test]
+    async fn test_http_floor_fetcher_non_200_returns_error() {
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        use wiremock::matchers::method;
+
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let fetcher = HttpFloorFetcher::new(Duration::from_secs(5), 0, 1000);
+        let result = fetcher.fetch_floor_data(&server.uri()).await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), FetchError::Status(500)));
+    }
+
+    #[tokio::test]
+    async fn test_http_floor_fetcher_body_too_large() {
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        use wiremock::matchers::method;
+
+        let server = MockServer::start().await;
+
+        // Return a valid JSON body that exceeds the 10-byte limit.
+        let body = serde_json::json!({ "currency": "USD" });
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&body))
+            .mount(&server)
+            .await;
+
+        let fetcher = HttpFloorFetcher::new(Duration::from_secs(5), 10, 1000);
+        let result = fetcher.fetch_floor_data(&server.uri()).await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), FetchError::TooLarge { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_http_floor_fetcher_trims_rules() {
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        use wiremock::matchers::method;
+
+        let server = MockServer::start().await;
+
+        // 5 rules, but max_rules = 2
+        let floor_json = serde_json::json!({
+            "modelgroups": [{
+                "values": {
+                    "banner": 1.0,
+                    "video": 2.0,
+                    "native": 3.0,
+                    "audio": 4.0,
+                    "other": 5.0
+                },
+                "schema": { "fields": ["mediaType"] }
+            }]
+        });
+
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&floor_json))
+            .mount(&server)
+            .await;
+
+        let fetcher = HttpFloorFetcher::new(Duration::from_secs(5), 0, 2);
+        let data = fetcher.fetch_floor_data(&server.uri()).await.unwrap();
+        let groups = data.modelgroups.unwrap();
+        assert_eq!(groups[0].values.as_ref().unwrap().len(), 2);
     }
 }

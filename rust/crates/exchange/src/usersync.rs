@@ -1,6 +1,13 @@
 use std::collections::{HashMap, HashSet};
+use std::fmt;
+
 use rand::seq::SliceRandom;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
+
+use pbs_config::{
+    BidderInfo, BidderSyncerConfig, Configuration, SyncerEndpointConfig, UserSyncConfig,
+};
 
 /// Represents a syncer configuration for a bidder
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,6 +82,7 @@ impl PrebidCookie {
 }
 
 /// Syncer determines the sync URL for a bidder
+#[derive(Debug)]
 pub struct Syncer {
     pub bidder: String,
     pub iframe_url: Option<String>,
@@ -82,6 +90,34 @@ pub struct Syncer {
 }
 
 impl Syncer {
+    /// The syncer key used to store/lookup UIDs in the cookie.
+    /// This is often the bidder name, but can be shared across bidders.
+    pub fn key(&self) -> &str {
+        &self.bidder
+    }
+
+    /// The default response format based on which endpoints are configured
+    /// and any format override.
+    pub fn default_response_format(&self) -> SyncType {
+        if self.iframe_url.is_some() {
+            SyncType::Iframe
+        } else {
+            SyncType::Redirect
+        }
+    }
+
+    /// Returns true if the syncer supports at least one of the given sync types.
+    pub fn supports_type(&self, sync_types: &[SyncType]) -> bool {
+        for st in sync_types {
+            match st {
+                SyncType::Iframe if self.iframe_url.is_some() => return true,
+                SyncType::Redirect if self.redirect_url.is_some() => return true,
+                _ => {}
+            }
+        }
+        false
+    }
+
     pub fn get_sync_url(&self, sync_type: &SyncType, gdpr: i32, consent: &str) -> Option<String> {
         let base = match sync_type {
             SyncType::Iframe => self.iframe_url.as_deref()?,
@@ -670,6 +706,357 @@ fn shuffled_append(dest: &mut Vec<String>, src: &[String], rng: &mut impl rand::
     dest[start..].shuffle(rng);
 }
 
+// ---------------------------------------------------------------------------
+// Shuffler – randomizes the order of bidder sync attempts
+// ---------------------------------------------------------------------------
+
+/// Changes the order of elements in a slice.
+///
+/// Mirrors Go `shuffler` interface in `usersync/shuffler.go`.
+pub trait Shuffler {
+    fn shuffle(&self, items: &mut [String]);
+}
+
+/// Randomly shuffles elements using `rand::thread_rng`.
+///
+/// Mirrors Go `randomShuffler` in `usersync/shuffler.go`.
+pub struct RandomShuffler;
+
+impl Shuffler for RandomShuffler {
+    fn shuffle(&self, items: &mut [String]) {
+        let mut rng = rand::thread_rng();
+        items.shuffle(&mut rng);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SyncerBuilder – creates Syncer instances from bidder config
+// ---------------------------------------------------------------------------
+
+/// Associates a bidder name with its syncer configuration.
+///
+/// Mirrors Go `namedSyncerConfig` in `usersync/syncersbuilder.go`.
+#[derive(Debug, Clone)]
+struct NamedSyncerConfig {
+    name: String,
+    cfg: BidderSyncerConfig,
+}
+
+/// Error returned when a syncer cannot be built for a bidder.
+///
+/// Mirrors Go `SyncerBuildError` in `usersync/syncersbuilder.go`.
+#[derive(Debug, Clone)]
+pub struct SyncerBuildError {
+    pub bidder: String,
+    pub syncer_key: String,
+    pub err: String,
+}
+
+impl fmt::Display for SyncerBuildError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "cannot create syncer for bidder {} with key {}: {}",
+            self.bidder, self.syncer_key, self.err
+        )
+    }
+}
+
+impl std::error::Error for SyncerBuildError {}
+
+/// Build syncers for all enabled bidders.
+///
+/// This function groups bidder syncer configs by their syncer key, resolves
+/// shared keys (multiple bidders sharing one syncer key), and creates a
+/// `Syncer` for each bidder.
+///
+/// Mirrors Go `BuildSyncers()` in `usersync/syncersbuilder.go`.
+pub fn build_syncers(
+    host_config: &Configuration,
+    bidder_infos: &HashMap<String, BidderInfo>,
+) -> Result<HashMap<String, Syncer>, Vec<String>> {
+    // Map syncer config by bidder
+    let mut cfg_by_bidder: HashMap<String, BidderSyncerConfig> = HashMap::new();
+    for (bidder, info) in bidder_infos {
+        if should_create_syncer(info) {
+            if let Some(ref syncer_cfg) = info.user_sync {
+                cfg_by_bidder.insert(bidder.clone(), syncer_cfg.clone());
+            }
+        }
+    }
+
+    // Map syncer config by key
+    let mut cfg_by_syncer_key: HashMap<String, Vec<NamedSyncerConfig>> = HashMap::new();
+    for (bidder, mut cfg) in cfg_by_bidder {
+        if cfg.key.is_empty() {
+            cfg.key = bidder.clone();
+        }
+        let key = cfg.key.clone();
+        cfg_by_syncer_key
+            .entry(key)
+            .or_default()
+            .push(NamedSyncerConfig {
+                name: bidder,
+                cfg,
+            });
+    }
+
+    // Resolve host endpoint
+    let mut host_user_sync = host_config.user_sync.clone();
+    if host_user_sync.external_url.is_empty() {
+        host_user_sync.external_url = host_config.external_url.clone();
+    }
+
+    // Create syncers
+    let mut errs: Vec<String> = Vec::new();
+    let mut syncers: HashMap<String, Syncer> = HashMap::new();
+
+    for (key, cfg_group) in &cfg_by_syncer_key {
+        let primary_cfg = match choose_syncer_config(cfg_group) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                errs.push(e);
+                continue;
+            }
+        };
+
+        for named in cfg_group {
+            match new_syncer_from_config(&host_user_sync, &primary_cfg.cfg, &named.name) {
+                Ok(syncer) => {
+                    syncers.insert(named.name.clone(), syncer);
+                }
+                Err(e) => {
+                    errs.push(
+                        SyncerBuildError {
+                            bidder: primary_cfg.name.clone(),
+                            syncer_key: key.clone(),
+                            err: e,
+                        }
+                        .to_string(),
+                    );
+                }
+            }
+        }
+    }
+
+    if !errs.is_empty() {
+        return Err(errs);
+    }
+
+    Ok(syncers)
+}
+
+/// Determines whether a syncer should be created for a given bidder.
+///
+/// A syncer is only created when the bidder is enabled and has a meaningful
+/// syncer configuration (more than just `supports`).
+///
+/// Mirrors Go `shouldCreateSyncer()` in `usersync/syncersbuilder.go`.
+fn should_create_syncer(info: &BidderInfo) -> bool {
+    if !info.is_enabled() {
+        return false;
+    }
+    info.syncer_defined()
+}
+
+/// When multiple bidders share the same syncer key, choose which config to
+/// use as the primary. At most one bidder in the group may define endpoints
+/// (iframe/redirect). If multiple do, their configs must be identical.
+///
+/// Mirrors Go `chooseSyncerConfig()` in `usersync/syncersbuilder.go`.
+fn choose_syncer_config(group: &[NamedSyncerConfig]) -> Result<NamedSyncerConfig, String> {
+    if group.len() == 1 {
+        return Ok(group[0].clone());
+    }
+
+    let mut bidder_names: Vec<&str> = Vec::new();
+    let mut with_endpoints: Vec<&NamedSyncerConfig> = Vec::new();
+
+    for named in group {
+        bidder_names.push(&named.name);
+        if named.cfg.iframe.is_some() || named.cfg.redirect.is_some() {
+            with_endpoints.push(named);
+        }
+    }
+
+    if with_endpoints.is_empty() {
+        let mut sorted = bidder_names.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        sorted.sort();
+        return Err(format!(
+            "bidders {} share the same syncer key, but none define endpoints (iframe and/or redirect)",
+            sorted.join(", ")
+        ));
+    }
+
+    if with_endpoints.len() > 1 {
+        let first = &with_endpoints[0].cfg;
+        for other in &with_endpoints[1..] {
+            if *first != other.cfg {
+                let mut ep_names: Vec<String> = with_endpoints
+                    .iter()
+                    .map(|n| n.name.clone())
+                    .collect();
+                ep_names.sort();
+                return Err(format!(
+                    "bidders {} define endpoints (iframe and/or redirect) for the same syncer key, but only one bidder is permitted to define endpoints unless the configs are identical",
+                    ep_names.join(", ")
+                ));
+            }
+        }
+    }
+
+    Ok(with_endpoints[0].clone())
+}
+
+/// Construct a `Syncer` from host and bidder syncer configuration.
+///
+/// Performs macro substitution on the endpoint URLs, replacing template
+/// variables like `{{.ExternalURL}}`, `{{.SyncerKey}}`, `{{.BidderName}}`,
+/// `{{.SyncType}}`, `{{.UserMacro}}`, and `{{.RedirectURL}}`.
+///
+/// This is a simplified Rust port of the Go `NewSyncer()` in `usersync/syncer.go`.
+fn new_syncer_from_config(
+    host_config: &UserSyncConfig,
+    syncer_config: &BidderSyncerConfig,
+    bidder: &str,
+) -> Result<Syncer, String> {
+    if syncer_config.key.is_empty() {
+        return Err("key is required".to_string());
+    }
+
+    if syncer_config.iframe.is_none() && syncer_config.redirect.is_none() {
+        return Err(
+            "at least one endpoint (iframe and/or redirect) is required".to_string(),
+        );
+    }
+
+    let iframe_url = if let Some(ref iframe_cfg) = syncer_config.iframe {
+        Some(build_syncer_url(
+            bidder,
+            "i",
+            host_config,
+            &syncer_config.external_url,
+            iframe_cfg,
+            &syncer_config.format_override,
+        )?)
+    } else {
+        None
+    };
+
+    let redirect_url = if let Some(ref redirect_cfg) = syncer_config.redirect {
+        Some(build_syncer_url(
+            bidder,
+            "b",
+            host_config,
+            &syncer_config.external_url,
+            redirect_cfg,
+            &syncer_config.format_override,
+        )?)
+    } else {
+        None
+    };
+
+    Ok(Syncer {
+        bidder: syncer_config.key.clone(),
+        iframe_url,
+        redirect_url,
+    })
+}
+
+/// Build a syncer endpoint URL by performing macro substitution.
+///
+/// Mirrors Go `buildTemplate()` in `usersync/syncer.go`, but produces a
+/// final URL string with privacy macros left as `{gdpr}` / `{gdpr_consent}`
+/// placeholders (resolved at sync time by `get_sync_url`).
+fn build_syncer_url(
+    bidder_name: &str,
+    sync_type_value: &str,
+    host_config: &UserSyncConfig,
+    syncer_external_url: &str,
+    endpoint: &SyncerEndpointConfig,
+    format_override: &str,
+) -> Result<String, String> {
+    let redirect_template = if endpoint.redirect_url.is_empty() {
+        &host_config.redirect_url
+    } else {
+        &endpoint.redirect_url
+    };
+
+    let effective_sync_type = if format_override.is_empty() {
+        sync_type_value
+    } else {
+        format_override
+    };
+
+    let external_url = choose_external_url(
+        &endpoint.external_url,
+        syncer_external_url,
+        &host_config.external_url,
+    );
+
+    // Build the redirect URL by substituting macros
+    let redirect_url = macro_replace_syncer_key(redirect_template, bidder_name);
+    let redirect_url = macro_replace_bidder_name(&redirect_url, bidder_name);
+    let redirect_url = macro_replace_sync_type(&redirect_url, effective_sync_type);
+    let redirect_url = macro_replace_user_macro(&redirect_url, &endpoint.user_macro);
+    let redirect_url = macro_replace_external_url(&redirect_url, &external_url);
+
+    // Substitute the redirect URL into the endpoint URL
+    let url = macro_replace_redirect(&endpoint.url, &redirect_url);
+
+    Ok(url)
+}
+
+/// Selects the most specific external URL, falling back to less specific ones.
+///
+/// Mirrors Go `chooseExternalURL()` in `usersync/syncer.go`.
+fn choose_external_url<'a>(
+    syncer_endpoint_url: &'a str,
+    syncer_url: &'a str,
+    host_config_url: &'a str,
+) -> &'a str {
+    if !syncer_endpoint_url.is_empty() {
+        return syncer_endpoint_url;
+    }
+    if !syncer_url.is_empty() {
+        return syncer_url;
+    }
+    host_config_url
+}
+
+// Macro replacement helpers using regex.
+// These mirror the Go macroRegex* patterns in usersync/syncer.go.
+
+fn macro_replace_external_url(s: &str, val: &str) -> String {
+    let re = Regex::new(r"\{\{\s*\.ExternalURL\s*\}\}").unwrap();
+    re.replace_all(s, val).to_string()
+}
+
+fn macro_replace_syncer_key(s: &str, val: &str) -> String {
+    let re = Regex::new(r"\{\{\s*\.SyncerKey\s*\}\}").unwrap();
+    re.replace_all(s, val).to_string()
+}
+
+fn macro_replace_bidder_name(s: &str, val: &str) -> String {
+    let re = Regex::new(r"\{\{\s*\.BidderName\s*\}\}").unwrap();
+    re.replace_all(s, val).to_string()
+}
+
+fn macro_replace_sync_type(s: &str, val: &str) -> String {
+    let re = Regex::new(r"\{\{\s*\.SyncType\s*\}\}").unwrap();
+    re.replace_all(s, val).to_string()
+}
+
+fn macro_replace_user_macro(s: &str, val: &str) -> String {
+    let re = Regex::new(r"\{\{\s*\.UserMacro\s*\}\}").unwrap();
+    re.replace_all(s, val).to_string()
+}
+
+fn macro_replace_redirect(s: &str, val: &str) -> String {
+    let re = Regex::new(r"\{\{\s*\.RedirectURL\s*\}\}").unwrap();
+    re.replace_all(s, val).to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1218,5 +1605,445 @@ mod tests {
         let result = choose_bidder_order(&requested, &available, &coop);
         // 0 requested + 2 (group1) + 1 (group2) + 1 (available) = 4
         assert_eq!(result.len(), 4);
+    }
+
+    // -----------------------------------------------------------------------
+    // Shuffler tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_random_shuffler_preserves_elements() {
+        let shuffler = RandomShuffler;
+        let mut items: Vec<String> = vec!["a", "b", "c", "d", "e"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        shuffler.shuffle(&mut items);
+        items.sort();
+        assert_eq!(items, vec!["a", "b", "c", "d", "e"]);
+    }
+
+    #[test]
+    fn test_random_shuffler_empty() {
+        let shuffler = RandomShuffler;
+        let mut items: Vec<String> = vec![];
+        shuffler.shuffle(&mut items);
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn test_random_shuffler_single() {
+        let shuffler = RandomShuffler;
+        let mut items = vec!["only".to_string()];
+        shuffler.shuffle(&mut items);
+        assert_eq!(items, vec!["only"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Syncer method tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_syncer_key() {
+        let (_, syncer) = make_syncer("appnexus", Some("http://iframe"), None);
+        assert_eq!(syncer.key(), "appnexus");
+    }
+
+    #[test]
+    fn test_syncer_default_response_format_iframe() {
+        let (_, syncer) = make_syncer("appnexus", Some("http://iframe"), None);
+        assert_eq!(syncer.default_response_format(), SyncType::Iframe);
+    }
+
+    #[test]
+    fn test_syncer_default_response_format_redirect() {
+        let (_, syncer) = make_syncer("appnexus", None, Some("http://redirect"));
+        assert_eq!(syncer.default_response_format(), SyncType::Redirect);
+    }
+
+    #[test]
+    fn test_syncer_supports_type_iframe() {
+        let (_, syncer) = make_syncer("appnexus", Some("http://iframe"), None);
+        assert!(syncer.supports_type(&[SyncType::Iframe]));
+        assert!(!syncer.supports_type(&[SyncType::Redirect]));
+    }
+
+    #[test]
+    fn test_syncer_supports_type_both() {
+        let (_, syncer) =
+            make_syncer("appnexus", Some("http://iframe"), Some("http://redirect"));
+        assert!(syncer.supports_type(&[SyncType::Iframe]));
+        assert!(syncer.supports_type(&[SyncType::Redirect]));
+        assert!(syncer.supports_type(&[SyncType::Iframe, SyncType::Redirect]));
+    }
+
+    #[test]
+    fn test_syncer_supports_type_empty() {
+        let (_, syncer) = make_syncer("appnexus", Some("http://iframe"), None);
+        assert!(!syncer.supports_type(&[]));
+    }
+
+    // -----------------------------------------------------------------------
+    // SyncerBuilder tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_should_create_syncer_disabled() {
+        let info = BidderInfo {
+            disabled: true,
+            user_sync: Some(BidderSyncerConfig {
+                key: "test".to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(!should_create_syncer(&info));
+    }
+
+    #[test]
+    fn test_should_create_syncer_no_syncer_config() {
+        let info = BidderInfo {
+            user_sync: None,
+            ..Default::default()
+        };
+        assert!(!should_create_syncer(&info));
+    }
+
+    #[test]
+    fn test_should_create_syncer_empty_syncer_config() {
+        let info = BidderInfo {
+            user_sync: Some(BidderSyncerConfig::default()),
+            ..Default::default()
+        };
+        assert!(!should_create_syncer(&info));
+    }
+
+    #[test]
+    fn test_should_create_syncer_with_key() {
+        let info = BidderInfo {
+            user_sync: Some(BidderSyncerConfig {
+                key: "mykey".to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(should_create_syncer(&info));
+    }
+
+    #[test]
+    fn test_choose_syncer_config_single() {
+        let group = vec![NamedSyncerConfig {
+            name: "bidderA".to_string(),
+            cfg: BidderSyncerConfig {
+                key: "a".to_string(),
+                iframe: Some(SyncerEndpointConfig {
+                    url: "http://example.com".to_string(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        }];
+        let result = choose_syncer_config(&group);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().name, "bidderA");
+    }
+
+    #[test]
+    fn test_choose_syncer_config_no_endpoints() {
+        let group = vec![
+            NamedSyncerConfig {
+                name: "a".to_string(),
+                cfg: BidderSyncerConfig {
+                    key: "shared".to_string(),
+                    ..Default::default()
+                },
+            },
+            NamedSyncerConfig {
+                name: "b".to_string(),
+                cfg: BidderSyncerConfig {
+                    key: "shared".to_string(),
+                    ..Default::default()
+                },
+            },
+        ];
+        let result = choose_syncer_config(&group);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("none define endpoints"));
+    }
+
+    #[test]
+    fn test_choose_syncer_config_multiple_different_endpoints() {
+        let group = vec![
+            NamedSyncerConfig {
+                name: "a".to_string(),
+                cfg: BidderSyncerConfig {
+                    key: "shared".to_string(),
+                    iframe: Some(SyncerEndpointConfig {
+                        url: "http://a.com".to_string(),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            },
+            NamedSyncerConfig {
+                name: "b".to_string(),
+                cfg: BidderSyncerConfig {
+                    key: "shared".to_string(),
+                    iframe: Some(SyncerEndpointConfig {
+                        url: "http://b.com".to_string(),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            },
+        ];
+        let result = choose_syncer_config(&group);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("only one bidder is permitted"));
+    }
+
+    #[test]
+    fn test_choose_syncer_config_multiple_identical_endpoints() {
+        let endpoint = SyncerEndpointConfig {
+            url: "http://same.com".to_string(),
+            ..Default::default()
+        };
+        let group = vec![
+            NamedSyncerConfig {
+                name: "a".to_string(),
+                cfg: BidderSyncerConfig {
+                    key: "shared".to_string(),
+                    iframe: Some(endpoint.clone()),
+                    ..Default::default()
+                },
+            },
+            NamedSyncerConfig {
+                name: "b".to_string(),
+                cfg: BidderSyncerConfig {
+                    key: "shared".to_string(),
+                    iframe: Some(endpoint),
+                    ..Default::default()
+                },
+            },
+        ];
+        let result = choose_syncer_config(&group);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_new_syncer_from_config_missing_key() {
+        let host = UserSyncConfig::default();
+        let cfg = BidderSyncerConfig {
+            key: "".to_string(),
+            iframe: Some(SyncerEndpointConfig::default()),
+            ..Default::default()
+        };
+        let result = new_syncer_from_config(&host, &cfg, "bidder");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("key is required"));
+    }
+
+    #[test]
+    fn test_new_syncer_from_config_no_endpoints() {
+        let host = UserSyncConfig::default();
+        let cfg = BidderSyncerConfig {
+            key: "mykey".to_string(),
+            ..Default::default()
+        };
+        let result = new_syncer_from_config(&host, &cfg, "bidder");
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("at least one endpoint"));
+    }
+
+    #[test]
+    fn test_new_syncer_from_config_iframe_only() {
+        let host = UserSyncConfig {
+            external_url: "http://host.com".to_string(),
+            redirect_url: "http://host.com/setuid?bidder={{.SyncerKey}}&uid={{.UserMacro}}"
+                .to_string(),
+            ..Default::default()
+        };
+        let cfg = BidderSyncerConfig {
+            key: "appnexus".to_string(),
+            iframe: Some(SyncerEndpointConfig {
+                url: "http://ib.adnxs.com/getuid?{{.RedirectURL}}".to_string(),
+                user_macro: "$UID".to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let syncer = new_syncer_from_config(&host, &cfg, "appnexus").unwrap();
+        assert_eq!(syncer.key(), "appnexus");
+        assert!(syncer.iframe_url.is_some());
+        assert!(syncer.redirect_url.is_none());
+        let iframe = syncer.iframe_url.unwrap();
+        assert!(iframe.contains("ib.adnxs.com"));
+    }
+
+    #[test]
+    fn test_new_syncer_from_config_both_endpoints() {
+        let host = UserSyncConfig {
+            external_url: "http://host.com".to_string(),
+            redirect_url: "http://host.com/setuid?bidder={{.SyncerKey}}".to_string(),
+            ..Default::default()
+        };
+        let cfg = BidderSyncerConfig {
+            key: "rubicon".to_string(),
+            iframe: Some(SyncerEndpointConfig {
+                url: "http://iframe.example.com".to_string(),
+                ..Default::default()
+            }),
+            redirect: Some(SyncerEndpointConfig {
+                url: "http://redirect.example.com".to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let syncer = new_syncer_from_config(&host, &cfg, "rubicon").unwrap();
+        assert!(syncer.iframe_url.is_some());
+        assert!(syncer.redirect_url.is_some());
+    }
+
+    #[test]
+    fn test_macro_replacement() {
+        let input = "http://example.com?key={{ .SyncerKey }}&type={{ .SyncType }}";
+        let result = macro_replace_syncer_key(input, "appnexus");
+        assert!(result.contains("key=appnexus"));
+        let result = macro_replace_sync_type(&result, "i");
+        assert!(result.contains("type=i"));
+    }
+
+    #[test]
+    fn test_choose_external_url_endpoint_wins() {
+        assert_eq!(
+            choose_external_url("http://ep.com", "http://syncer.com", "http://host.com"),
+            "http://ep.com"
+        );
+    }
+
+    #[test]
+    fn test_choose_external_url_syncer_wins() {
+        assert_eq!(
+            choose_external_url("", "http://syncer.com", "http://host.com"),
+            "http://syncer.com"
+        );
+    }
+
+    #[test]
+    fn test_choose_external_url_host_fallback() {
+        assert_eq!(
+            choose_external_url("", "", "http://host.com"),
+            "http://host.com"
+        );
+    }
+
+    #[test]
+    fn test_build_syncers_success() {
+        let host = Configuration {
+            external_url: "http://host.com".to_string(),
+            user_sync: UserSyncConfig {
+                redirect_url: "http://host.com/setuid?bidder={{.SyncerKey}}".to_string(),
+                external_url: "http://host.com".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut bidder_infos = HashMap::new();
+        bidder_infos.insert(
+            "appnexus".to_string(),
+            BidderInfo {
+                user_sync: Some(BidderSyncerConfig {
+                    key: "appnexus".to_string(),
+                    iframe: Some(SyncerEndpointConfig {
+                        url: "http://ib.adnxs.com/getuid".to_string(),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+        let result = build_syncers(&host, &bidder_infos);
+        assert!(result.is_ok());
+        let syncers = result.unwrap();
+        assert!(syncers.contains_key("appnexus"));
+    }
+
+    #[test]
+    fn test_build_syncers_disabled_bidder_skipped() {
+        let host = Configuration {
+            external_url: "http://host.com".to_string(),
+            ..Default::default()
+        };
+        let mut bidder_infos = HashMap::new();
+        bidder_infos.insert(
+            "disabled_bidder".to_string(),
+            BidderInfo {
+                disabled: true,
+                user_sync: Some(BidderSyncerConfig {
+                    key: "disabled".to_string(),
+                    iframe: Some(SyncerEndpointConfig {
+                        url: "http://example.com".to_string(),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+        let result = build_syncers(&host, &bidder_infos);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_build_syncers_default_key() {
+        // When key is empty, bidder name is used as key
+        let host = Configuration {
+            external_url: "http://host.com".to_string(),
+            user_sync: UserSyncConfig {
+                redirect_url: "http://host.com/setuid".to_string(),
+                external_url: "http://host.com".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut bidder_infos = HashMap::new();
+        bidder_infos.insert(
+            "mybidder".to_string(),
+            BidderInfo {
+                user_sync: Some(BidderSyncerConfig {
+                    key: "".to_string(), // empty key
+                    iframe: Some(SyncerEndpointConfig {
+                        url: "http://example.com".to_string(),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+        let result = build_syncers(&host, &bidder_infos);
+        assert!(result.is_ok());
+        let syncers = result.unwrap();
+        assert!(syncers.contains_key("mybidder"));
+        // The syncer key should be the bidder name
+        assert_eq!(syncers["mybidder"].key(), "mybidder");
+    }
+
+    #[test]
+    fn test_syncer_build_error_display() {
+        let err = SyncerBuildError {
+            bidder: "appnexus".to_string(),
+            syncer_key: "appnexus".to_string(),
+            err: "key is required".to_string(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("appnexus"));
+        assert!(msg.contains("key is required"));
     }
 }

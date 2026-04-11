@@ -718,6 +718,765 @@ impl AnalyticsModule for LogAggregator {
 }
 
 // ---------------------------------------------------------------------------
+// PubstackAnalytics — per-channel buffered analytics (mirrors Go pubstack)
+// ---------------------------------------------------------------------------
+
+/// Feature flags controlling which event types Pubstack collects.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PubstackFeatures {
+    #[serde(default)]
+    pub auction: bool,
+    #[serde(default)]
+    pub video: bool,
+    #[serde(default)]
+    pub amp: bool,
+    #[serde(default)]
+    pub cookie_sync: bool,
+    #[serde(default)]
+    pub set_uid: bool,
+}
+
+impl Default for PubstackFeatures {
+    fn default() -> Self {
+        Self {
+            auction: true,
+            video: true,
+            amp: true,
+            cookie_sync: true,
+            set_uid: true,
+        }
+    }
+}
+
+/// Remote configuration returned by the Pubstack `/bootstrap` endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PubstackRemoteConfig {
+    #[serde(rename = "scopeId")]
+    pub scope_id: String,
+    pub endpoint: String,
+    pub features: HashMap<String, bool>,
+}
+
+/// Configuration for the Pubstack analytics module.
+#[derive(Debug, Clone)]
+pub struct PubstackConfig {
+    /// Unique scope / publisher identifier.
+    pub scope_id: String,
+    /// Base endpoint URL (e.g. `https://analytics.pubstack.io`).
+    pub endpoint: String,
+    /// Feature flags for each event type.
+    pub features: PubstackFeatures,
+    /// Maximum number of events per channel buffer before flush.
+    pub max_event_count: usize,
+    /// Maximum byte size of the gzip buffer before flush.
+    pub max_byte_size: usize,
+    /// Maximum time between flushes.
+    pub flush_interval: std::time::Duration,
+    /// HTTP request timeout.
+    pub http_timeout: std::time::Duration,
+    /// Interval at which to poll the remote endpoint for config updates.
+    /// Set to `None` to disable remote configuration refresh.
+    pub config_refresh_interval: Option<std::time::Duration>,
+}
+
+impl Default for PubstackConfig {
+    fn default() -> Self {
+        Self {
+            scope_id: String::new(),
+            endpoint: String::new(),
+            features: PubstackFeatures::default(),
+            max_event_count: 2000,
+            max_byte_size: 100 * 1024 * 1024, // 100 MiB
+            flush_interval: std::time::Duration::from_secs(30),
+            http_timeout: std::time::Duration::from_secs(10),
+            config_refresh_interval: Some(std::time::Duration::from_secs(600)),
+        }
+    }
+}
+
+/// Envelope that adds `scope` to each Pubstack event payload.
+#[derive(Serialize)]
+struct PubstackEnvelope<'a, T: Serialize> {
+    scope: &'a str,
+    #[serde(flatten)]
+    payload: &'a T,
+}
+
+/// Internal message sent to a Pubstack event channel worker.
+enum PubstackEventMsg {
+    Event(Vec<u8>),
+    Shutdown(tokio::sync::oneshot::Sender<()>),
+}
+
+/// A single event-type channel that buffers gzipped data and flushes to an
+/// HTTP intake endpoint. Mirrors Go `eventchannel.EventChannel`.
+struct PubstackEventChannel {
+    tx: mpsc::UnboundedSender<PubstackEventMsg>,
+}
+
+impl PubstackEventChannel {
+    fn new(
+        client: reqwest::Client,
+        intake_url: String,
+        max_event_count: usize,
+        max_byte_size: usize,
+        flush_interval: std::time::Duration,
+    ) -> Self {
+        let (tx, mut rx) = mpsc::unbounded_channel::<PubstackEventMsg>();
+
+        tokio::spawn(async move {
+            use flate2::write::GzEncoder;
+            use flate2::Compression;
+            use std::io::Write;
+
+            let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+            let mut event_count: usize = 0;
+            let mut raw_size: usize = 0;
+            let mut timer = tokio::time::interval(flush_interval);
+
+            // Helper closure-like async fn — we inline it as a macro for clarity.
+            macro_rules! do_flush {
+                () => {
+                    if event_count > 0 {
+                        // Finish gzip stream, get compressed bytes.
+                        let payload = match gz.finish() {
+                            Ok(bytes) => bytes,
+                            Err(e) => {
+                                tracing::warn!(error = %e, "[pubstack] gzip finish failed");
+                                Vec::new()
+                            }
+                        };
+                        if !payload.is_empty() {
+                            let send_url = intake_url.clone();
+                            let send_client = client.clone();
+                            tokio::spawn(async move {
+                                let res = send_client
+                                    .post(&send_url)
+                                    .header("Content-Type", "application/octet-stream")
+                                    .header("Content-Encoding", "gzip")
+                                    .body(payload)
+                                    .send()
+                                    .await;
+                                match res {
+                                    Ok(resp) if resp.status().is_success() => {}
+                                    Ok(resp) => {
+                                        tracing::warn!(
+                                            status = %resp.status(),
+                                            "[pubstack] intake flush got non-200"
+                                        );
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(error = %e, "[pubstack] intake flush failed");
+                                    }
+                                }
+                            });
+                        }
+                        // Reset for next batch.
+                        gz = GzEncoder::new(Vec::new(), Compression::default());
+                        event_count = 0;
+                        raw_size = 0;
+                    }
+                };
+            }
+
+            loop {
+                tokio::select! {
+                    msg = rx.recv() => {
+                        match msg {
+                            Some(PubstackEventMsg::Event(data)) => {
+                                raw_size += data.len();
+                                event_count += 1;
+                                if let Err(e) = gz.write_all(&data) {
+                                    tracing::warn!(error = %e, "[pubstack] gzip write failed, skipping event");
+                                    continue;
+                                }
+                                if event_count >= max_event_count || raw_size >= max_byte_size {
+                                    do_flush!();
+                                }
+                            }
+                            Some(PubstackEventMsg::Shutdown(done)) => {
+                                do_flush!();
+                                let _ = done.send(());
+                                let _ = (&gz, event_count, raw_size);
+                                break;
+                            }
+                            None => {
+                                do_flush!();
+                                let _ = (&gz, event_count, raw_size);
+                                break;
+                            }
+                        }
+                    }
+                    _ = timer.tick() => {
+                        do_flush!();
+                    }
+                }
+            }
+        });
+
+        Self { tx }
+    }
+
+    fn push(&self, data: Vec<u8>) {
+        let _ = self.tx.send(PubstackEventMsg::Event(data));
+    }
+
+    async fn close(&self) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if self.tx.send(PubstackEventMsg::Shutdown(tx)).is_ok() {
+            let _ = rx.await;
+        }
+    }
+}
+
+/// Pubstack analytics module.
+///
+/// Buffers events per event-type (auction, video, amp, cookie_sync, set_uid)
+/// and sends them in gzip-compressed batches to the Pubstack intake endpoint.
+/// Feature flags control which event types are collected.  Optionally polls the
+/// remote `/bootstrap` endpoint for configuration updates.
+///
+/// Mirrors Go `analytics/pubstack/pubstack_module.go`.
+pub struct PubstackAnalytics {
+    config: tokio::sync::RwLock<PubstackConfig>,
+    channels: tokio::sync::RwLock<HashMap<String, PubstackEventChannel>>,
+}
+
+impl PubstackAnalytics {
+    /// Create a new Pubstack analytics module with the given configuration.
+    ///
+    /// Spawns per-channel background tasks for each enabled feature, and
+    /// optionally a configuration-refresh task.
+    pub fn new(config: PubstackConfig) -> Arc<Self> {
+        let client = reqwest::Client::builder()
+            .timeout(config.http_timeout)
+            .build()
+            .unwrap_or_default();
+
+        let channels = Self::build_channels(&config, &client);
+
+        let module = Arc::new(Self {
+            config: tokio::sync::RwLock::new(config.clone()),
+            channels: tokio::sync::RwLock::new(channels),
+        });
+
+        // Optionally spawn config refresh task.
+        if let Some(interval) = config.config_refresh_interval {
+            let weak = Arc::downgrade(&module);
+            let refresh_client = client;
+            let scope = config.scope_id.clone();
+            let endpoint = config.endpoint.clone();
+
+            tokio::spawn(async move {
+                let mut timer = tokio::time::interval(interval);
+                loop {
+                    timer.tick().await;
+                    let strong = match weak.upgrade() {
+                        Some(s) => s,
+                        None => break, // module dropped, stop.
+                    };
+
+                    let url = format!("{}/bootstrap?scopeId={}", endpoint, scope);
+                    match refresh_client.get(&url).send().await {
+                        Ok(resp) if resp.status().is_success() => {
+                            if let Ok(remote) = resp.json::<PubstackRemoteConfig>().await {
+                                let new_features = PubstackFeatures {
+                                    auction: *remote.features.get("auction").unwrap_or(&false),
+                                    video: *remote.features.get("video").unwrap_or(&false),
+                                    amp: *remote.features.get("amp").unwrap_or(&false),
+                                    cookie_sync: *remote.features.get("cookiesync").unwrap_or(&false),
+                                    set_uid: *remote.features.get("setuid").unwrap_or(&false),
+                                };
+                                let mut cfg = strong.config.write().await;
+                                cfg.features = new_features;
+                                cfg.endpoint = remote.endpoint;
+                                // Rebuild channels with new config.
+                                let new_channels = Self::build_channels(&cfg, &refresh_client);
+                                let mut ch_lock = strong.channels.write().await;
+                                // Close old channels.
+                                for (_, old_ch) in ch_lock.drain() {
+                                    old_ch.close().await;
+                                }
+                                *ch_lock = new_channels;
+                                tracing::info!("[pubstack] Configuration refreshed");
+                            }
+                        }
+                        Ok(resp) => {
+                            tracing::warn!(
+                                status = %resp.status(),
+                                "[pubstack] Config refresh got non-200"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "[pubstack] Config refresh failed");
+                        }
+                    }
+                }
+            });
+        }
+
+        module
+    }
+
+    fn build_channels(
+        config: &PubstackConfig,
+        client: &reqwest::Client,
+    ) -> HashMap<String, PubstackEventChannel> {
+        let mut channels = HashMap::new();
+        let features = [
+            ("auction", config.features.auction),
+            ("video", config.features.video),
+            ("amp", config.features.amp),
+            ("cookiesync", config.features.cookie_sync),
+            ("setuid", config.features.set_uid),
+        ];
+        for (name, enabled) in features {
+            if enabled {
+                let intake_url = format!("{}/intake/{}", config.endpoint, name);
+                channels.insert(
+                    name.to_string(),
+                    PubstackEventChannel::new(
+                        client.clone(),
+                        intake_url,
+                        config.max_event_count,
+                        config.max_byte_size,
+                        config.flush_interval,
+                    ),
+                );
+            }
+        }
+        channels
+    }
+
+    fn serialize_with_scope<T: Serialize>(scope: &str, payload: &T) -> Option<Vec<u8>> {
+        let envelope = PubstackEnvelope { scope, payload };
+        match serde_json::to_vec(&envelope) {
+            Ok(mut data) => {
+                data.push(b'\n');
+                Some(data)
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "[pubstack] serialization failed");
+                None
+            }
+        }
+    }
+
+    async fn push_if_enabled<T: Serialize>(&self, channel_name: &str, payload: &T) {
+        let cfg = self.config.read().await;
+        let scope = cfg.scope_id.clone();
+        drop(cfg);
+
+        if let Some(data) = Self::serialize_with_scope(&scope, payload) {
+            let channels = self.channels.read().await;
+            if let Some(ch) = channels.get(channel_name) {
+                ch.push(data);
+            }
+            // If channel doesn't exist, the feature is disabled — silently drop.
+        }
+    }
+}
+
+#[async_trait]
+impl AnalyticsModule for PubstackAnalytics {
+    async fn log_auction_object(&self, ao: &AuctionObject) {
+        self.push_if_enabled("auction", ao).await;
+    }
+
+    async fn log_video_object(&self, vo: &VideoObject) {
+        self.push_if_enabled("video", vo).await;
+    }
+
+    async fn log_cookie_sync_object(&self, cso: &CookieSyncObject) {
+        self.push_if_enabled("cookiesync", cso).await;
+    }
+
+    async fn log_setuid_object(&self, so: &SetUIDObject) {
+        self.push_if_enabled("setuid", so).await;
+    }
+
+    async fn log_amp_object(&self, ao: &AmpObject) {
+        self.push_if_enabled("amp", ao).await;
+    }
+
+    async fn log_notification_event(&self, _ne: &NotificationEvent) {
+        // Pubstack does not process notification events (mirrors Go no-op).
+    }
+
+    async fn shutdown(&self) {
+        tracing::info!("[pubstack] Shutting down, flushing all channels");
+        let channels = self.channels.read().await;
+        for (_, ch) in channels.iter() {
+            ch.close().await;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AgmaAnalytics — AGMA-compliant analytics (mirrors Go agma module)
+// ---------------------------------------------------------------------------
+
+/// Event type tag used in AGMA analytics payloads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgmaEventType {
+    Auction,
+    Amp,
+    Video,
+}
+
+/// Configuration for one AGMA publisher / site account.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgmaAccount {
+    /// AGMA account code sent in each event.
+    pub code: String,
+    /// Publisher ID to match against the request.
+    pub publisher_id: String,
+    /// Optional site / app ID filter. If empty, all sites for the publisher match.
+    #[serde(default)]
+    pub site_app_id: String,
+}
+
+/// Configuration for the AGMA analytics module.
+#[derive(Debug, Clone)]
+pub struct AgmaConfig {
+    /// HTTP endpoint to POST events to.
+    pub endpoint: String,
+    /// Accounts to track — at least one must be configured.
+    pub accounts: Vec<AgmaAccount>,
+    /// Maximum number of events to buffer before flush.
+    pub max_event_count: usize,
+    /// Maximum byte size of the JSON buffer before flush.
+    pub max_buffer_size: usize,
+    /// Maximum time between flushes.
+    pub flush_interval: std::time::Duration,
+    /// HTTP request timeout.
+    pub http_timeout: std::time::Duration,
+    /// Whether to gzip-compress the payload.
+    pub gzip: bool,
+}
+
+impl Default for AgmaConfig {
+    fn default() -> Self {
+        Self {
+            endpoint: String::new(),
+            accounts: Vec::new(),
+            max_event_count: 2000,
+            max_buffer_size: 100 * 1024 * 1024,
+            flush_interval: std::time::Duration::from_secs(60),
+            http_timeout: std::time::Duration::from_secs(10),
+            gzip: false,
+        }
+    }
+}
+
+/// Log object written for each AGMA event (mirrors Go `agma.logObject`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AgmaLogObject {
+    #[serde(rename = "type")]
+    event_type: AgmaEventType,
+    id: String,
+    code: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    site: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    app: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    device: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user: Option<serde_json::Value>,
+    created_at: DateTime<Utc>,
+}
+
+/// Message sent to the AGMA background worker.
+enum AgmaMsg {
+    Event(Vec<u8>),
+    Shutdown(tokio::sync::oneshot::Sender<()>),
+}
+
+/// AGMA analytics module.
+///
+/// Buffers JSON-serialized events and periodically sends them in a JSON array
+/// to the configured AGMA endpoint.  Only auction, video, and AMP events with
+/// HTTP 200 status are tracked.  Publisher/site matching and (in the Go
+/// implementation) GDPR consent checks are performed before buffering.
+///
+/// The Rust port performs publisher/site matching but does not parse TCF
+/// consent strings (that logic can be layered on later once a TCF library
+/// is available in the Rust workspace).
+///
+/// Mirrors Go `analytics/agma/agma_module.go`.
+pub struct AgmaAnalytics {
+    tx: mpsc::UnboundedSender<AgmaMsg>,
+    config: AgmaConfig,
+}
+
+impl AgmaAnalytics {
+    /// Create a new AGMA analytics module. Returns an error if no accounts
+    /// are configured.
+    pub fn new(config: AgmaConfig) -> Result<Self, String> {
+        if config.accounts.is_empty() {
+            return Err("AgmaAnalytics requires at least one account".to_string());
+        }
+
+        let client = reqwest::Client::builder()
+            .timeout(config.http_timeout)
+            .build()
+            .unwrap_or_default();
+
+        let endpoint = config.endpoint.clone();
+        let gzip = config.gzip;
+        let max_event_count = config.max_event_count;
+        let max_buffer_size = config.max_buffer_size;
+        let flush_interval = config.flush_interval;
+
+        let (tx, mut rx) = mpsc::unbounded_channel::<AgmaMsg>();
+
+        tokio::spawn(async move {
+            // Buffer: we build a JSON array manually like the Go code does.
+            let mut buf: Vec<u8> = Vec::with_capacity(4096);
+            buf.push(b'[');
+            let mut event_count: usize = 0;
+            let mut timer = tokio::time::interval(flush_interval);
+
+            macro_rules! do_flush {
+                () => {
+                    if event_count > 0 && buf.len() > 1 {
+                        // Remove trailing comma and close the JSON array.
+                        if buf.last() == Some(&b',') {
+                            buf.pop();
+                        }
+                        buf.push(b']');
+
+                        let payload = std::mem::replace(&mut buf, Vec::with_capacity(4096));
+                        buf.push(b'[');
+                        event_count = 0;
+
+                        let send_client = client.clone();
+                        let send_endpoint = endpoint.clone();
+                        tokio::spawn(async move {
+                            let body: Vec<u8> = if gzip {
+                                match Self::compress_gzip(&payload) {
+                                    Ok(compressed) => compressed,
+                                    Err(e) => {
+                                        tracing::error!(error = %e, "[agma] gzip compression failed");
+                                        return;
+                                    }
+                                }
+                            } else {
+                                payload
+                            };
+
+                            let mut req = send_client
+                                .post(&send_endpoint)
+                                .header("Content-Type", "application/json");
+
+                            if gzip {
+                                req = req.header("Content-Encoding", "gzip");
+                            }
+
+                            match req.body(body).send().await {
+                                Ok(resp) if resp.status().is_success() => {}
+                                Ok(resp) => {
+                                    tracing::warn!(
+                                        status = %resp.status(),
+                                        "[agma] flush got non-200"
+                                    );
+                                }
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "[agma] flush failed");
+                                }
+                            }
+                        });
+                    }
+                };
+            }
+
+            loop {
+                tokio::select! {
+                    msg = rx.recv() => {
+                        match msg {
+                            Some(AgmaMsg::Event(data)) => {
+                                buf.extend_from_slice(&data);
+                                buf.push(b',');
+                                event_count += 1;
+                                if event_count >= max_event_count || buf.len() >= max_buffer_size {
+                                    do_flush!();
+                                }
+                            }
+                            Some(AgmaMsg::Shutdown(done)) => {
+                                do_flush!();
+                                let _ = done.send(());
+                                let _ = event_count;
+                                break;
+                            }
+                            None => {
+                                do_flush!();
+                                let _ = event_count;
+                                break;
+                            }
+                        }
+                    }
+                    _ = timer.tick() => {
+                        do_flush!();
+                    }
+                }
+            }
+        });
+
+        Ok(Self { tx, config })
+    }
+
+    fn compress_gzip(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(data)?;
+        encoder.finish()
+    }
+
+    /// Extract `(publisher_id, site_or_app_id)` from the request JSON.
+    fn extract_publisher_and_site(request: &serde_json::Value) -> (String, String) {
+        let mut publisher_id = String::new();
+        let mut app_site_id = String::new();
+
+        if let Some(site) = request.get("site") {
+            if let Some(pub_obj) = site.get("publisher") {
+                if let Some(id) = pub_obj.get("id").and_then(|v| v.as_str()) {
+                    publisher_id = id.to_string();
+                }
+            }
+            if let Some(id) = site.get("id").and_then(|v| v.as_str()) {
+                app_site_id = id.to_string();
+            }
+        }
+        if let Some(app) = request.get("app") {
+            if let Some(pub_obj) = app.get("publisher") {
+                if let Some(id) = pub_obj.get("id").and_then(|v| v.as_str()) {
+                    publisher_id = id.to_string();
+                }
+            }
+            if let Some(id) = app.get("id").and_then(|v| v.as_str()) {
+                app_site_id = id.to_string();
+            }
+            if app_site_id.is_empty() {
+                if let Some(bundle) = app.get("bundle").and_then(|v| v.as_str()) {
+                    app_site_id = bundle.to_string();
+                }
+            }
+        }
+
+        (publisher_id, app_site_id)
+    }
+
+    /// Check whether the request matches a configured account. Returns the
+    /// account code if so.
+    fn match_account(&self, request: &serde_json::Value) -> Option<String> {
+        let (publisher_id, app_site_id) = Self::extract_publisher_and_site(request);
+        if publisher_id.is_empty() && app_site_id.is_empty() {
+            return None;
+        }
+
+        for account in &self.config.accounts {
+            if account.publisher_id == publisher_id {
+                if account.site_app_id.is_empty() {
+                    return Some(account.code.clone());
+                }
+                if account.site_app_id == app_site_id {
+                    return Some(account.code.clone());
+                }
+            }
+        }
+        None
+    }
+
+    /// Build an AGMA log object from request JSON and enqueue it.
+    fn try_enqueue(
+        &self,
+        event_type: AgmaEventType,
+        status: i32,
+        request: &Option<serde_json::Value>,
+        start_time: DateTime<Utc>,
+    ) {
+        if status != 200 {
+            return;
+        }
+        let request = match request {
+            Some(r) => r,
+            None => return,
+        };
+
+        let code = match self.match_account(request) {
+            Some(c) => c,
+            None => return,
+        };
+
+        let request_id = request
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let log_obj = AgmaLogObject {
+            event_type,
+            id: request_id,
+            code,
+            site: request.get("site").cloned(),
+            app: request.get("app").cloned(),
+            device: request.get("device").cloned(),
+            user: request.get("user").cloned(),
+            created_at: start_time,
+        };
+
+        match serde_json::to_vec(&log_obj) {
+            Ok(data) => {
+                let _ = self.tx.send(AgmaMsg::Event(data));
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "[agma] serialization failed");
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl AnalyticsModule for AgmaAnalytics {
+    async fn log_auction_object(&self, ao: &AuctionObject) {
+        self.try_enqueue(AgmaEventType::Auction, ao.status, &ao.request, ao.start_time);
+    }
+
+    async fn log_video_object(&self, vo: &VideoObject) {
+        self.try_enqueue(AgmaEventType::Video, vo.status, &vo.request, vo.start_time);
+    }
+
+    async fn log_cookie_sync_object(&self, _cso: &CookieSyncObject) {
+        // AGMA does not track cookie sync events (mirrors Go no-op).
+    }
+
+    async fn log_setuid_object(&self, _so: &SetUIDObject) {
+        // AGMA does not track set-uid events (mirrors Go no-op).
+    }
+
+    async fn log_amp_object(&self, ao: &AmpObject) {
+        self.try_enqueue(AgmaEventType::Amp, ao.status, &ao.request, ao.start_time);
+    }
+
+    async fn log_notification_event(&self, _ne: &NotificationEvent) {
+        // AGMA does not track notification events (mirrors Go no-op).
+    }
+
+    async fn shutdown(&self) {
+        tracing::info!("[agma] Shutting down, flushing buffer");
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if self.tx.send(AgmaMsg::Shutdown(tx)).is_ok() {
+            let _ = rx.await;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

@@ -1667,7 +1667,7 @@ pub struct BidderDebugInfo {
 }
 
 /// User sync (cookie sync) configuration for a bidder.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct BidderSyncerConfig {
     #[serde(default)]
     pub key: String,
@@ -1686,7 +1686,7 @@ pub struct BidderSyncerConfig {
 }
 
 /// A single syncer endpoint (iframe or redirect).
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct SyncerEndpointConfig {
     #[serde(default)]
     pub url: String,

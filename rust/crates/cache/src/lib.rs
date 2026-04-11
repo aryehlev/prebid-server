@@ -118,6 +118,20 @@ pub trait Cache: Send + Sync {
     fn get_ext_cache_data(&self) -> ExtCacheData;
 }
 
+/// Trait for recording cache metrics.
+///
+/// Mirrors Go's `metrics.MetricsEngine.RecordPrebidCacheRequestTime`.
+pub trait CacheMetrics: Send + Sync {
+    fn record_prebid_cache_request_time(&self, success: bool, elapsed: std::time::Duration);
+}
+
+/// No-op metrics implementation.
+pub struct NoopCacheMetrics;
+
+impl CacheMetrics for NoopCacheMetrics {
+    fn record_prebid_cache_request_time(&self, _success: bool, _elapsed: std::time::Duration) {}
+}
+
 /// A real Prebid Cache client that communicates over HTTP.
 #[derive(Debug, Clone)]
 pub struct CacheClient {
@@ -273,6 +287,36 @@ impl Cache for CacheClient {
             host: self.external_cache.host.clone(),
             path,
         }
+    }
+}
+
+/// A cache client wrapper that records metrics on every put call.
+///
+/// Mirrors Go's metrics integration in `prebid_cache_client/client.go`.
+pub struct CacheClientWithMetrics<M: CacheMetrics> {
+    inner: CacheClient,
+    metrics: M,
+}
+
+impl<M: CacheMetrics> CacheClientWithMetrics<M> {
+    pub fn new(inner: CacheClient, metrics: M) -> Self {
+        Self { inner, metrics }
+    }
+}
+
+#[async_trait]
+impl<M: CacheMetrics + 'static> Cache for CacheClientWithMetrics<M> {
+    async fn put(&self, values: Vec<Cacheable>) -> (Vec<String>, Vec<CacheError>) {
+        let start = std::time::Instant::now();
+        let (uuids, errors) = self.inner.put(values).await;
+        let elapsed = start.elapsed();
+        let success = errors.is_empty();
+        self.metrics.record_prebid_cache_request_time(success, elapsed);
+        (uuids, errors)
+    }
+
+    fn get_ext_cache_data(&self) -> ExtCacheData {
+        self.inner.get_ext_cache_data()
     }
 }
 
