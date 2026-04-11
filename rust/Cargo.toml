@@ -12,6 +12,8 @@ members = [
     "crates/endpoints",
     "crates/server",
     "crates/cache",
+    "crates/ortb",
+    "crates/privacy",
 ]
 resolver = "2"
 

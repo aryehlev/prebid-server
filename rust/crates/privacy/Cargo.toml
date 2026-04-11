@@ -1,0 +1,11 @@
+[package]
+name = "pbs-privacy"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+openrtb = { path = "../openrtb" }
+openrtb-ext = { path = "../openrtb-ext" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
