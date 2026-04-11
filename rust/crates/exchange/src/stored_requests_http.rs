@@ -106,59 +106,22 @@ impl HttpStoredRequestFetcher {
 
     // -- internal helpers ---------------------------------------------------
 
-    /// Build a full URL with request-id and imp-id query parameters.
-    fn build_request_url(&self, request_ids: &[String], imp_ids: &[String]) -> String {
-        let mut url = self.endpoint.clone();
-        {
-            let mut query = url.query_pairs_mut();
-            Self::append_query_param(
-                &mut query,
-                "request-id",
-                request_ids,
-                self.use_rfc_compliant_builder,
-            );
-            Self::append_query_param(
-                &mut query,
-                "imp-id",
-                imp_ids,
-                self.use_rfc_compliant_builder,
-            );
-        }
-        url.into()
-    }
-
-    /// Build a full URL with account-id query parameters.
-    fn build_account_url(&self, account_ids: &[String]) -> String {
-        let mut url = self.endpoint.clone();
-        {
-            let mut query = url.query_pairs_mut();
-            Self::append_query_param(
-                &mut query,
-                "account-id",
-                account_ids,
-                self.use_rfc_compliant_builder,
-            );
-        }
-        url.into()
-    }
-
-    /// Append IDs as query parameters, following the Go `AddQueryParam` logic.
+    /// Format a list of IDs as a single query parameter value.
     ///
-    /// * RFC-compliant mode: `param_name=id1&param_name=id2`
-    /// * Default mode:       `param_names=["id1","id2"]`
-    fn append_query_param(
-        query: &mut url::form_urlencoded::Serializer<'_, url::UrlQuery<'_>>,
+    /// * RFC-compliant mode: returns pairs `[(param_name, id1), (param_name, id2)]`
+    /// * Default mode:       returns a single pair `[(param_names, '["id1","id2"]')]`
+    fn format_id_params(
         param_name: &str,
         ids: &[String],
         rfc_compliant: bool,
-    ) {
+    ) -> Vec<(String, String)> {
         if ids.is_empty() {
-            return;
+            return Vec::new();
         }
         if rfc_compliant {
-            for id in ids {
-                query.append_pair(param_name, id);
-            }
+            ids.iter()
+                .map(|id| (param_name.to_string(), id.clone()))
+                .collect()
         } else {
             // Build the JSON-array string: ["id1","id2"]
             let json_array = format!(
@@ -170,8 +133,35 @@ impl HttpStoredRequestFetcher {
             );
             // The plural form: request-ids, imp-ids, account-ids
             let plural_name = format!("{param_name}s");
-            query.append_pair(&plural_name, &json_array);
+            vec![(plural_name, json_array)]
         }
+    }
+
+    /// Build a full URL with request-id and imp-id query parameters.
+    fn build_request_url(&self, request_ids: &[String], imp_ids: &[String]) -> String {
+        let mut url = self.endpoint.clone();
+        {
+            let mut query = url.query_pairs_mut();
+            for (k, v) in Self::format_id_params("request-id", request_ids, self.use_rfc_compliant_builder) {
+                query.append_pair(&k, &v);
+            }
+            for (k, v) in Self::format_id_params("imp-id", imp_ids, self.use_rfc_compliant_builder) {
+                query.append_pair(&k, &v);
+            }
+        }
+        url.into()
+    }
+
+    /// Build a full URL with account-id query parameters.
+    fn build_account_url(&self, account_ids: &[String]) -> String {
+        let mut url = self.endpoint.clone();
+        {
+            let mut query = url.query_pairs_mut();
+            for (k, v) in Self::format_id_params("account-id", account_ids, self.use_rfc_compliant_builder) {
+                query.append_pair(&k, &v);
+            }
+        }
+        url.into()
     }
 
     /// Strip `null` entries from a map, collecting not-found errors.
