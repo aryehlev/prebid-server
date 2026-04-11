@@ -1547,6 +1547,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "pbs-modules"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tracing",
+]
+
+[[package]]
 name = "pbs-ortb"
 version = "0.1.0"
 dependencies = [
