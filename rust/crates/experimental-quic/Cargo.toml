@@ -1,0 +1,27 @@
+[package]
+name = "experimental-quic"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "EXPERIMENTAL: HTTP/3 (QUIC) auction endpoint for Prebid Server. Prebid's auction endpoint is normally served over HTTP/1.1; this crate explores an HTTP/3 transport using quinn + h3."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+bytes = { workspace = true }
+async-trait = { workspace = true }
+http = { workspace = true }
+futures = { workspace = true }
+
+quinn = { version = "0.11", default-features = false, features = ["log", "runtime-tokio", "rustls-ring"] }
+h3 = "0.0.6"
+h3-quinn = "0.0.7"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls-pemfile = "2"
+rcgen = "0.13"
+
+[dev-dependencies]
+tokio = { workspace = true }

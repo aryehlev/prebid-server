@@ -1,0 +1,18 @@
+[package]
+name = "experimental-ml"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "EXPERIMENTAL: ML-driven bid prediction, bid shading, and timeout prediction for Prebid Server."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+once_cell = { workspace = true }
+
+ndarray = "0.16"

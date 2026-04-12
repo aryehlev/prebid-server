@@ -34,6 +34,12 @@ members = [
     "crates/stored_responses",
     "crates/account",
     "crates/parity",
+    "crates/experimental-wasm",
+    "crates/experimental-simd-json",
+    "crates/experimental-otel",
+    "crates/experimental-ml",
+    "crates/experimental-fuzz",
+    "crates/experimental-quic",
 ]
 resolver = "2"
 
