@@ -29,6 +29,8 @@ members = [
     "crates/bidadjustment",
     "crates/hooks",
     "crates/experiment",
+    "crates/analytics",
+    "crates/stored_requests",
 ]
 resolver = "2"
 

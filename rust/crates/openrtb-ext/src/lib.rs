@@ -2517,3 +2517,14 @@ mod tests {
         assert!(names.iter().any(|n: &BidderName| n.as_str() == "ix"));
     }
 }
+
+pub mod request_ext;
+pub mod imp_ext;
+pub mod user_ext;
+pub mod device_ext;
+pub mod app_ext;
+pub mod site_ext;
+pub mod regs_ext;
+pub mod source_ext;
+pub mod bid_ext;
+pub mod response_ext;
