@@ -3,6 +3,19 @@
 version = 4
 
 [[package]]
+name = "account"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -677,9 +690,12 @@ dependencies = [
 name = "experiment"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "reqwest",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
+ "tokio",
  "tracing",
 ]
 
@@ -1052,6 +1068,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "futures",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -1759,6 +1776,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "parity"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "once_cell",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "parking"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1815,6 +1848,8 @@ dependencies = [
  "async-trait",
  "config",
  "json-patch",
+ "once_cell",
+ "reqwest",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -1944,11 +1979,16 @@ dependencies = [
 name = "pbs-privacy"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "once_cell",
  "openrtb",
  "openrtb-ext",
+ "regex",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
+ "tracing",
 ]
 
 [[package]]
@@ -3023,6 +3063,19 @@ dependencies = [
  "serde_json",
  "sqlx",
  "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "stored_responses"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
  "thiserror 1.0.69",
  "tokio",
  "tracing",

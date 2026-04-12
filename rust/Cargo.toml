@@ -31,6 +31,9 @@ members = [
     "crates/experiment",
     "crates/analytics",
     "crates/stored_requests",
+    "crates/stored_responses",
+    "crates/account",
+    "crates/parity",
 ]
 resolver = "2"
 

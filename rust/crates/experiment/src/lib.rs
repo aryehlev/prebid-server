@@ -9,6 +9,8 @@
 //! id into an experiment bucket.
 
 pub mod adscert;
+pub mod adscert_inprocess;
+pub mod adscert_remote;
 pub mod ab;
 pub mod config;
 

@@ -160,3 +160,7 @@ mod tests {
         assert!(c.matches_type("BIDDER"));
     }
 }
+
+pub mod gpp;
+pub mod consent_writer;
+pub mod policy_enforcer;

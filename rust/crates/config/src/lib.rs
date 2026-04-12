@@ -3963,3 +3963,12 @@ userSync:
         assert!(!is_valid_url("ftp://"));  // empty host
     }
 }
+
+// ---------------------------------------------------------------------
+// Multi-source configuration loading and validation (additional modules)
+// ---------------------------------------------------------------------
+pub mod top;
+pub mod defaults;
+pub mod loader;
+pub mod validation;
+pub mod sources;
