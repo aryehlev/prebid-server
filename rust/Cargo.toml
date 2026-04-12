@@ -15,6 +15,20 @@ members = [
     "crates/ortb",
     "crates/privacy",
     "crates/modules",
+    "crates/firstpartydata",
+    "crates/adservertargeting",
+    "crates/usersync",
+    "crates/injector",
+    "crates/logger",
+    "crates/macros",
+    "crates/rules",
+    "crates/gdpr",
+    "crates/privacysandbox",
+    "crates/floors",
+    "crates/dsa",
+    "crates/bidadjustment",
+    "crates/hooks",
+    "crates/experiment",
 ]
 resolver = "2"
 

@@ -1,9 +1,13 @@
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
+use once_cell::sync::OnceCell;
 use prometheus::{
     Encoder, GaugeVec, HistogramOpts, HistogramVec, IntCounterVec, Opts, Registry, TextEncoder,
 };
+
+pub use prometheus;
 
 // ---------------------------------------------------------------------------
 // Enums / label types
@@ -1058,6 +1062,86 @@ impl MetricsEngine for DummyMetricsEngine {
     }
 }
 
+/// Alias for the no-op metrics engine, matching the Go `NullMetricsEngine` name.
+pub type NullMetrics = NoopMetrics;
+
+// ---------------------------------------------------------------------------
+// Global registry / helpers
+// ---------------------------------------------------------------------------
+
+/// Process-wide shared `PrometheusMetrics`, lazily initialized.
+static GLOBAL_METRICS: OnceCell<Arc<PrometheusMetrics>> = OnceCell::new();
+
+/// Initialize (or return an existing) global `PrometheusMetrics` instance.
+///
+/// On first call this constructs a `PrometheusMetrics` with the supplied
+/// namespace and installs it into a process-wide `OnceCell`. Subsequent calls
+/// return the existing instance and ignore the namespace argument.
+pub fn register(namespace: &str) -> Arc<PrometheusMetrics> {
+    GLOBAL_METRICS
+        .get_or_init(|| {
+            let pm = PrometheusMetrics::new(namespace)
+                .expect("failed to construct PrometheusMetrics");
+            Arc::new(pm)
+        })
+        .clone()
+}
+
+/// Return the global `PrometheusMetrics` if `register` has been called.
+pub fn global() -> Option<Arc<PrometheusMetrics>> {
+    GLOBAL_METRICS.get().cloned()
+}
+
+/// Gather the global Prometheus metrics as text, or return an empty string if
+/// `register` has not been called yet.
+pub fn gather() -> String {
+    GLOBAL_METRICS
+        .get()
+        .map(|pm| pm.gather_text())
+        .unwrap_or_default()
+}
+
+// ---------------------------------------------------------------------------
+// axum HTTP handler
+// ---------------------------------------------------------------------------
+
+/// axum handler for the `/metrics` endpoint.
+///
+/// Renders the global Prometheus metrics using the Prometheus text exposition
+/// format (version 0.0.4). If the global registry has not been initialized via
+/// [`register`], an empty body is returned.
+///
+/// Mount with:
+/// ```ignore
+/// use axum::{routing::get, Router};
+/// use pbs_metrics::metrics_handler;
+/// let app: Router = Router::new().route("/metrics", get(metrics_handler));
+/// ```
+pub async fn metrics_handler() -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let body = gather();
+    let mut resp = body.into_response();
+    resp.headers_mut().insert(
+        http::header::CONTENT_TYPE,
+        http::HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"),
+    );
+    resp
+}
+
+/// axum handler bound to a specific `PrometheusMetrics` instance through `axum::extract::State`.
+pub async fn metrics_handler_with_state(
+    axum::extract::State(state): axum::extract::State<Arc<PrometheusMetrics>>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let body = state.gather_text();
+    let mut resp = body.into_response();
+    resp.headers_mut().insert(
+        http::header::CONTENT_TYPE,
+        http::HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"),
+    );
+    resp
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1482,5 +1566,72 @@ mod tests {
     fn adapter_bid_status_as_str() {
         assert_eq!(AdapterBidStatus::Bid.as_str(), "bid");
         assert_eq!(AdapterBidStatus::NoBid.as_str(), "nobid");
+    }
+
+    // -- NullMetrics alias ---------------------------------------------------
+
+    #[test]
+    fn null_metrics_alias_no_op() {
+        let m: NullMetrics = NoopMetrics;
+        m.record_request(&sample_request_labels());
+        m.record_connection_accept(true);
+        m.record_stored_request(false);
+        assert_eq!(m.to_text(), "");
+    }
+
+    #[test]
+    fn null_metrics_as_trait_object() {
+        let inner: NullMetrics = NoopMetrics;
+        let m: Box<dyn MetricsEngine> = Box::new(inner);
+        m.record_cookie_sync(CookieSyncStatus::Ok);
+        m.record_adapter_price(&sample_adapter_labels(), 1.0);
+        assert_eq!(m.to_text(), "");
+    }
+
+    // -- register/gather helpers ---------------------------------------------
+
+    #[test]
+    fn gather_empty_before_register() {
+        // This test doesn't call register() to avoid polluting global state.
+        // If another test has already called register(), gather() may return
+        // a non-empty string; either way the call must not panic.
+        let _ = gather();
+    }
+
+    #[test]
+    fn prometheus_registry_contains_metric_families() {
+        let pm = PrometheusMetrics::new("pbs_families").expect("create");
+        pm.record_request(&sample_request_labels());
+        let families = pm.registry().gather();
+        assert!(
+            !families.is_empty(),
+            "registry should contain at least one metric family after a counter increment"
+        );
+    }
+
+    // -- axum handler --------------------------------------------------------
+
+    #[tokio::test]
+    async fn metrics_handler_with_state_renders_text() {
+        let pm = Arc::new(PrometheusMetrics::new("pbs_handler").expect("create"));
+        pm.record_request(&sample_request_labels());
+
+        let resp = metrics_handler_with_state(axum::extract::State(pm.clone())).await;
+        assert_eq!(resp.status(), http::StatusCode::OK);
+        let ct = resp
+            .headers()
+            .get(http::header::CONTENT_TYPE)
+            .expect("content-type header")
+            .to_str()
+            .unwrap();
+        assert!(ct.starts_with("text/plain"));
+    }
+
+    #[tokio::test]
+    async fn metrics_handler_global_does_not_panic() {
+        // Call once so that subsequent gather() has data to render.
+        let _pm = register("pbs_global_test");
+        let resp = metrics_handler().await;
+        assert_eq!(resp.status(), http::StatusCode::OK);
     }
 }

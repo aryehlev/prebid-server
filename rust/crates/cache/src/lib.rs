@@ -1,29 +1,50 @@
+//! Prebid Cache client.
+//!
+//! This crate is a Rust port of
+//! `github.com/prebid/prebid-server/prebid_cache_client`. It exposes a
+//! [`Cache`] trait backed by either a real [`Client`] that speaks to a
+//! Prebid Cache HTTP endpoint, or a [`NoopCache`] stub used for tests and
+//! when caching is disabled.
+//!
+//! The wire format matches Go's `encodeValues` output: a JSON object with a
+//! `puts` array of entries, each serialized using the keys `type`, `value`,
+//! `ttlseconds`, `key`, `bidid`, `bidder`, and `timestamp`.
+
 use std::fmt;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-/// Error type for Prebid Cache operations.
+/// Errors returned by Prebid Cache operations.
 #[derive(Debug, thiserror::Error)]
 pub enum CacheError {
+    /// The HTTP request could not be constructed (e.g. bad URL).
     #[error("error creating request to Prebid Cache: {0}")]
     RequestBuild(String),
+
+    /// Sending the HTTP request or reading the response failed.
     #[error("error sending request to Prebid Cache: {0}")]
     RequestSend(#[from] reqwest::Error),
+
+    /// Prebid Cache returned a non-2xx HTTP status.
     #[error("Prebid Cache returned HTTP {status}: {body}")]
     BadStatus { status: u16, body: String },
+
+    /// The response body could not be parsed as the expected format.
     #[error("error parsing Prebid Cache response: {0}")]
     ResponseParse(String),
+
+    /// Encoding the outgoing request body failed.
     #[error("error encoding values for Prebid Cache: {0}")]
     Encode(#[from] serde_json::Error),
 }
 
-/// The type of payload being cached.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// The type of payload being cached. Mirrors Go's `PayloadType`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum PayloadType {
-    #[serde(rename = "json")]
     Json,
-    #[serde(rename = "xml")]
     Xml,
 }
 
@@ -36,33 +57,42 @@ impl fmt::Display for PayloadType {
     }
 }
 
-/// An item to be stored in Prebid Cache.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A single item to be stored in Prebid Cache.
+///
+/// Mirrors the Go `Cacheable` struct. The `data` field contains the raw JSON
+/// value that will be stored under the `value` key on the wire, matching the
+/// JSON shape used by the Go client.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Cacheable {
-    /// The type of payload (json or xml).
+    /// Payload type (`json` or `xml`).
     #[serde(rename = "type")]
-    pub payload_type: PayloadType,
+    pub r#type: Option<PayloadType>,
 
-    /// The raw value to cache.
-    pub value: serde_json::Value,
+    /// The raw value to cache. Serialized on the wire as `value`.
+    #[serde(rename = "value", skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
 
-    /// TTL in seconds. If 0 or negative, omitted from the request.
-    #[serde(rename = "ttlseconds", skip_serializing_if = "is_zero_or_negative")]
+    /// TTL in seconds. Values `<= 0` are omitted from the request.
+    #[serde(
+        rename = "ttlseconds",
+        skip_serializing_if = "is_zero_or_negative",
+        default
+    )]
     pub ttl_seconds: i64,
 
     /// Optional cache key.
     #[serde(skip_serializing_if = "String::is_empty", default)]
     pub key: String,
 
-    /// Bid ID (used by /vtrack).
+    /// Bid ID (used by `/vtrack`).
     #[serde(skip_serializing_if = "String::is_empty", default)]
     pub bidid: String,
 
-    /// Bidder name (used by /vtrack).
+    /// Bidder name (used by `/vtrack`).
     #[serde(skip_serializing_if = "String::is_empty", default)]
     pub bidder: String,
 
-    /// Timestamp (used by /vtrack). If 0, omitted from the request.
+    /// Timestamp in ms (used by `/vtrack`). `0` is omitted.
     #[serde(skip_serializing_if = "is_zero_i64", default)]
     pub timestamp: i64,
 }
@@ -75,25 +105,26 @@ fn is_zero_i64(v: &i64) -> bool {
     *v == 0
 }
 
-/// The request body sent to Prebid Cache.
-#[derive(Debug, Clone, Serialize)]
-struct PutRequest {
-    puts: Vec<Cacheable>,
+/// Request body sent to Prebid Cache on PUT (POST `/cache`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PutRequest {
+    pub puts: Vec<Cacheable>,
 }
 
-/// A single response entry from Prebid Cache.
+/// A single response entry returned by Prebid Cache.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheResponseObject {
     pub uuid: String,
 }
 
-/// The response body from Prebid Cache.
+/// Response body returned by Prebid Cache.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CacheResponse {
+pub struct PutResponse {
     pub responses: Vec<CacheResponseObject>,
 }
 
-/// Data about the externally-accessible cache URL.
+/// Data about the externally-accessible cache URL used by clients to build
+/// cache lookup URLs in bid responses.
 #[derive(Debug, Clone, Default)]
 pub struct ExtCacheData {
     pub scheme: String,
@@ -103,74 +134,107 @@ pub struct ExtCacheData {
 
 /// Trait for interacting with Prebid Cache.
 ///
-/// Implementors can store bid data in a cache and retrieve the external cache
-/// URL information needed to build cache IDs for bid responses.
+/// Ports Go's `Client` interface. Implementors can persist bid data and
+/// return the UUIDs assigned by the cache, plus report the externally
+/// accessible cache URL components used to build cache lookup URLs.
 #[async_trait]
 pub trait Cache: Send + Sync {
     /// Store the given cacheable values in Prebid Cache.
     ///
-    /// Returns a vector of UUIDs with the same length as `values`. If a value
-    /// could not be cached, its corresponding entry will be an empty string.
-    /// Any errors encountered are returned in the second element.
-    async fn put(&self, values: Vec<Cacheable>) -> (Vec<String>, Vec<CacheError>);
+    /// The returned vector always has the same number of entries as
+    /// `values`. When an individual entry could not be stored the
+    /// corresponding element is an empty string, matching Go's `PutJson`
+    /// contract. Any errors encountered are returned in the second element.
+    async fn put_objects(
+        &self,
+        values: Vec<Cacheable>,
+    ) -> (Vec<String>, Vec<CacheError>);
 
-    /// Get the scheme, host, and path of the externally accessible cache URL.
+    /// Get the scheme, host and path of the externally accessible cache URL.
     fn get_ext_cache_data(&self) -> ExtCacheData;
 }
 
-/// Trait for recording cache metrics.
-///
-/// Mirrors Go's `metrics.MetricsEngine.RecordPrebidCacheRequestTime`.
-pub trait CacheMetrics: Send + Sync {
-    fn record_prebid_cache_request_time(&self, success: bool, elapsed: std::time::Duration);
-}
-
-/// No-op metrics implementation.
-pub struct NoopCacheMetrics;
-
-impl CacheMetrics for NoopCacheMetrics {
-    fn record_prebid_cache_request_time(&self, _success: bool, _elapsed: std::time::Duration) {}
-}
-
-/// A real Prebid Cache client that communicates over HTTP.
+/// Configuration for building a [`Client`].
 #[derive(Debug, Clone)]
-pub struct CacheClient {
-    http_client: reqwest::Client,
-    put_url: String,
-    external_cache: ExtCacheData,
+pub struct ClientConfig {
+    /// Base URL of the Prebid Cache instance, e.g. `https://cache.example.com`.
+    /// `/cache` is appended automatically to form the PUT endpoint.
+    pub base_url: String,
+
+    /// Timeout applied to each PUT request.
+    pub timeout: Duration,
+
+    /// External cache URL information returned from [`Cache::get_ext_cache_data`].
+    pub external_cache: ExtCacheData,
 }
 
-impl CacheClient {
-    /// Create a new CacheClient.
-    ///
-    /// - `http_client`: the reqwest client to use for HTTP calls.
-    /// - `cache_base_url`: the base URL for the Prebid Cache instance (e.g. "https://cache.example.com").
-    /// - `external_cache`: the externally-accessible cache URL components.
-    pub fn new(
-        http_client: reqwest::Client,
-        cache_base_url: &str,
-        external_cache: ExtCacheData,
-    ) -> Self {
-        let put_url = format!("{}/cache", cache_base_url.trim_end_matches('/'));
+impl Default for ClientConfig {
+    fn default() -> Self {
         Self {
-            http_client,
-            put_url,
-            external_cache,
+            base_url: String::new(),
+            timeout: Duration::from_secs(1),
+            external_cache: ExtCacheData::default(),
         }
     }
 }
 
+/// Real Prebid Cache client that speaks HTTP. Ports Go's `clientImpl`.
+#[derive(Debug, Clone)]
+pub struct Client {
+    http_client: reqwest::Client,
+    put_url: String,
+    timeout: Duration,
+    external_cache: ExtCacheData,
+}
+
+impl Client {
+    /// Construct a new [`Client`] from an existing `reqwest::Client` and a
+    /// [`ClientConfig`].
+    pub fn new(http_client: reqwest::Client, config: ClientConfig) -> Self {
+        let put_url = format!("{}/cache", config.base_url.trim_end_matches('/'));
+        Self {
+            http_client,
+            put_url,
+            timeout: config.timeout,
+            external_cache: config.external_cache,
+        }
+    }
+
+    /// Convenience constructor that builds a new `reqwest::Client` from the
+    /// supplied config.
+    pub fn from_config(config: ClientConfig) -> Result<Self, CacheError> {
+        let http_client = reqwest::Client::builder()
+            .timeout(config.timeout)
+            .build()
+            .map_err(CacheError::RequestSend)?;
+        Ok(Self::new(http_client, config))
+    }
+
+    /// Returns the fully-qualified PUT URL used by this client.
+    pub fn put_url(&self) -> &str {
+        &self.put_url
+    }
+
+    /// Returns the per-request timeout.
+    pub fn timeout(&self) -> Duration {
+        self.timeout
+    }
+}
+
 #[async_trait]
-impl Cache for CacheClient {
-    async fn put(&self, values: Vec<Cacheable>) -> (Vec<String>, Vec<CacheError>) {
-        let mut errors = Vec::new();
+impl Cache for Client {
+    async fn put_objects(
+        &self,
+        values: Vec<Cacheable>,
+    ) -> (Vec<String>, Vec<CacheError>) {
+        let mut errors: Vec<CacheError> = Vec::new();
 
         if values.is_empty() {
             return (Vec::new(), errors);
         }
 
         let num_values = values.len();
-        let uuids = vec![String::new(); num_values];
+        let mut uuids = vec![String::new(); num_values];
 
         let request_body = PutRequest { puts: values };
         let payload = match serde_json::to_vec(&request_body) {
@@ -188,6 +252,7 @@ impl Cache for CacheClient {
         let response = match self
             .http_client
             .post(&self.put_url)
+            .timeout(self.timeout)
             .header("Content-Type", "application/json;charset=utf-8")
             .header("Accept", "application/json")
             .body(payload)
@@ -233,7 +298,7 @@ impl Cache for CacheClient {
             return (uuids, errors);
         }
 
-        let cache_response: CacheResponse = match serde_json::from_str(&body) {
+        let parsed: PutResponse = match serde_json::from_str(&body) {
             Ok(r) => r,
             Err(e) => {
                 tracing::error!(
@@ -242,44 +307,28 @@ impl Cache for CacheClient {
                     body
                 );
                 errors.push(CacheError::ResponseParse(format!(
-                    "{}: body was: {}",
-                    e, body
+                    "{e}: body was: {body}"
                 )));
                 return (uuids, errors);
             }
         };
 
-        let mut result_uuids = Vec::with_capacity(num_values);
-        for (i, resp) in cache_response.responses.into_iter().enumerate() {
-            if i < num_values {
-                result_uuids.push(resp.uuid);
+        for (i, resp) in parsed.responses.into_iter().enumerate() {
+            if i >= num_values {
+                break;
             }
+            uuids[i] = resp.uuid;
         }
 
-        // Pad with empty strings if the response had fewer entries than expected
-        while result_uuids.len() < num_values {
-            let idx = result_uuids.len();
-            tracing::error!(
-                "Prebid Cache response missing entry at index {}. Response body: {}",
-                idx,
-                body
-            );
-            errors.push(CacheError::ResponseParse(format!(
-                "missing response at index {}",
-                idx
-            )));
-            result_uuids.push(String::new());
-        }
-
-        (result_uuids, errors)
+        (uuids, errors)
     }
 
     fn get_ext_cache_data(&self) -> ExtCacheData {
         let mut path = self.external_cache.path.clone();
         if path == "/" {
-            path = String::new();
+            path.clear();
         } else if !path.is_empty() && !path.starts_with('/') {
-            path = format!("/{}", path);
+            path = format!("/{path}");
         }
 
         ExtCacheData {
@@ -290,48 +339,18 @@ impl Cache for CacheClient {
     }
 }
 
-/// A cache client wrapper that records metrics on every put call.
-///
-/// Mirrors Go's metrics integration in `prebid_cache_client/client.go`.
-pub struct CacheClientWithMetrics<M: CacheMetrics> {
-    inner: CacheClient,
-    metrics: M,
-}
-
-impl<M: CacheMetrics> CacheClientWithMetrics<M> {
-    pub fn new(inner: CacheClient, metrics: M) -> Self {
-        Self { inner, metrics }
-    }
-}
-
-#[async_trait]
-impl<M: CacheMetrics + 'static> Cache for CacheClientWithMetrics<M> {
-    async fn put(&self, values: Vec<Cacheable>) -> (Vec<String>, Vec<CacheError>) {
-        let start = std::time::Instant::now();
-        let (uuids, errors) = self.inner.put(values).await;
-        let elapsed = start.elapsed();
-        let success = errors.is_empty();
-        self.metrics.record_prebid_cache_request_time(success, elapsed);
-        (uuids, errors)
-    }
-
-    fn get_ext_cache_data(&self) -> ExtCacheData {
-        self.inner.get_ext_cache_data()
-    }
-}
-
-/// A no-op cache client that does nothing.
-///
-/// Returns empty UUIDs for all items and empty external cache data.
-/// Useful for testing or when caching is disabled.
+/// No-op cache client. Returns empty UUIDs and empty external cache data.
+/// Useful for tests or when caching is disabled.
 #[derive(Debug, Clone, Default)]
-pub struct NoopCacheClient;
+pub struct NoopCache;
 
 #[async_trait]
-impl Cache for NoopCacheClient {
-    async fn put(&self, values: Vec<Cacheable>) -> (Vec<String>, Vec<CacheError>) {
-        let uuids = vec![String::new(); values.len()];
-        (uuids, Vec::new())
+impl Cache for NoopCache {
+    async fn put_objects(
+        &self,
+        values: Vec<Cacheable>,
+    ) -> (Vec<String>, Vec<CacheError>) {
+        (vec![String::new(); values.len()], Vec::new())
     }
 
     fn get_ext_cache_data(&self) -> ExtCacheData {
@@ -343,19 +362,36 @@ impl Cache for NoopCacheClient {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_payload_type_display() {
-        assert_eq!(PayloadType::Json.to_string(), "json");
-        assert_eq!(PayloadType::Xml.to_string(), "xml");
+    fn sample(data: serde_json::Value) -> Cacheable {
+        Cacheable {
+            r#type: Some(PayloadType::Json),
+            data: Some(data),
+            ttl_seconds: 0,
+            key: String::new(),
+            bidid: String::new(),
+            bidder: String::new(),
+            timestamp: 0,
+        }
     }
 
     #[test]
-    fn test_cacheable_serialization() {
+    fn payload_type_display_and_serde() {
+        assert_eq!(PayloadType::Json.to_string(), "json");
+        assert_eq!(PayloadType::Xml.to_string(), "xml");
+
+        let s = serde_json::to_string(&PayloadType::Json).unwrap();
+        assert_eq!(s, "\"json\"");
+        let v: PayloadType = serde_json::from_str("\"xml\"").unwrap();
+        assert_eq!(v, PayloadType::Xml);
+    }
+
+    #[test]
+    fn cacheable_serialization_full() {
         let item = Cacheable {
-            payload_type: PayloadType::Json,
-            value: serde_json::json!({}),
+            r#type: Some(PayloadType::Json),
+            data: Some(serde_json::json!({})),
             ttl_seconds: 300,
-            key: String::new(),
+            key: "cache-key".to_string(),
             bidid: "bid".to_string(),
             bidder: "bdr".to_string(),
             timestamp: 123456789,
@@ -365,54 +401,40 @@ mod tests {
         assert!(json.contains(r#""type":"json""#));
         assert!(json.contains(r#""ttlseconds":300"#));
         assert!(json.contains(r#""value":{}"#));
+        assert!(json.contains(r#""key":"cache-key""#));
         assert!(json.contains(r#""bidid":"bid""#));
         assert!(json.contains(r#""bidder":"bdr""#));
         assert!(json.contains(r#""timestamp":123456789"#));
-        // key is empty, should be omitted
-        assert!(!json.contains(r#""key""#));
     }
 
     #[test]
-    fn test_cacheable_omits_zero_ttl() {
-        let item = Cacheable {
-            payload_type: PayloadType::Json,
-            value: serde_json::json!(true),
-            ttl_seconds: 0,
-            key: String::new(),
-            bidid: String::new(),
-            bidder: String::new(),
-            timestamp: 0,
-        };
-
+    fn cacheable_omits_empty_and_zero_fields() {
+        let item = sample(serde_json::json!(true));
         let json = serde_json::to_string(&item).unwrap();
         assert!(!json.contains("ttlseconds"));
         assert!(!json.contains("timestamp"));
         assert!(!json.contains("bidid"));
         assert!(!json.contains("bidder"));
         assert!(!json.contains("key"));
+        assert!(json.contains(r#""type":"json""#));
+        assert!(json.contains(r#""value":true"#));
     }
 
     #[test]
-    fn test_put_request_serialization() {
+    fn put_request_serialization() {
         let req = PutRequest {
             puts: vec![
                 Cacheable {
-                    payload_type: PayloadType::Json,
-                    value: serde_json::json!(true),
+                    r#type: Some(PayloadType::Json),
+                    data: Some(serde_json::json!(true)),
                     ttl_seconds: 300,
-                    key: String::new(),
-                    bidid: String::new(),
-                    bidder: String::new(),
-                    timestamp: 0,
+                    ..Default::default()
                 },
                 Cacheable {
-                    payload_type: PayloadType::Xml,
-                    value: serde_json::json!("<vast></vast>"),
+                    r#type: Some(PayloadType::Xml),
+                    data: Some(serde_json::json!("<vast></vast>")),
                     ttl_seconds: 0,
-                    key: String::new(),
-                    bidid: String::new(),
-                    bidder: String::new(),
-                    timestamp: 0,
+                    ..Default::default()
                 },
             ],
         };
@@ -424,143 +446,113 @@ mod tests {
     }
 
     #[test]
-    fn test_cache_response_deserialization() {
+    fn put_response_deserialization() {
         let body = r#"{"responses":[{"uuid":"abc-123"},{"uuid":"def-456"}]}"#;
-        let resp: CacheResponse = serde_json::from_str(body).unwrap();
+        let resp: PutResponse = serde_json::from_str(body).unwrap();
         assert_eq!(resp.responses.len(), 2);
         assert_eq!(resp.responses[0].uuid, "abc-123");
         assert_eq!(resp.responses[1].uuid, "def-456");
     }
 
+    fn mk_client(path: &str) -> Client {
+        Client::new(
+            reqwest::Client::new(),
+            ClientConfig {
+                base_url: "https://cache.example.com".to_string(),
+                timeout: Duration::from_secs(1),
+                external_cache: ExtCacheData {
+                    scheme: "https".to_string(),
+                    host: "cache.example.com".to_string(),
+                    path: path.to_string(),
+                },
+            },
+        )
+    }
+
     #[test]
-    fn test_ext_cache_data_path_normalization() {
-        // Path is "/"  -> normalized to ""
-        let client = CacheClient::new(
-            reqwest::Client::new(),
-            "https://cache.example.com",
-            ExtCacheData {
-                scheme: "https".to_string(),
-                host: "cache.example.com".to_string(),
-                path: "/".to_string(),
-            },
+    fn ext_cache_data_path_normalization() {
+        assert_eq!(mk_client("/").get_ext_cache_data().path, "");
+        assert_eq!(
+            mk_client("pbcache/endpoint").get_ext_cache_data().path,
+            "/pbcache/endpoint"
         );
-        let data = client.get_ext_cache_data();
-        assert_eq!(data.path, "");
+        assert_eq!(
+            mk_client("/pbcache/endpoint").get_ext_cache_data().path,
+            "/pbcache/endpoint"
+        );
+        assert_eq!(mk_client("").get_ext_cache_data().path, "");
+    }
 
-        // Path without leading slash -> prepend "/"
-        let client = CacheClient::new(
+    #[test]
+    fn client_put_url_construction() {
+        let c = Client::new(
             reqwest::Client::new(),
-            "https://cache.example.com",
-            ExtCacheData {
-                scheme: "https".to_string(),
-                host: "cache.example.com".to_string(),
-                path: "pbcache/endpoint".to_string(),
+            ClientConfig {
+                base_url: "https://cache.example.com".to_string(),
+                timeout: Duration::from_secs(1),
+                external_cache: ExtCacheData::default(),
             },
         );
-        let data = client.get_ext_cache_data();
-        assert_eq!(data.path, "/pbcache/endpoint");
+        assert_eq!(c.put_url(), "https://cache.example.com/cache");
 
-        // Path with leading slash -> kept as-is
-        let client = CacheClient::new(
+        let c = Client::new(
             reqwest::Client::new(),
-            "https://cache.example.com",
-            ExtCacheData {
-                scheme: "".to_string(),
-                host: "prebid-server.prebid.org".to_string(),
-                path: "/pbcache/endpoint".to_string(),
+            ClientConfig {
+                base_url: "https://cache.example.com/".to_string(),
+                timeout: Duration::from_secs(1),
+                external_cache: ExtCacheData::default(),
             },
         );
-        let data = client.get_ext_cache_data();
-        assert_eq!(data.path, "/pbcache/endpoint");
+        assert_eq!(c.put_url(), "https://cache.example.com/cache");
+    }
 
-        // Empty path -> stays empty
-        let client = CacheClient::new(
-            reqwest::Client::new(),
-            "https://cache.example.com",
-            ExtCacheData {
-                scheme: "".to_string(),
-                host: "prebidcache.net".to_string(),
-                path: "".to_string(),
-            },
-        );
-        let data = client.get_ext_cache_data();
-        assert_eq!(data.path, "");
+    #[test]
+    fn from_config_builds_client() {
+        let c = Client::from_config(ClientConfig {
+            base_url: "https://cache.example.com".to_string(),
+            timeout: Duration::from_millis(250),
+            external_cache: ExtCacheData::default(),
+        })
+        .expect("client should build");
+        assert_eq!(c.put_url(), "https://cache.example.com/cache");
+        assert_eq!(c.timeout(), Duration::from_millis(250));
     }
 
     #[tokio::test]
-    async fn test_noop_cache_client_empty() {
-        let client = NoopCacheClient;
-        let (ids, errs) = client.put(vec![]).await;
+    async fn client_empty_put_is_noop() {
+        let c = mk_client("");
+        let (ids, errs) = c.put_objects(vec![]).await;
         assert!(ids.is_empty());
         assert!(errs.is_empty());
     }
 
     #[tokio::test]
-    async fn test_noop_cache_client_with_values() {
-        let client = NoopCacheClient;
+    async fn noop_cache_empty() {
+        let c = NoopCache;
+        let (ids, errs) = c.put_objects(vec![]).await;
+        assert!(ids.is_empty());
+        assert!(errs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn noop_cache_with_values() {
+        let c = NoopCache;
         let values = vec![
-            Cacheable {
-                payload_type: PayloadType::Json,
-                value: serde_json::json!(true),
-                ttl_seconds: 0,
-                key: String::new(),
-                bidid: String::new(),
-                bidder: String::new(),
-                timestamp: 0,
-            },
-            Cacheable {
-                payload_type: PayloadType::Json,
-                value: serde_json::json!(false),
-                ttl_seconds: 0,
-                key: String::new(),
-                bidid: String::new(),
-                bidder: String::new(),
-                timestamp: 0,
-            },
+            sample(serde_json::json!(true)),
+            sample(serde_json::json!(false)),
         ];
-        let (ids, errs) = client.put(values).await;
+        let (ids, errs) = c.put_objects(values).await;
         assert_eq!(ids.len(), 2);
-        assert_eq!(ids[0], "");
-        assert_eq!(ids[1], "");
+        assert!(ids.iter().all(|s| s.is_empty()));
         assert!(errs.is_empty());
     }
 
     #[tokio::test]
-    async fn test_noop_cache_client_ext_data() {
-        let client = NoopCacheClient;
-        let data = client.get_ext_cache_data();
-        assert_eq!(data.scheme, "");
-        assert_eq!(data.host, "");
-        assert_eq!(data.path, "");
-    }
-
-    #[tokio::test]
-    async fn test_cache_client_empty_put() {
-        let client = CacheClient::new(
-            reqwest::Client::new(),
-            "https://cache.example.com",
-            ExtCacheData::default(),
-        );
-        let (ids, errs) = client.put(vec![]).await;
-        assert!(ids.is_empty());
-        assert!(errs.is_empty());
-    }
-
-    #[test]
-    fn test_cache_client_put_url_construction() {
-        let client = CacheClient::new(
-            reqwest::Client::new(),
-            "https://cache.example.com",
-            ExtCacheData::default(),
-        );
-        assert_eq!(client.put_url, "https://cache.example.com/cache");
-
-        // With trailing slash
-        let client = CacheClient::new(
-            reqwest::Client::new(),
-            "https://cache.example.com/",
-            ExtCacheData::default(),
-        );
-        assert_eq!(client.put_url, "https://cache.example.com/cache");
+    async fn noop_cache_ext_data_is_default() {
+        let c = NoopCache;
+        let d = c.get_ext_cache_data();
+        assert_eq!(d.scheme, "");
+        assert_eq!(d.host, "");
+        assert_eq!(d.path, "");
     }
 }

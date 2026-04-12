@@ -7,6 +7,9 @@ pub mod hookstage;
 pub mod plan;
 pub mod execution;
 pub mod ortb2blocking;
+pub mod rulesengine;
+pub mod fiftyonedegrees;
+pub mod scope3;
 
 use std::collections::HashMap;
 use serde_json::Value;

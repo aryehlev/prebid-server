@@ -8,3 +8,7 @@ serde = { workspace = true }
 prometheus = { workspace = true }
 thiserror = { workspace = true }
 once_cell = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+http = { workspace = true }

@@ -7,20 +7,17 @@ edition = "2021"
 name = "prebid-server"
 path = "src/main.rs"
 
+[lib]
+name = "server"
+path = "src/lib.rs"
+
 [dependencies]
 tokio = { workspace = true }
 axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-anyhow = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
-openrtb = { path = "../openrtb" }
-openrtb-ext = { path = "../openrtb-ext" }
-pbs-adapters = { path = "../adapters" }
-pbs-exchange = { path = "../exchange" }
-pbs-endpoints = { path = "../endpoints" }
-pbs-config = { path = "../config" }
-pbs-metrics = { path = "../metrics" }
-reqwest = { workspace = true }
-tower-http = { workspace = true }
-uuid = { workspace = true }
+thiserror = { workspace = true }

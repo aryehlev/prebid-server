@@ -1,7 +1,9 @@
 [package]
-name = "pbs-cache"
+name = "cache"
 version = "0.1.0"
 edition = "2021"
+
+# Workspace membership is registered by the parent Rust workspace manifest.
 
 [dependencies]
 serde = { workspace = true }
@@ -11,3 +13,4 @@ reqwest = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
+bytes = { workspace = true }

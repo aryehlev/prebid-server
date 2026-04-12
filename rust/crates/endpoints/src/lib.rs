@@ -14,6 +14,21 @@ use std::{collections::HashMap, sync::Arc};
 pub mod stored_requests;
 pub use stored_requests::StoredRequestFetcher;
 
+// New endpoint skeletons — one module per endpoint, mirroring the Go layout
+// under `endpoints/`. These are intentionally lightweight: the production
+// handlers still live inline in this file (see `cookie_sync_handler`,
+// `set_uid_handler`, etc.), while the submodules below provide
+// dependency-light entry points that are easy to unit-test in isolation.
+pub mod amp;
+pub mod cookie_sync;
+pub mod currency_rates;
+pub mod events;
+pub mod getuids;
+pub mod info;
+pub mod setuid;
+pub mod status;
+pub mod version;
+
 /// Sync URL info loaded from a bidder's YAML userSync section.
 #[derive(Debug, Clone, Default)]
 pub struct BidderSyncInfo {
