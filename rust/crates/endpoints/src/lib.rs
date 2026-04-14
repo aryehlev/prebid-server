@@ -1338,75 +1338,12 @@ fn build_sync_url(template: &str, gdpr: Option<i32>, gdpr_consent: Option<&str>)
     }
 }
 
-/// Build a Set-Cookie value with the `Partitioned` attribute for CHIPS support.
-/// Mirrors Go's `setCookiePartitioned`.
-fn build_partitioned_set_cookie(base_cookie_val: &str) -> String {
-    format!("{}; Partitioned", base_cookie_val)
-}
-
-/// Detect Chrome version from User-Agent string for SameSite workarounds.
-/// Chrome >= 67 requires SameSite=None cookies to also be Secure.
-/// Mirrors Go's `siteCookieCheck` + `checkChromeBrowserVersion`.
-fn is_chrome_needing_samesite(user_agent: &str) -> bool {
-    const CHROME_STR: &str = "Chrome/";
-    const CRIOS_STR: &str = "CriOS/";
-    const CHROME_MIN_VER: i32 = 67;
-
-    fn check_version(ua: &str, prefix: &str) -> bool {
-        if let Some(idx) = ua.find(prefix) {
-            let version_start = idx + prefix.len();
-            let remaining = &ua[version_start..];
-            let dot_idx = remaining.find('.').unwrap_or(remaining.len());
-            if let Ok(ver) = remaining[..dot_idx].parse::<i32>() {
-                return ver >= CHROME_MIN_VER;
-            }
-        }
-        false
-    }
-
-    check_version(user_agent, CHROME_STR) || check_version(user_agent, CRIOS_STR)
-}
-
-/// Determine the best sync type for a bidder given the type filter and
-/// available sync info. Returns `None` if all sync types are filtered out.
-fn choose_sync_type<'a>(
-    bidder: &str,
-    sync_info: Option<&BidderSyncInfo>,
-    type_filter: &SyncTypeFilter,
-) -> Option<(&'static str, bool)> {
-    // Get the available types for this bidder
-    let has_iframe = sync_info
-        .map(|s| s.iframe_url.is_some())
-        .unwrap_or(false)
-        || bidder_sync_url(bidder).map(|(t, _)| t == "iframe").unwrap_or(false);
-    let has_redirect = sync_info
-        .map(|s| s.redirect_url.is_some())
-        .unwrap_or(false)
-        || bidder_sync_url(bidder).map(|(t, _)| t == "redirect").unwrap_or(false);
-
-    let iframe_allowed = type_filter.iframe.allows(bidder);
-    let redirect_allowed = type_filter.redirect.allows(bidder);
-
-    // Prefer redirect over iframe (matching Go behavior), but respect the filter
-    if has_redirect && redirect_allowed {
-        Some(("redirect", true))
-    } else if has_iframe && iframe_allowed {
-        Some(("iframe", true))
-    } else if has_redirect && !redirect_allowed {
-        Some(("redirect", false)) // has it but filtered
-    } else if has_iframe && !iframe_allowed {
-        Some(("iframe", false)) // has it but filtered
-    } else {
-        None
-    }
-}
-
 pub async fn cookie_sync_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(body): Json<CookieSyncRequest>,
 ) -> Response {
-    let debug_enabled = body.debug.unwrap_or(false);
+    let _debug_enabled = body.debug.unwrap_or(false);
 
     // ── Account validation ───────────────────────────────────────────────────
     let account_id = body.account.as_deref().unwrap_or("");
@@ -1459,7 +1396,7 @@ pub async fn cookie_sync_handler(
     }
 
     // ── Parse type filter from filterSettings ────────────────────────────────
-    let type_filter = match parse_type_filter(body.filter_settings.as_ref()) {
+    let _type_filter = match parse_type_filter(body.filter_settings.as_ref()) {
         Ok(tf) => tf,
         Err(e) => {
             return (
@@ -1494,10 +1431,10 @@ pub async fn cookie_sync_handler(
         .and_then(|a| a.cookie_sync.default_limit);
     let account_max_limit = account_cfg
         .and_then(|a| a.cookie_sync.max_limit);
-    let limit = compute_effective_limit(body.limit, account_default_limit, account_max_limit);
+    let _limit = compute_effective_limit(body.limit, account_default_limit, account_max_limit);
 
     // ── Priority groups from account or global config ────────────────────────
-    let priority_groups: Vec<Vec<String>> = account_cfg
+    let _priority_groups: Vec<Vec<String>> = account_cfg
         .map(|a| a.cookie_sync.priority_groups.clone())
         .unwrap_or_default();
 

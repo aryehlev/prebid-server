@@ -274,11 +274,6 @@ pub fn should_block_bapp(
     blocked.iter().any(|b| b.eq_ignore_ascii_case(bid_bundle))
 }
 
-/// Utility: case-insensitive string match.
-fn has_matches(list: &[String], s: &str) -> bool {
-    list.iter().any(|v| v.eq_ignore_ascii_case(s))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

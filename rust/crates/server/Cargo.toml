@@ -21,3 +21,12 @@ tracing-subscriber = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+async-trait = { workspace = true }
+
+# Internal workspace crates wired up by the router handlers.
+account = { path = "../account" }
+analytics = { path = "../analytics" }
+pbs-config = { path = "../config" }
+pbs-endpoints = { path = "../endpoints" }
+pbs-metrics = { path = "../metrics" }
+usersync = { path = "../usersync" }

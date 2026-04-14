@@ -4,12 +4,14 @@
 //! internal workspace crates) so that it can build independently while the
 //! rest of the Rust port is still in flight.
 //!
-//! The public API exposes three modules:
+//! The public API exposes four modules:
 //! * [`config`] – server configuration loaded from environment variables.
-//! * [`router`] – constructs the [`axum::Router`] with placeholder routes and
+//! * [`state`] – shared [`state::AppState`] threaded through the handlers.
+//! * [`router`] – constructs the [`axum::Router`] with real routes and
 //!   middleware stack.
 //! * [`lifecycle`] – graceful shutdown helpers (Ctrl-C / SIGTERM).
 
 pub mod config;
 pub mod lifecycle;
 pub mod router;
+pub mod state;

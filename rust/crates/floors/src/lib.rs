@@ -13,7 +13,10 @@ pub mod types;
 pub mod validate;
 
 pub use enforce::{enforce_floors_rules, EnforceOutcome, RejectedBid, SeatBid};
-pub use fetcher::{fetch_price_floor_rules, FetchResult, FetchStatus, FloorFetcherConfig};
+pub use fetcher::{
+    fetch_price_floor_rules, fetch_price_floor_rules_with, FetchError, FetchResult, FetchStatus,
+    FetchStatusCode, FetchedFloors, FloorFetcher, FloorFetcherConfig,
+};
 pub use rule::{create_rule_key, find_rule, round_to_four_decimals};
 pub use types::{
     PriceFloorData, PriceFloorEnforcement, PriceFloorEndpoint, PriceFloorModelGroup,

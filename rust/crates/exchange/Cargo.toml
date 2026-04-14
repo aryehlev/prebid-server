@@ -18,6 +18,9 @@ openrtb = { path = "../openrtb" }
 openrtb-ext = { path = "../openrtb-ext" }
 pbs-adapters = { path = "../adapters" }
 pbs-metrics = { path = "../metrics" }
+analytics = { path = "../analytics" }
+hooks = { path = "../hooks" }
+rules = { path = "../rules" }
 pbs-config = { path = "../config" }
 pbs-currency = { path = "../currency" }
 pbs-util = { path = "../util" }

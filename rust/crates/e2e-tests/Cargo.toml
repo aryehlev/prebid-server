@@ -1,0 +1,20 @@
+[package]
+name = "e2e-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+parity = { path = "../parity" }
+analytics = { path = "../analytics" }
+stored_requests = { path = "../stored_requests" }
+
+[dev-dependencies]
+tempfile = "3"

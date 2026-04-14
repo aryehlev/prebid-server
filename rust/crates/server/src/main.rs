@@ -9,10 +9,13 @@ use std::process::ExitCode;
 
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
+use std::sync::Arc;
+
 use server::{
     config::ServerConfig,
     lifecycle::shutdown_signal,
     router::build_router,
+    state::AppState,
 };
 
 #[tokio::main]
@@ -36,7 +39,11 @@ async fn main() -> ExitCode {
         "starting prebid-server"
     );
 
-    let app = build_router(&cfg);
+    // Dev wiring: no-op analytics, empty chooser, fresh Prometheus registry,
+    // default configuration. Replaced with real dependencies once the full
+    // bootstrap pipeline lands.
+    let state = Arc::new(AppState::dev());
+    let app = build_router(&cfg, state);
 
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(l) => l,

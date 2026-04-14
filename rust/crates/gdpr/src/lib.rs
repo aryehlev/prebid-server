@@ -8,9 +8,10 @@
 pub mod consent;
 pub mod permissions;
 pub mod signal;
+pub mod tcf2_bits;
 pub mod vendorlist;
 
-pub use consent::ConsentString;
+pub use consent::{ConsentString, VendorConsent, VendorRange};
 pub use permissions::{
     AlwaysAllow, AlwaysFail, AuctionPermissions, Permissions, RequestInfo,
 };

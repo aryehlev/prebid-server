@@ -1,7 +1,10 @@
 pub mod account;
 pub mod account_fetcher;
 pub mod bidder_info;
+pub mod bidder_info_loader;
+pub mod bidder_params_loader;
 pub mod env_config;
+pub mod static_embed;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

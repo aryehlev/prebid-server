@@ -40,6 +40,8 @@ members = [
     "crates/experimental-ml",
     "crates/experimental-fuzz",
     "crates/experimental-quic",
+    "crates/benchmarks",
+    "crates/e2e-tests",
 ]
 resolver = "2"
 

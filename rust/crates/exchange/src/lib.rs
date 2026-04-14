@@ -53,6 +53,7 @@ pub mod validation;
 pub mod vast;
 pub mod category_mapping;
 pub mod deals;
+pub mod integration;
 
 #[cfg(test)]
 mod tests;
