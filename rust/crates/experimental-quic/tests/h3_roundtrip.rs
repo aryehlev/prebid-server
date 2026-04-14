@@ -4,9 +4,11 @@
 //! body matches.
 //!
 //! This round-trip exercises a non-trivial amount of `quinn` + `h3`
-//! plumbing. If it proves flaky in CI, the test is marked `#[ignore]` with
-//! the explanation below – it is not critical for unit-level confidence in
-//! the crate, which is still covered by the in-crate unit tests.
+//! plumbing. It is hermetic: the server binds an ephemeral port on
+//! `127.0.0.1`, a self-signed cert with `localhost` as SAN is generated in
+//! process, and the client connects back via UDP loopback. The rustls ring
+//! crypto provider is installed explicitly so the test is robust to other
+//! tests in the process having (or not having) already installed one.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,12 +19,6 @@ use experimental_quic::{
     StubAuctionHandler,
 };
 
-// The h3 round-trip can be finicky in hermetic CI environments – in
-// particular it requires UDP loopback to work and rustls' ring provider to
-// initialise cleanly in the test process. We keep the test available locally
-// but mark it `#[ignore]` so it does not gate `cargo test` in CI. Run it
-// manually with `cargo test -p experimental-quic -- --ignored`.
-#[ignore = "h3 round-trip requires UDP loopback and a stable ring provider; run with --ignored"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn quic_post_auction_roundtrip() {
     let _ = rustls::crypto::ring::default_provider().install_default();
