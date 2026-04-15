@@ -350,3 +350,77 @@ impl Bidder for PubmaticAdapter {
         Ok(result)
     }
 }
+
+#[cfg(test)]
+mod adapters_parity_tests {
+    use super::*;
+    use crate::{Bidder, ExtraRequestInfo};
+
+    fn banner_req() -> openrtb::BidRequest {
+        let imp = openrtb::Imp {
+            id: "imp1".to_string(),
+            banner: Some(openrtb::Banner {
+                w: Some(300),
+                h: Some(250),
+                ..Default::default()
+            }),
+            ext: Some(serde_json::json!({
+                "bidder": {
+                    "publisherId": "156001",
+                    "adSlot": "slot1@300x250",
+                }
+            })),
+            ..Default::default()
+        };
+        openrtb::BidRequest {
+            id: "pm-req".to_string(),
+            imp: vec![imp],
+            site: Some(openrtb::Site {
+                page: Some("https://example.com".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_pubmatic_endpoint_and_headers() {
+        let adapter = PubmaticAdapter::new("https://hbopenbid.pubmatic.com/translator?source=prebid-server".to_string());
+        let (requests, errs) = adapter.make_requests(&banner_req(), &ExtraRequestInfo::default());
+        assert!(errs.is_empty(), "unexpected errors: {:?}", errs);
+        assert_eq!(requests.len(), 1);
+        let rd = &requests[0];
+        assert_eq!(rd.method, "POST");
+        assert_eq!(rd.uri, "https://hbopenbid.pubmatic.com/translator?source=prebid-server");
+        let ct = rd.headers.get("Content-Type").expect("Content-Type");
+        assert!(ct.contains("application/json"));
+        assert!(!rd.body.is_empty());
+    }
+
+    #[test]
+    fn test_pubmatic_parses_seatbid_response() {
+        let adapter = PubmaticAdapter::new("https://hbopenbid.pubmatic.com/translator".to_string());
+        let body = serde_json::json!({
+            "id": "r1",
+            "cur": "USD",
+            "seatbid": [{
+                "bid": [{
+                    "id": "b1",
+                    "impid": "imp1",
+                    "price": 1.25,
+                    "crid": "cr123",
+                    "adm": "<div>ad</div>"
+                }]
+            }]
+        });
+        let req = banner_req();
+        let ext_req = RequestData::new_post("https://hbopenbid.pubmatic.com/translator", vec![]);
+        let resp = ResponseData::new(200, serde_json::to_vec(&body).unwrap());
+        let result = adapter.make_bids(&req, &ext_req, &resp).expect("make_bids ok");
+        assert_eq!(result.bids.len(), 1);
+        assert_eq!(result.bids[0].bid.price, 1.25);
+        assert_eq!(result.bids[0].bid.impid, "imp1");
+        assert_eq!(result.bids[0].bid.crid.as_deref(), Some("cr123"));
+        assert_eq!(result.currency, "USD");
+    }
+}

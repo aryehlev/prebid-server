@@ -156,3 +156,55 @@ impl Bidder for BidmachineAdapter {
         Ok(result)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_req() -> openrtb::BidRequest {
+        openrtb::BidRequest {
+            id: "req1".to_string(),
+            imp: vec![openrtb::Imp {
+                id: "imp1".to_string(),
+                banner: Some(openrtb::Banner {
+                    w: Some(300),
+                    h: Some(250),
+                    ..Default::default()
+                }),
+                ext: Some(serde_json::json!({
+                    "bidder": {
+                        "host": "api.example.com",
+                        "path": "auction",
+                        "seller_id": "42"
+                    }
+                })),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_make_requests_basic() {
+        let adapter = BidmachineAdapter::new("https://{{.Host}}".to_string());
+        let (reqs, errs) = adapter.make_requests(&make_req(), &ExtraRequestInfo::default());
+        assert!(errs.is_empty(), "errs: {:?}", errs);
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].method, "POST");
+        assert!(reqs[0].uri.contains("api.example.com"));
+        assert!(reqs[0].uri.contains("auction"));
+        assert!(reqs[0].uri.contains("42"));
+        assert_eq!(reqs[0].headers.get("Content-Type").map(|s| s.as_str()), Some("application/json"));
+        assert!(!reqs[0].body.is_empty());
+    }
+
+    #[test]
+    fn test_make_bids_basic() {
+        let adapter = BidmachineAdapter::new("https://{{.Host}}".to_string());
+        let body = br#"{"id":"r","seatbid":[{"bid":[{"id":"b1","impid":"imp1","price":1.2}]}]}"#;
+        let resp = ResponseData::new(200, body.to_vec());
+        let result = adapter.make_bids(&make_req(), &RequestData::default(), &resp).unwrap();
+        assert_eq!(result.bids.len(), 1);
+        assert_eq!(result.bids[0].bid_type, BidType::Banner);
+    }
+}

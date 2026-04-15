@@ -41,6 +41,15 @@ pub struct AppState {
     pub chooser: Arc<usersync::StandardChooser>,
     /// Top-level prebid-server configuration (multi-source variant).
     pub config: Arc<pbs_config::top::Configuration>,
+    /// Shared reference to the `pbs-exchange` engine used for
+    /// `/openrtb2/*` handlers. `None` in minimal test configurations where
+    /// no exchange is wired up.
+    pub exchange: Option<Arc<pbs_exchange::Exchange>>,
+    /// Pre-built `pbs_endpoints::AppState` used to proxy auction/amp/video
+    /// requests straight into the production endpoint handlers. `None` when
+    /// no exchange has been wired up; when `Some`, the router forwards the
+    /// openrtb2 routes through these handlers.
+    pub endpoints_state: Option<pbs_endpoints::AppState>,
 }
 
 impl AppState {
@@ -76,14 +85,67 @@ impl AppState {
 
         let config = Arc::new(pbs_config::top::Configuration::default());
 
+        // Wire up the dev exchange + a matching `pbs_endpoints::AppState`
+        // so that /openrtb2/auction, /openrtb2/video and /openrtb2/amp can
+        // actually proxy into the production endpoint handlers instead of
+        // returning 501 Not Implemented. The endpoint state owns its own
+        // `Exchange` by value (that's the contract `AppStateInner` exposes);
+        // we keep an additional `Arc<Exchange>` on `AppState.exchange` for
+        // future callers that want a shared reference.
+        let exchange = Some(pbs_exchange::dev_exchange::dev_exchange());
+        let endpoints_state = Some(build_dev_endpoints_state());
+
         Self {
             account_fetcher,
             analytics,
             metrics,
             chooser,
             config,
+            exchange,
+            endpoints_state,
         }
     }
+}
+
+/// Construct a minimally-wired `pbs_endpoints::AppState` that matches the
+/// no-op defaults produced by [`AppState::dev`]. This is lifted nearly
+/// verbatim from `pbs_endpoints`'s own unit-test helper: an empty exchange,
+/// an empty stored-requests fetcher, a fresh (namespaced) Prometheus
+/// registry, and default configs everywhere else.
+fn build_dev_endpoints_state() -> pbs_endpoints::AppState {
+    use pbs_exchange::privacy::ActivityControl;
+
+    // Use a distinct namespace from the main server metrics registry so that
+    // the two independent `PrometheusMetrics` instances do not confuse
+    // anyone reading `/metrics` — the router serves its own registry and the
+    // endpoint handlers record into this one.
+    let endpoint_metrics = pbs_metrics::PrometheusMetrics::new("prebid_server_endpoints")
+        .expect("PrometheusMetrics::new must succeed on a fresh registry");
+
+    // The endpoint handlers still own the `Exchange` by value, so we build a
+    // second empty exchange here. Both this one and the `Arc<Exchange>` on
+    // `AppState.exchange` come from the same `dev_exchange` helper, so they
+    // are behaviourally identical.
+    let exchange = pbs_exchange::Exchange::new(HashMap::new());
+
+    Arc::new(pbs_endpoints::AppStateInner {
+        exchange,
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        revision: "dev".to_string(),
+        bidder_info: HashMap::new(),
+        bidder_params: HashMap::new(),
+        bidder_sync_info: HashMap::new(),
+        host_cookie: pbs_endpoints::HostCookieConfig::default(),
+        status_response: None,
+        stored_requests: Arc::new(pbs_endpoints::StoredRequestFetcher::empty()),
+        metrics: Arc::new(endpoint_metrics),
+        max_request_size: 0,
+        gdpr_enabled: false,
+        accounts: HashMap::new(),
+        currency_converter: None,
+        account_required: false,
+        activity_control: ActivityControl::default(),
+    })
 }
 
 /// Minimal no-op `AccountFetcher` that always reports [`account::AccountError::NotFound`].

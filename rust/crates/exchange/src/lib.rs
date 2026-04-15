@@ -54,6 +54,7 @@ pub mod vast;
 pub mod category_mapping;
 pub mod deals;
 pub mod integration;
+pub mod dev_exchange;
 
 #[cfg(test)]
 mod tests;

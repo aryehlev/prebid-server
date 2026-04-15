@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{header, HeaderMap, Method, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -80,35 +80,65 @@ pub fn build_router(cfg: &ServerConfig, state: Arc<AppState>) -> Router {
 }
 
 // ---------------------------------------------------------------------------
-// /openrtb2/auction — stub (501)
+// /openrtb2/auction
 //
-// The production handler lives in `pbs_endpoints::openrtb2_auction_handler`
-// and needs a fully-wired `pbs_exchange::Exchange` inside `endpoints::AppState`.
-// The `server` crate intentionally does NOT depend on `pbs-exchange` yet so
-// that it can keep building while the rest of the port stabilizes: pulling
-// `pbs-exchange` in transitively pulls every bidder adapter and collides with
-// a few other port crates. Until the dev wiring is ready, this endpoint
-// returns 501 Not Implemented with a clear marker.
+// Forwards to `pbs_endpoints::auction_handler` when a dev exchange has been
+// wired into [`AppState`]. The production handler lives in `pbs_endpoints`
+// and drives the full pipeline (validation, stored-requests merge, hooks,
+// adapter fan-out, response building, metrics). Our state owns an
+// `Option<pbs_endpoints::AppState>` that was pre-built in
+// [`AppState::dev`]; we clone the inner `Arc` and hand it to the production
+// handler, passing through headers and the raw JSON body untouched.
 // ---------------------------------------------------------------------------
-async fn openrtb2_auction(State(_state): State<Arc<AppState>>) -> Response {
-    not_implemented("openrtb2_auction")
+async fn openrtb2_auction(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Json<openrtb::BidRequest>,
+) -> Response {
+    let Some(endpoints_state) = state.endpoints_state.clone() else {
+        return not_implemented("openrtb2_auction");
+    };
+    pbs_endpoints::auction_handler(
+        axum::extract::State(endpoints_state),
+        headers,
+        body,
+    )
+    .await
 }
 
-async fn openrtb2_video(State(_state): State<Arc<AppState>>) -> Response {
-    not_implemented("openrtb2_video")
+async fn openrtb2_video(
+    State(state): State<Arc<AppState>>,
+    body: Json<openrtb::BidRequest>,
+) -> Response {
+    let Some(endpoints_state) = state.endpoints_state.clone() else {
+        return not_implemented("openrtb2_video");
+    };
+    pbs_endpoints::video_auction_handler(
+        axum::extract::State(endpoints_state),
+        body,
+    )
+    .await
 }
 
 // ---------------------------------------------------------------------------
 // /openrtb2/amp
 //
-// The production AMP handler in `pbs_endpoints::amp_handler` takes
-// `State<endpoints::AppState>` which in turn owns a full
-// `pbs_exchange::Exchange`. We cannot call it directly without constructing
-// that exchange, so we emit a structured 501 response here. The endpoint
-// remains wired so the route table stays source-compatible with Go.
+// Proxy into `pbs_endpoints::amp_handler` — same pattern as /openrtb2/auction,
+// but `amp_handler` extracts a typed [`pbs_endpoints::AmpParams`] from the
+// querystring, so we mirror the extractor signature here.
 // ---------------------------------------------------------------------------
-async fn openrtb2_amp(State(_state): State<Arc<AppState>>) -> Response {
-    not_implemented("openrtb2_amp")
+async fn openrtb2_amp(
+    State(state): State<Arc<AppState>>,
+    params: Query<pbs_endpoints::AmpParams>,
+) -> Response {
+    let Some(endpoints_state) = state.endpoints_state.clone() else {
+        return not_implemented("openrtb2_amp");
+    };
+    pbs_endpoints::amp_handler(
+        axum::extract::State(endpoints_state),
+        params,
+    )
+    .await
 }
 
 // ---------------------------------------------------------------------------

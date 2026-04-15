@@ -109,3 +109,42 @@ impl Bidder for ColossusAdapter {
         Ok(result)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_req() -> openrtb::BidRequest {
+        openrtb::BidRequest {
+            id: "r".to_string(),
+            imp: vec![openrtb::Imp {
+                id: "i1".to_string(),
+                banner: Some(openrtb::Banner { w: Some(300), h: Some(250), ..Default::default() }),
+                ext: Some(serde_json::json!({"bidder": {"TagID": "tag123"}})),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_make_requests_basic() {
+        let adapter = ColossusAdapter::new("https://colossus.example.com/bid".to_string());
+        let (reqs, errs) = adapter.make_requests(&make_req(), &ExtraRequestInfo::default());
+        assert!(errs.is_empty());
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].uri, "https://colossus.example.com/bid");
+        assert!(reqs[0].headers.contains_key("Content-Type"));
+        assert!(!reqs[0].body.is_empty());
+    }
+
+    #[test]
+    fn test_make_bids_basic() {
+        let adapter = ColossusAdapter::new("https://c".to_string());
+        let body = br#"{"id":"r","seatbid":[{"bid":[{"id":"b1","impid":"i1","price":1.0,"ext":{"mediaType":"banner"}}]}]}"#;
+        let resp = ResponseData::new(200, body.to_vec());
+        let result = adapter.make_bids(&make_req(), &RequestData::default(), &resp).unwrap();
+        assert_eq!(result.bids.len(), 1);
+        assert_eq!(result.bids[0].bid_type, BidType::Banner);
+    }
+}

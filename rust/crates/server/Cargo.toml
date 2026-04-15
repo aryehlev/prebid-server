@@ -28,5 +28,7 @@ account = { path = "../account" }
 analytics = { path = "../analytics" }
 pbs-config = { path = "../config" }
 pbs-endpoints = { path = "../endpoints" }
+pbs-exchange = { path = "../exchange" }
 pbs-metrics = { path = "../metrics" }
 usersync = { path = "../usersync" }
+openrtb = { path = "../openrtb" }

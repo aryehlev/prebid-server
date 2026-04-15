@@ -17,6 +17,16 @@ pub enum SectionId {
     UsCoV1 = 10,
     UsUtV1 = 11,
     UsCtV1 = 12,
+    UsFlV1 = 13,
+    UsMtV1 = 14,
+    UsOrV1 = 15,
+    UsTxV1 = 16,
+    UsDeV1 = 17,
+    UsIaV1 = 18,
+    UsNeV1 = 19,
+    UsNhV1 = 20,
+    UsNjV1 = 21,
+    UsTnV1 = 22,
 }
 
 impl SectionId {
@@ -31,6 +41,16 @@ impl SectionId {
             10 => Ok(SectionId::UsCoV1),
             11 => Ok(SectionId::UsUtV1),
             12 => Ok(SectionId::UsCtV1),
+            13 => Ok(SectionId::UsFlV1),
+            14 => Ok(SectionId::UsMtV1),
+            15 => Ok(SectionId::UsOrV1),
+            16 => Ok(SectionId::UsTxV1),
+            17 => Ok(SectionId::UsDeV1),
+            18 => Ok(SectionId::UsIaV1),
+            19 => Ok(SectionId::UsNeV1),
+            20 => Ok(SectionId::UsNhV1),
+            21 => Ok(SectionId::UsNjV1),
+            22 => Ok(SectionId::UsTnV1),
             other => Err(GppError::UnknownSection(other)),
         }
     }
@@ -51,6 +71,16 @@ impl SectionId {
             SectionId::UsCoV1 => "uscov1",
             SectionId::UsUtV1 => "usutv1",
             SectionId::UsCtV1 => "usctv1",
+            SectionId::UsFlV1 => "usflv1",
+            SectionId::UsMtV1 => "usmtv1",
+            SectionId::UsOrV1 => "usorv1",
+            SectionId::UsTxV1 => "ustxv1",
+            SectionId::UsDeV1 => "usdev1",
+            SectionId::UsIaV1 => "usiav1",
+            SectionId::UsNeV1 => "usnev1",
+            SectionId::UsNhV1 => "usnhv1",
+            SectionId::UsNjV1 => "usnjv1",
+            SectionId::UsTnV1 => "ustnv1",
         }
     }
 }

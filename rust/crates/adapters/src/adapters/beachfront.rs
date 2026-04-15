@@ -516,3 +516,59 @@ impl Bidder for BeachfrontAdapter {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_banner_req() -> openrtb::BidRequest {
+        openrtb::BidRequest {
+            id: "r".to_string(),
+            imp: vec![openrtb::Imp {
+                id: "i1".to_string(),
+                banner: Some(openrtb::Banner {
+                    format: Some(vec![openrtb::Format { w: Some(300), h: Some(250), ..Default::default() }]),
+                    ..Default::default()
+                }),
+                ext: Some(serde_json::json!({"bidder": {"appId": "app123"}})),
+                ..Default::default()
+            }],
+            site: Some(openrtb::Site { page: Some("https://site.example.com/page".to_string()), ..Default::default() }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_make_requests_banner() {
+        let adapter = BeachfrontAdapter::new(
+            "https://display.bfmio.com/prebid_display".to_string(),
+            "https://reachms.bfmio.com/bid.json?exchange_id".to_string(),
+        );
+        let (reqs, errs) = adapter.make_requests(&make_banner_req(), &ExtraRequestInfo::default());
+        assert!(errs.is_empty(), "errs: {:?}", errs);
+        assert_eq!(reqs.len(), 1);
+        assert!(reqs[0].uri.contains("bfmio.com"));
+        assert!(reqs[0].headers.contains_key("Content-Type"));
+        assert!(!reqs[0].body.is_empty());
+    }
+
+    #[test]
+    fn test_make_bids_banner() {
+        let adapter = BeachfrontAdapter::new(
+            "https://display.bfmio.com/prebid_display".to_string(),
+            "https://reachms.bfmio.com/bid.json?exchange_id".to_string(),
+        );
+        let ext_req = RequestData {
+            method: "POST".to_string(),
+            uri: "https://display.bfmio.com/prebid_display".to_string(),
+            body: vec![],
+            headers: HashMap::new(),
+            imp_ids: vec!["i1".to_string()],
+        };
+        let body = br#"[{"slot":"i1","crid":"c1","price":1.23,"w":300,"h":250,"adm":"<ad/>"}]"#;
+        let resp = ResponseData::new(200, body.to_vec());
+        let result = adapter.make_bids(&make_banner_req(), &ext_req, &resp).unwrap();
+        assert_eq!(result.bids.len(), 1);
+        assert_eq!(result.bids[0].bid_type, BidType::Banner);
+    }
+}

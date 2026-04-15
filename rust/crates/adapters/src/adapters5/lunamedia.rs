@@ -166,3 +166,47 @@ impl Bidder for LunamediaAdapter {
         Ok(result)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_req() -> openrtb::BidRequest {
+        openrtb::BidRequest {
+            id: "req1".to_string(),
+            imp: vec![openrtb::Imp {
+                id: "imp1".to_string(),
+                banner: Some(openrtb::Banner {
+                    w: Some(300),
+                    h: Some(250),
+                    ..Default::default()
+                }),
+                ext: Some(serde_json::json!({
+                    "bidder": { "pubid": "pub123", "placement": "slot-a" }
+                })),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_make_requests_basic() {
+        let adapter = LunamediaAdapter::new("https://luna.example.com/{{.PublisherID}}".to_string());
+        let (reqs, errs) = adapter.make_requests(&make_req(), &ExtraRequestInfo::default());
+        assert!(errs.is_empty(), "errs: {:?}", errs);
+        assert_eq!(reqs.len(), 1);
+        assert!(reqs[0].uri.contains("pub123"));
+        assert!(reqs[0].headers.contains_key("Content-Type"));
+        assert!(!reqs[0].body.is_empty());
+    }
+
+    #[test]
+    fn test_make_bids_basic() {
+        let adapter = LunamediaAdapter::new("https://luna.example.com/{{.PublisherID}}".to_string());
+        let body = br#"{"id":"r","seatbid":[{"bid":[{"id":"b1","impid":"imp1","price":1.0}]}]}"#;
+        let resp = ResponseData::new(200, body.to_vec());
+        let result = adapter.make_bids(&make_req(), &RequestData::default(), &resp).unwrap();
+        assert_eq!(result.bids.len(), 1);
+    }
+}
