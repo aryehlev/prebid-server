@@ -81,12 +81,18 @@ impl Bidder for OnetagAdapter {
         };
 
         let imp_ids = get_imp_ids(&request.imp);
+        let mut headers = HashMap::new();
+        headers.insert(
+            "Content-Type".to_string(),
+            "application/json;charset=utf-8".to_string(),
+        );
+        headers.insert("Accept".to_string(), "application/json".to_string());
         (
             vec![RequestData {
                 method: "POST".to_string(),
                 uri: url,
                 body,
-                headers: HashMap::new(),
+                headers,
                 imp_ids,
             }],
             vec![],
@@ -127,5 +133,55 @@ impl Bidder for OnetagAdapter {
         }
 
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_req() -> openrtb::BidRequest {
+        openrtb::BidRequest {
+            id: "r".to_string(),
+            imp: vec![openrtb::Imp {
+                id: "i1".to_string(),
+                banner: Some(openrtb::Banner {
+                    w: Some(300),
+                    h: Some(250),
+                    ..Default::default()
+                }),
+                ext: Some(serde_json::json!({"bidder": {"pubId": "publisherId"}})),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_onetag_url_and_headers() {
+        let adapter = OnetagAdapter::new("https://onetag-sys.com/prebid-request/{{.PublisherID}}".to_string());
+        let (reqs, _) = adapter.make_requests(&make_req(), &ExtraRequestInfo::default());
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(
+            reqs[0].uri,
+            "https://onetag-sys.com/prebid-request/publisherId"
+        );
+        assert_eq!(
+            reqs[0].headers.get("Content-Type").unwrap(),
+            "application/json;charset=utf-8"
+        );
+        assert!(!reqs[0].body.is_empty());
+    }
+
+    #[test]
+    fn test_onetag_make_bids() {
+        let adapter = OnetagAdapter::new("https://onetag-sys.com/prebid-request/{{.PublisherID}}".to_string());
+        let body = br#"{"id":"r","seatbid":[{"bid":[{"id":"b","impid":"i1","price":1.8,"crid":"c"}]}]}"#;
+        let resp = ResponseData::new(200, body.to_vec());
+        let result = adapter
+            .make_bids(&make_req(), &RequestData::default(), &resp)
+            .unwrap();
+        assert_eq!(result.bids.len(), 1);
+        assert_eq!(result.bids[0].bid_type, BidType::Banner);
     }
 }

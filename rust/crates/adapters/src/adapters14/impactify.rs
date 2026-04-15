@@ -1,5 +1,22 @@
 use std::collections::HashMap;
-use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_bid_type_from_imp, get_imp_ids};
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
+use openrtb_ext::BidType;
+
+fn get_media_type_for_imp(imp_id: &str, imps: &[openrtb::Imp]) -> Result<BidType, BidderError> {
+    for imp in imps {
+        if imp.id == imp_id {
+            if imp.banner.is_some() {
+                return Ok(BidType::Banner);
+            } else if imp.video.is_some() {
+                return Ok(BidType::Video);
+            }
+        }
+    }
+    Err(BidderError::BadInput(format!(
+        "Failed to find a supported media type impression \"{}\"",
+        imp_id
+    )))
+}
 
 pub struct ImpactifyAdapter { pub endpoint: String }
 impl ImpactifyAdapter {
@@ -89,18 +106,36 @@ impl Bidder for ImpactifyAdapter {
             if bid.price <= 0.0 {
                 continue;
             }
-            match request.imp.iter().find(|i| i.id == bid.impid) {
-                Some(imp) => {
-                    let bid_type = get_bid_type_from_imp(imp);
-                    result.bids.push(TypedBid::new(bid.clone(), bid_type));
-                }
-                None => {
-                    return Err(vec![BidderError::BadInput(
-                        format!("Failed to find a supported media type impression \"{}\"", bid.impid)
-                    )]);
-                }
+            match get_media_type_for_imp(&bid.impid, &request.imp) {
+                Ok(bt) => result.bids.push(TypedBid::new(bid.clone(), bt)),
+                Err(e) => return Err(vec![e]),
             }
         }
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_make_requests_sets_cur_and_remaps_ext() {
+        let adapter = ImpactifyAdapter::new("https://impactify.example/rtb".to_string());
+        let mut req = openrtb::BidRequest::default();
+        req.id = "r1".to_string();
+        req.imp = vec![openrtb::Imp {
+            id: "imp1".to_string(),
+            video: Some(Default::default()),
+            ext: Some(serde_json::json!({"bidder": {"appId": "a", "format": "screen"}})),
+            ..Default::default()
+        }];
+        let info = ExtraRequestInfo::default();
+        let (requests, errs) = adapter.make_requests(&req, &info);
+        assert!(errs.is_empty());
+        assert_eq!(requests.len(), 1);
+        let parsed: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(parsed["cur"], serde_json::json!(["USD"]));
+        assert!(parsed["imp"][0]["ext"]["impactify"]["appId"] == "a");
     }
 }

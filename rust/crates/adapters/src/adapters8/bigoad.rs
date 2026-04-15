@@ -118,3 +118,26 @@ impl Bidder for BigoadAdapter {
         Ok(result)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_make_requests_template_url() {
+        let adapter = BigoadAdapter::new("https://bigoad.example/{{.SspId}}/rtb".to_string());
+        let mut req = openrtb::BidRequest::default();
+        req.id = "r".to_string();
+        req.imp = vec![openrtb::Imp {
+            id: "imp1".to_string(),
+            banner: Some(Default::default()),
+            ext: Some(serde_json::json!({"bidder":{"sspid":"ssp1"}})),
+            ..Default::default()
+        }];
+        let info = ExtraRequestInfo::default();
+        let (requests, errs) = adapter.make_requests(&req, &info);
+        assert!(errs.is_empty());
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].uri, "https://bigoad.example/ssp1/rtb");
+    }
+}

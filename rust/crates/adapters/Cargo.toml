@@ -12,3 +12,6 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
+pbs-config = { path = "../config" }
+once_cell = { workspace = true }
+serde_yaml = { workspace = true }

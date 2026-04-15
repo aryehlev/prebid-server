@@ -156,3 +156,45 @@ impl Bidder for OguryAdapter {
         Ok(result)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_make_requests_hoists_bidder_params() {
+        let adapter = OguryAdapter::new("https://ogury.example/rtb".to_string());
+        let mut req = openrtb::BidRequest::default();
+        req.id = "r".to_string();
+        req.imp = vec![openrtb::Imp {
+            id: "imp1".to_string(),
+            banner: Some(Default::default()),
+            ext: Some(serde_json::json!({"bidder":{"assetKey":"AK","adUnitId":"AU"}})),
+            ..Default::default()
+        }];
+        let info = ExtraRequestInfo::default();
+        let (requests, errs) = adapter.make_requests(&req, &info);
+        assert!(errs.is_empty());
+        assert_eq!(requests.len(), 1);
+        let parsed: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(parsed["imp"][0]["ext"]["assetKey"], "AK");
+        assert_eq!(parsed["imp"][0]["ext"]["adUnitId"], "AU");
+        assert_eq!(parsed["imp"][0]["tagid"], "imp1");
+    }
+
+    #[test]
+    fn test_make_requests_requires_params_or_publisher_id() {
+        let adapter = OguryAdapter::new("https://ogury.example/rtb".to_string());
+        let mut req = openrtb::BidRequest::default();
+        req.imp = vec![openrtb::Imp {
+            id: "imp1".to_string(),
+            banner: Some(Default::default()),
+            ext: Some(serde_json::json!({"bidder":{}})),
+            ..Default::default()
+        }];
+        let info = ExtraRequestInfo::default();
+        let (requests, errs) = adapter.make_requests(&req, &info);
+        assert!(requests.is_empty());
+        assert!(!errs.is_empty());
+    }
+}

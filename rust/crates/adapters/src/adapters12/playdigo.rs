@@ -103,3 +103,47 @@ impl Bidder for PlaydigoAdapter {
         Ok(result)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_make_requests_publisher_type() {
+        let adapter = PlaydigoAdapter::new("https://playdigo.example/rtb".to_string());
+        let mut req = openrtb::BidRequest::default();
+        req.id = "r".to_string();
+        req.imp = vec![openrtb::Imp {
+            id: "imp1".to_string(),
+            banner: Some(Default::default()),
+            ext: Some(serde_json::json!({"bidder":{"placementId":"P1"}})),
+            ..Default::default()
+        }];
+        let info = ExtraRequestInfo::default();
+        let (requests, errs) = adapter.make_requests(&req, &info);
+        assert!(errs.is_empty());
+        assert_eq!(requests.len(), 1);
+        let parsed: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(parsed["imp"][0]["ext"]["bidder"]["type"], "publisher");
+        assert_eq!(parsed["imp"][0]["ext"]["bidder"]["placementId"], "P1");
+    }
+
+    #[test]
+    fn test_make_requests_network_type() {
+        let adapter = PlaydigoAdapter::new("https://playdigo.example/rtb".to_string());
+        let mut req = openrtb::BidRequest::default();
+        req.imp = vec![openrtb::Imp {
+            id: "imp1".to_string(),
+            banner: Some(Default::default()),
+            ext: Some(serde_json::json!({"bidder":{"endpointId":"E1"}})),
+            ..Default::default()
+        }];
+        let info = ExtraRequestInfo::default();
+        let (requests, errs) = adapter.make_requests(&req, &info);
+        assert!(errs.is_empty());
+        assert_eq!(requests.len(), 1);
+        let parsed: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(parsed["imp"][0]["ext"]["bidder"]["type"], "network");
+        assert_eq!(parsed["imp"][0]["ext"]["bidder"]["endpointId"], "E1");
+    }
+}

@@ -1,18 +1,28 @@
 //! US New Jersey (NJDPA) GPP section — core segment parser.
 //!
-//! Uses USNat as the baseline. Sensitive-data category count defaults
-//! to 8 in the absence of a final locked-in spec; cross-check against
-//! the IAB GPP `Sections/` directory before using in production.
+//! Reference: IAB Global Privacy Platform, Sections directory
+//! <https://github.com/InteractiveAdvertisingBureau/Global-Privacy-Platform/tree/main/Sections>
+//! Specifically the `US-NJ` section specification.
 //!
-//! Approximate layout (bit widths):
+//! New Jersey's NJDPA follows the USNat baseline for the sensitive-data
+//! category list. Per the IAB `US-NJ` spec, the sensitive-data
+//! processing field contains 8 two-bit values.
+//!
+//! TODO: cross-check with spec — NJDPA statutory text additionally
+//! breaks out subcategories (e.g. distinct "health data" and
+//! "financial data" sub-buckets). If the final IAB encoding splits
+//! those into separate two-bit slots, `SENSITIVE_DATA_CATEGORIES`
+//! below must be widened to match.
+//!
+//! Approximate layout (bit widths, core segment):
 //!   version                              6
 //!   sharing_notice                       2
 //!   sale_opt_out_notice                  2
 //!   targeted_advertising_opt_out_notice  2
 //!   sale_opt_out                         2
 //!   targeted_advertising_opt_out         2
-//!   sensitive_data_processing            8 x 2  (default)
-//!   known_child_sensitive_data_consents  2 x 2
+//!   sensitive_data_processing            8 x 2
+//!   known_child_sensitive_data_consents  2 x 2  (<13, <16)
 //!   personal_data_consents               2
 //!   mspa_covered_transaction             2
 //!   mspa_opt_out_option_mode             2
@@ -32,9 +42,9 @@ pub struct UsNjSection {
     pub sale_opt_out: u8,
     pub sharing_opt_out: u8,
     pub targeted_advertising_opt_out: u8,
-    /// Default 8 two-bit values (see module doc).
+    /// 8 two-bit values in NJ (see module doc — subcategory TODO).
     pub sensitive_data_processing: Vec<u8>,
-    /// 2 two-bit values.
+    /// 2 two-bit values (<13, <16 age buckets).
     pub known_child_sensitive_data_consents: Vec<u8>,
     pub personal_data_consents: u8,
     pub mspa_covered: u8,
@@ -42,7 +52,12 @@ pub struct UsNjSection {
     pub mspa_service_provider_mode: u8,
 }
 
+/// NJDPA defines 8 top-level sensitive-data categories in the IAB
+/// US-NJ section. TODO: cross-check with spec — NJ additionally
+/// enumerates health/financial sub-buckets that may become distinct
+/// encoded slots in a future spec revision.
 const SENSITIVE_DATA_CATEGORIES: usize = 8;
+/// Two known-child buckets (<13, <16) as in USNat baseline.
 const KNOWN_CHILD_FIELDS: usize = 2;
 
 /// Parse the core segment of a US-NJ GPP section from raw bytes.

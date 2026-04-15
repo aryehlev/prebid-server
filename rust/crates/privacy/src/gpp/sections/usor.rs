@@ -1,17 +1,24 @@
 //! US Oregon (OCPA) GPP section — core segment parser.
 //!
-//! Uses USNat as the baseline. Sensitive-data category count defaults
-//! to 8 in the absence of a final locked-in spec; cross-check against
-//! the IAB GPP `Sections/` directory before using in production.
+//! Reference: IAB Global Privacy Platform, Sections directory
+//! <https://github.com/InteractiveAdvertisingBureau/Global-Privacy-Platform/tree/main/Sections>
+//! Specifically the `US-OR` section specification.
 //!
-//! Approximate layout (bit widths):
+//! Oregon's OCPA expands the sensitive-data category list beyond the
+//! USNat baseline. Per the IAB `US-OR` spec, the sensitive-data
+//! processing field contains 11 two-bit values (versus 8 in USNat/most
+//! other state sections). The additional entries cover categories such
+//! as precise geolocation, citizenship / immigration status, and
+//! transgender / non-binary status as enumerated by OCPA.
+//!
+//! Approximate layout (bit widths, core segment):
 //!   version                              6
 //!   sharing_notice                       2
 //!   sale_opt_out_notice                  2
 //!   targeted_advertising_opt_out_notice  2
 //!   sale_opt_out                         2
 //!   targeted_advertising_opt_out         2
-//!   sensitive_data_processing            8 x 2  (default)
+//!   sensitive_data_processing            11 x 2
 //!   known_child_sensitive_data_consents  2 x 2
 //!   personal_data_consents               2
 //!   mspa_covered_transaction             2
@@ -32,9 +39,9 @@ pub struct UsOrSection {
     pub sale_opt_out: u8,
     pub sharing_opt_out: u8,
     pub targeted_advertising_opt_out: u8,
-    /// Default 8 two-bit values (see module doc).
+    /// 11 two-bit values in OR (see module doc).
     pub sensitive_data_processing: Vec<u8>,
-    /// 2 two-bit values.
+    /// 2 two-bit values (<13 and <16 age buckets).
     pub known_child_sensitive_data_consents: Vec<u8>,
     pub personal_data_consents: u8,
     pub mspa_covered: u8,
@@ -42,7 +49,9 @@ pub struct UsOrSection {
     pub mspa_service_provider_mode: u8,
 }
 
-const SENSITIVE_DATA_CATEGORIES: usize = 8;
+/// OCPA defines 11 sensitive-data categories in the IAB US-OR section.
+const SENSITIVE_DATA_CATEGORIES: usize = 11;
+/// Two known-child buckets (<13, <16) as in USNat baseline.
 const KNOWN_CHILD_FIELDS: usize = 2;
 
 /// Parse the core segment of a US-OR GPP section from raw bytes.
@@ -124,6 +133,7 @@ mod tests {
 
     #[test]
     fn parse_all_zero_payload() {
+        // 6 bits version + (5 + 11 + 2 + 4) two-bit fields = 6 + 44 = 50 bits.
         let mut fields: Vec<(u64, usize)> = vec![(1, 6)];
         for _ in 0..(5 + SENSITIVE_DATA_CATEGORIES + KNOWN_CHILD_FIELDS + 4) {
             fields.push((0, 2));
@@ -138,24 +148,30 @@ mod tests {
 
     #[test]
     fn parse_known_values() {
+        // Layout: version=2, 5 notices/opt-outs, 11 sensitive-data values,
+        // 2 known-child values, personal, mspa_covered, mspa_opt_mode,
+        // mspa_sp_mode.
+        let sensitive = [1u64, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3];
+        assert_eq!(sensitive.len(), SENSITIVE_DATA_CATEGORIES);
+
         let mut fields: Vec<(u64, usize)> = vec![
             (2, 6),
-            (1, 2),
-            (2, 2),
-            (3, 2),
-            (1, 2),
-            (2, 2),
+            (1, 2), // sharing_notice
+            (2, 2), // sale_opt_out_notice
+            (3, 2), // TA_notice
+            (1, 2), // sale_opt_out
+            (2, 2), // TA_opt_out
         ];
-        for v in [1u64, 2, 3, 0, 1, 2, 3, 0] {
+        for v in sensitive {
             fields.push((v, 2));
         }
         for v in [2u64, 1] {
             fields.push((v, 2));
         }
-        fields.push((1, 2));
-        fields.push((2, 2));
-        fields.push((3, 2));
-        fields.push((1, 2));
+        fields.push((1, 2)); // personal
+        fields.push((2, 2)); // mspa_covered
+        fields.push((3, 2)); // mspa_opt_out
+        fields.push((1, 2)); // mspa_sp
         let bytes = pack(&fields);
 
         let s = parse(&bytes).unwrap();
@@ -165,7 +181,10 @@ mod tests {
         assert_eq!(s.targeted_advertising_opt_out_notice, 3);
         assert_eq!(s.sale_opt_out, 1);
         assert_eq!(s.targeted_advertising_opt_out, 2);
-        assert_eq!(s.sensitive_data_processing, vec![1, 2, 3, 0, 1, 2, 3, 0]);
+        assert_eq!(
+            s.sensitive_data_processing,
+            vec![1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3]
+        );
         assert_eq!(s.known_child_sensitive_data_consents, vec![2, 1]);
         assert_eq!(s.personal_data_consents, 1);
         assert_eq!(s.mspa_covered, 2);

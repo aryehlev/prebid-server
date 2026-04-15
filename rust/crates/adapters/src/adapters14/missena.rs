@@ -256,3 +256,32 @@ impl Bidder for MissenaAdapter {
         Ok(result)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_origin() {
+        assert_eq!(parse_origin("https://example.com/path").as_deref(), Some("https://example.com"));
+        assert_eq!(parse_origin("not-a-url"), None);
+    }
+
+    #[test]
+    fn test_make_requests_replaces_publisher_id_macro() {
+        let adapter = MissenaAdapter::new("https://missena.example/{{.PublisherID}}/rtb".to_string());
+        let mut req = openrtb::BidRequest::default();
+        req.id = "r".to_string();
+        req.imp = vec![openrtb::Imp {
+            id: "imp1".to_string(),
+            banner: Some(Default::default()),
+            ext: Some(serde_json::json!({"bidder":{"apiKey":"KEY","placement":"sticky"}})),
+            ..Default::default()
+        }];
+        let info = ExtraRequestInfo::default();
+        let (requests, errs) = adapter.make_requests(&req, &info);
+        assert!(errs.is_empty());
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].uri, "https://missena.example/KEY/rtb");
+    }
+}

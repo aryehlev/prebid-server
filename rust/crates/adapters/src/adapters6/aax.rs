@@ -81,3 +81,41 @@ impl Bidder for AaxAdapter {
         Ok(result)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_req() -> openrtb::BidRequest {
+        openrtb::BidRequest {
+            id: "r".to_string(),
+            imp: vec![openrtb::Imp {
+                id: "i1".to_string(),
+                banner: Some(openrtb::Banner { w: Some(300), h: Some(250), ..Default::default() }),
+                ext: Some(serde_json::json!({"bidder": {}})),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_make_requests_basic() {
+        let a = AaxAdapter::new("https://prebid.aaxads.com/rtb/pb/aax-prebid".to_string());
+        let (reqs, errs) = a.make_requests(&make_req(), &ExtraRequestInfo::default());
+        assert!(errs.is_empty());
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].uri, "https://prebid.aaxads.com/rtb/pb/aax-prebid");
+        assert_eq!(reqs[0].headers.get("Content-Type").unwrap(), "application/json;charset=utf-8");
+    }
+
+    #[test]
+    fn test_make_bids_ext_native() {
+        let a = AaxAdapter::new("x".to_string());
+        let body = br#"{"id":"r","seatbid":[{"bid":[{"id":"b1","impid":"i1","price":1.0,"ext":{"adCodeType":"native"}}]}]}"#;
+        let resp = ResponseData::new(200, body.to_vec());
+        let result = a.make_bids(&make_req(), &RequestData::default(), &resp).unwrap();
+        assert_eq!(result.bids.len(), 1);
+        assert_eq!(result.bids[0].bid_type, BidType::Native);
+    }
+}

@@ -344,3 +344,60 @@ impl Bidder for OpenxAdapter {
         Ok(result)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_req() -> openrtb::BidRequest {
+        openrtb::BidRequest {
+            id: "r".to_string(),
+            imp: vec![openrtb::Imp {
+                id: "i1".to_string(),
+                banner: Some(openrtb::Banner {
+                    w: Some(300),
+                    h: Some(250),
+                    ..Default::default()
+                }),
+                ext: Some(serde_json::json!({
+                    "bidder": {"delDomain": "se-demo-d.openx.net", "unit": "540949380"}
+                })),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_openx_url_and_headers() {
+        let adapter = OpenxAdapter::new(
+            "https://rtb.openx.net/sync/prebid".to_string(),
+            "openx".to_string(),
+        );
+        let (reqs, _) = adapter.make_requests(&make_req(), &ExtraRequestInfo::default());
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].uri, "https://rtb.openx.net/sync/prebid");
+        assert_eq!(
+            reqs[0].headers.get("Content-Type").unwrap(),
+            "application/json;charset=utf-8"
+        );
+        assert!(!reqs[0].body.is_empty());
+    }
+
+    #[test]
+    fn test_openx_make_bids() {
+        let adapter = OpenxAdapter::new(
+            "https://rtb.openx.net/sync/prebid".to_string(),
+            "openx".to_string(),
+        );
+        let body = br#"{"id":"r","seatbid":[{"bid":[{"id":"b","impid":"i1","price":1.25,"crid":"c"}]}]}"#;
+        let resp = ResponseData::new(200, body.to_vec());
+        let result = adapter
+            .make_bids(&make_req(), &RequestData::default(), &resp)
+            .unwrap();
+        assert_eq!(result.bids.len(), 1);
+        assert_eq!(result.bids[0].bid.impid, "i1");
+        assert_eq!(result.bids[0].bid.price, 1.25);
+        assert_eq!(result.bids[0].bid.crid.as_deref(), Some("c"));
+    }
+}

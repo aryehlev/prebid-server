@@ -664,3 +664,47 @@ impl Bidder for YieldlabAdapter {
         Ok(result)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_req() -> openrtb::BidRequest {
+        openrtb::BidRequest {
+            id: "r".to_string(),
+            imp: vec![openrtb::Imp {
+                id: "i1".to_string(),
+                banner: Some(openrtb::Banner {
+                    w: Some(300),
+                    h: Some(250),
+                    format: Some(vec![openrtb::Format {
+                        w: Some(300),
+                        h: Some(250),
+                        ..Default::default()
+                    }]),
+                    ..Default::default()
+                }),
+                ext: Some(serde_json::json!({
+                    "bidder": {"adslotId": "1111", "supplyId": "2222"}
+                })),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_yieldlab_url_and_headers() {
+        let adapter = YieldlabAdapter::new("https://ad.yieldlab.net".to_string());
+        let (reqs, errs) = adapter.make_requests(&make_req(), &ExtraRequestInfo::default());
+        assert!(errs.is_empty(), "errs: {:?}", errs);
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].method, "GET");
+        assert!(
+            reqs[0].uri.starts_with("https://ad.yieldlab.net/1111?"),
+            "uri: {}",
+            reqs[0].uri
+        );
+        assert_eq!(reqs[0].headers.get("Accept").unwrap(), "application/json");
+    }
+}

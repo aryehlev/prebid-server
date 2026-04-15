@@ -209,3 +209,53 @@ impl Bidder for AdtelligentAdapter {
         Ok(result)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_req() -> openrtb::BidRequest {
+        openrtb::BidRequest {
+            id: "r".to_string(),
+            imp: vec![openrtb::Imp {
+                id: "i1".to_string(),
+                banner: Some(openrtb::Banner {
+                    w: Some(300),
+                    h: Some(250),
+                    ..Default::default()
+                }),
+                ext: Some(serde_json::json!({"bidder": {"source_id": 1000}})),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_adtelligent_url_and_headers() {
+        let adapter = AdtelligentAdapter::new("https://ghb.adtelligent.com/pbs/ortb".to_string());
+        let (reqs, _) = adapter.make_requests(&make_req(), &ExtraRequestInfo::default());
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(
+            reqs[0].uri,
+            "https://ghb.adtelligent.com/pbs/ortb?aid=1000"
+        );
+        assert_eq!(
+            reqs[0].headers.get("Content-Type").unwrap(),
+            "application/json;charset=utf-8"
+        );
+        assert!(!reqs[0].body.is_empty());
+    }
+
+    #[test]
+    fn test_adtelligent_make_bids() {
+        let adapter = AdtelligentAdapter::new("https://ghb.adtelligent.com/pbs/ortb".to_string());
+        let body = br#"{"id":"r","seatbid":[{"bid":[{"id":"b","impid":"i1","price":1.4,"crid":"c"}]}]}"#;
+        let resp = ResponseData::new(200, body.to_vec());
+        let result = adapter
+            .make_bids(&make_req(), &RequestData::default(), &resp)
+            .unwrap();
+        assert_eq!(result.bids.len(), 1);
+        assert_eq!(result.bids[0].bid_type, BidType::Banner);
+    }
+}

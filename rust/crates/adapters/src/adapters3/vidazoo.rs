@@ -44,7 +44,8 @@ fn get_media_type_for_bid(bid: &openrtb::Bid) -> Result<BidType, BidderError> {
     }
 }
 
-/// URL-encode a string (percent-encoding, space as %20)
+/// URL-encode a string using Go's url.QueryEscape semantics: space -> '+',
+/// unreserved chars pass through, everything else percent-encoded.
 fn percent_encode(s: &str) -> String {
     let mut encoded = String::with_capacity(s.len());
     for byte in s.bytes() {
@@ -53,6 +54,7 @@ fn percent_encode(s: &str) -> String {
             | b'-' | b'_' | b'.' | b'~' => {
                 encoded.push(byte as char);
             }
+            b' ' => encoded.push('+'),
             b => {
                 encoded.push_str(&format!("%{:02X}", b));
             }
@@ -157,5 +159,44 @@ impl Bidder for VidazooAdapter {
         }
 
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_req() -> openrtb::BidRequest {
+        openrtb::BidRequest {
+            id: "r".to_string(),
+            imp: vec![openrtb::Imp {
+                id: "i1".to_string(),
+                banner: Some(openrtb::Banner { w: Some(300), h: Some(250), ..Default::default() }),
+                ext: Some(serde_json::json!({"bidder": {"cId": "con123"}})),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_make_requests_basic() {
+        let a = VidazooAdapter::new("https://prebid-server.cootlogix.com/openrtb/".to_string());
+        let (reqs, errs) = a.make_requests(&make_req(), &ExtraRequestInfo::default());
+        assert!(errs.is_empty());
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].uri, "https://prebid-server.cootlogix.com/openrtb/con123");
+        assert_eq!(reqs[0].headers.get("Content-Type").unwrap(), "application/json;charset=utf-8");
+    }
+
+    #[test]
+    fn test_make_bids_video() {
+        let a = VidazooAdapter::new("x".to_string());
+        let body = br#"{"id":"r","cur":"USD","seatbid":[{"bid":[{"id":"b1","impid":"i1","price":1.0,"mtype":2}]}]}"#;
+        let resp = ResponseData::new(200, body.to_vec());
+        let result = a.make_bids(&make_req(), &RequestData::default(), &resp).unwrap();
+        assert_eq!(result.bids.len(), 1);
+        assert_eq!(result.bids[0].bid_type, BidType::Video);
+        assert_eq!(result.currency, "USD");
     }
 }

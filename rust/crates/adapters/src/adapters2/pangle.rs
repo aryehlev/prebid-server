@@ -202,3 +202,30 @@ impl Bidder for PangleAdapter {
         Ok(result)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_make_requests_sets_token_header_and_adtype() {
+        let adapter = PangleAdapter::new("https://pangle.example/rtb".to_string());
+        let mut req = openrtb::BidRequest::default();
+        req.id = "r".to_string();
+        req.imp = vec![openrtb::Imp {
+            id: "imp1".to_string(),
+            banner: Some(Default::default()),
+            ext: Some(serde_json::json!({"bidder":{"token":"TK","appid":"A","placementid":"P"}})),
+            ..Default::default()
+        }];
+        let info = ExtraRequestInfo::default();
+        let (requests, errs) = adapter.make_requests(&req, &info);
+        assert!(errs.is_empty());
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].headers.get("TOKEN").map(String::as_str), Some("TK"));
+        let parsed: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(parsed["imp"][0]["ext"]["adtype"], 1);
+        assert_eq!(parsed["imp"][0]["ext"]["is_prebid"], true);
+        assert_eq!(parsed["imp"][0]["ext"]["networkids"]["appid"], "A");
+    }
+}

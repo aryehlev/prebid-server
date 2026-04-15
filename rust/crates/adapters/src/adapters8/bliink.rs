@@ -87,6 +87,35 @@ impl Bidder for BliinkAdapter {
             }
         }
 
+        if !errs.is_empty() && result.bids.is_empty() {
+            return Err(errs);
+        }
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_make_requests_sets_headers() {
+        let adapter = BliinkAdapter::new("https://bliink.example/rtb".to_string());
+        let mut req = openrtb::BidRequest::default();
+        req.id = "req-1".to_string();
+        req.imp = vec![openrtb::Imp {
+            id: "imp1".to_string(),
+            banner: Some(Default::default()),
+            ..Default::default()
+        }];
+        let info = ExtraRequestInfo::default();
+        let (requests, errs) = adapter.make_requests(&req, &info);
+        assert!(errs.is_empty());
+        assert_eq!(requests.len(), 1);
+        let r = &requests[0];
+        assert_eq!(r.method, "POST");
+        assert_eq!(r.uri, "https://bliink.example/rtb");
+        assert_eq!(r.headers.get("x-openrtb-version").map(String::as_str), Some("2.5"));
+        assert_eq!(r.imp_ids, vec!["imp1".to_string()]);
     }
 }

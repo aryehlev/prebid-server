@@ -121,12 +121,59 @@ impl Bidder for FreewheelsspAdapter {
                         bid_video.primary_category = first.clone();
                     }
                 }
-                // bid.dur is not present in the openrtb Bid struct; duration stays 0
+                if let Some(dur) = bid.dur {
+                    if dur > 0.0 {
+                        bid_video.duration = dur as i32;
+                    }
+                }
                 let mut typed_bid = TypedBid::new(bid, BidType::Video);
                 typed_bid.bid_video = Some(bid_video);
                 result.bids.push(typed_bid);
             }
         }
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_req() -> openrtb::BidRequest {
+        openrtb::BidRequest {
+            id: "r".to_string(),
+            imp: vec![openrtb::Imp {
+                id: "i1".to_string(),
+                video: Some(openrtb::Video { w: Some(640), h: Some(480), ..Default::default() }),
+                ext: Some(serde_json::json!({"bidder": {"zoneId": 12345}})),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_make_requests_basic() {
+        let a = FreewheelsspAdapter::new("https://ads.stickyadstv.com/www/delivery/swfIndex.php?reqType=AdsSetup&protocolVersion=2.0".to_string());
+        let (reqs, errs) = a.make_requests(&make_req(), &ExtraRequestInfo::default());
+        assert!(errs.is_empty());
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].headers.get("Componentid").unwrap(), "prebid-go");
+        let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+        assert_eq!(body["imp"][0]["ext"]["zoneId"], "12345");
+    }
+
+    #[test]
+    fn test_make_bids_basic() {
+        let a = FreewheelsspAdapter::new("x".to_string());
+        let body = br#"{"id":"r","cur":"USD","seatbid":[{"bid":[{"id":"b1","impid":"i1","price":1.0,"cat":["IAB1"],"dur":15}]}]}"#;
+        let resp = ResponseData::new(200, body.to_vec());
+        let result = a.make_bids(&make_req(), &RequestData::default(), &resp).unwrap();
+        assert_eq!(result.bids.len(), 1);
+        assert_eq!(result.bids[0].bid_type, BidType::Video);
+        let video_meta = result.bids[0].bid_video.as_ref().unwrap();
+        assert_eq!(video_meta.primary_category, "IAB1");
+        assert_eq!(video_meta.duration, 15);
+        assert_eq!(result.currency, "USD");
     }
 }

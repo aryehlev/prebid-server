@@ -145,9 +145,8 @@ impl Bidder for OutbrainAdapter {
             Err(e) => return (vec![], vec![BidderError::BadInput(e.to_string())]),
         };
 
-        let mut headers = HashMap::new();
-        headers.insert("Content-Type".to_string(), "application/json;charset=utf-8".to_string());
-        headers.insert("Accept".to_string(), "application/json".to_string());
+        // Go adapter does not set any headers on the request
+        let headers = HashMap::new();
 
         (vec![RequestData { method: "POST".to_string(), uri: self.endpoint.clone(), body, headers, imp_ids: get_imp_ids(&req.imp) }], errs)
     }
@@ -211,5 +210,48 @@ impl Bidder for OutbrainAdapter {
             return Err(errs);
         }
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_req() -> openrtb::BidRequest {
+        openrtb::BidRequest {
+            id: "r".to_string(),
+            imp: vec![openrtb::Imp {
+                id: "i1".to_string(),
+                banner: Some(openrtb::Banner { w: Some(300), h: Some(250), ..Default::default() }),
+                ext: Some(serde_json::json!({"bidder": {"tagId": "tag1", "publisher": {"id": "pub1", "name": "Pubn"}}})),
+                ..Default::default()
+            }],
+            site: Some(openrtb::Site::default()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_make_requests_basic() {
+        let a = OutbrainAdapter::new("https://prebidtest.zemanta.com/api/bidder/prebidtest/bid/".to_string());
+        let (reqs, errs) = a.make_requests(&make_req(), &ExtraRequestInfo::default());
+        assert!(errs.is_empty());
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].uri, "https://prebidtest.zemanta.com/api/bidder/prebidtest/bid/");
+        // Go adapter sets no headers
+        assert!(reqs[0].headers.is_empty());
+        let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+        assert_eq!(body["imp"][0]["tagid"], "tag1");
+        assert_eq!(body["site"]["publisher"]["id"], "pub1");
+    }
+
+    #[test]
+    fn test_make_bids_basic() {
+        let a = OutbrainAdapter::new("x".to_string());
+        let body = br#"{"id":"r","seatbid":[{"bid":[{"id":"b1","impid":"i1","price":1.0}]}]}"#;
+        let resp = ResponseData::new(200, body.to_vec());
+        let result = a.make_bids(&make_req(), &RequestData::default(), &resp).unwrap();
+        assert_eq!(result.bids.len(), 1);
+        assert_eq!(result.bids[0].bid_type, BidType::Banner);
     }
 }

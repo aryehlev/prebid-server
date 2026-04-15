@@ -452,3 +452,69 @@ impl Bidder for RubiconAdapter {
         Ok(result)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_req() -> openrtb::BidRequest {
+        openrtb::BidRequest {
+            id: "r".to_string(),
+            imp: vec![openrtb::Imp {
+                id: "i1".to_string(),
+                banner: Some(openrtb::Banner {
+                    w: Some(300),
+                    h: Some(250),
+                    ..Default::default()
+                }),
+                ext: Some(serde_json::json!({
+                    "bidder": {"accountId": 1, "siteId": 2, "zoneId": 3}
+                })),
+                ..Default::default()
+            }],
+            site: Some(openrtb::Site::default()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_rubicon_endpoint_and_headers() {
+        let adapter = RubiconAdapter::new(
+            "https://fastlane.rubiconproject.com/a/api/exchange.json".to_string(),
+            "user".to_string(),
+            "pass".to_string(),
+        );
+        let (reqs, _) = adapter.make_requests(&make_req(), &ExtraRequestInfo::default());
+        assert!(!reqs.is_empty());
+        assert_eq!(
+            reqs[0].uri,
+            "https://fastlane.rubiconproject.com/a/api/exchange.json"
+        );
+        assert_eq!(
+            reqs[0].headers.get("Content-Type").unwrap(),
+            "application/json;charset=utf-8"
+        );
+        assert!(reqs[0].headers.contains_key("Authorization"));
+        assert!(!reqs[0].body.is_empty());
+    }
+
+    #[test]
+    fn test_rubicon_make_bids() {
+        let adapter = RubiconAdapter::new(
+            "https://fastlane.rubiconproject.com/a/api/exchange.json".to_string(),
+            "u".to_string(),
+            "p".to_string(),
+        );
+        let (reqs, _) = adapter.make_requests(&make_req(), &ExtraRequestInfo::default());
+        let ext_req = reqs.into_iter().next().unwrap();
+        let body = br#"{"id":"r","seatbid":[{"bid":[{"id":"b","impid":"i1","price":2.5,"crid":"c1"}]}]}"#;
+        let resp = ResponseData::new(200, body.to_vec());
+        let result = adapter
+            .make_bids(&make_req(), &ext_req, &resp)
+            .unwrap();
+        assert_eq!(result.bids.len(), 1);
+        assert_eq!(result.bids[0].bid.price, 2.5);
+        assert_eq!(result.bids[0].bid.impid, "i1");
+        assert_eq!(result.bids[0].bid.crid.as_deref(), Some("c1"));
+    }
+}

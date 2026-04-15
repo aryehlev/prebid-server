@@ -234,3 +234,50 @@ impl Bidder for RtbhouseAdapter {
         Ok(result)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_req() -> openrtb::BidRequest {
+        openrtb::BidRequest {
+            id: "r".to_string(),
+            imp: vec![openrtb::Imp {
+                id: "i1".to_string(),
+                banner: Some(openrtb::Banner { w: Some(300), h: Some(250), ..Default::default() }),
+                ext: Some(serde_json::json!({"bidder": {"publisherId": "pub-1"}, "ae": 1})),
+                ..Default::default()
+            }],
+            site: Some(openrtb::Site::default()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_make_requests_basic() {
+        let a = RtbhouseAdapter::new("https://rtbhouse.example/".to_string());
+        let (reqs, errs) = a.make_requests(&make_req(), &ExtraRequestInfo::default());
+        assert!(errs.is_empty());
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].uri, "https://rtbhouse.example/");
+        assert_eq!(reqs[0].headers.get("Content-Type").unwrap(), "application/json;charset=utf-8");
+        let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+        // PAAPI ae key must be removed
+        assert!(body["imp"][0]["ext"].get("ae").is_none());
+        // publisher ext.prebid.publisherId should be set
+        assert_eq!(body["site"]["publisher"]["ext"]["prebid"]["publisherId"], "pub-1");
+        // currency defaulted to USD
+        assert_eq!(body["cur"][0], "USD");
+    }
+
+    #[test]
+    fn test_make_bids_banner() {
+        let a = RtbhouseAdapter::new("x".to_string());
+        let body = br#"{"id":"r","seatbid":[{"bid":[{"id":"b1","impid":"i1","price":1.0,"mtype":1}]}]}"#;
+        let resp = ResponseData::new(200, body.to_vec());
+        let result = a.make_bids(&make_req(), &RequestData::default(), &resp).unwrap();
+        assert_eq!(result.bids.len(), 1);
+        assert_eq!(result.bids[0].bid_type, BidType::Banner);
+        assert_eq!(result.currency, "USD");
+    }
+}

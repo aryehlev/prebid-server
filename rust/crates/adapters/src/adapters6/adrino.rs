@@ -68,3 +68,21 @@ impl Bidder for AdrinoAdapter {
         Ok(result)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_make_requests_sets_content_type() {
+        let adapter = AdrinoAdapter::new("https://adrino.example/rtb".to_string());
+        let mut req = openrtb::BidRequest::default();
+        req.id = "r".to_string();
+        req.imp = vec![openrtb::Imp { id: "imp1".to_string(), native: Some(Default::default()), ..Default::default() }];
+        let info = ExtraRequestInfo::default();
+        let (requests, errs) = adapter.make_requests(&req, &info);
+        assert!(errs.is_empty());
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].headers.get("Content-Type").map(String::as_str), Some("application/json;charset=utf-8"));
+    }
+}

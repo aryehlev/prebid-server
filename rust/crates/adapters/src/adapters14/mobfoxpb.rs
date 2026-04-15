@@ -88,3 +88,44 @@ impl Bidder for MobfoxpbAdapter {
         Ok(result)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_make_requests_uses_key_route() {
+        let adapter = MobfoxpbAdapter::new("https://mobfoxpb.example/__route__/__method__/__key__".to_string());
+        let mut req = openrtb::BidRequest::default();
+        req.id = "r".to_string();
+        req.imp = vec![openrtb::Imp {
+            id: "imp1".to_string(),
+            banner: Some(Default::default()),
+            ext: Some(serde_json::json!({"bidder":{"key":"K1"}})),
+            ..Default::default()
+        }];
+        let info = ExtraRequestInfo::default();
+        let (requests, errs) = adapter.make_requests(&req, &info);
+        assert!(errs.is_empty());
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].uri, "https://mobfoxpb.example/rtb/req/K1");
+    }
+
+    #[test]
+    fn test_make_requests_uses_tag_route() {
+        let adapter = MobfoxpbAdapter::new("https://mobfoxpb.example/__route__/__method__".to_string());
+        let mut req = openrtb::BidRequest::default();
+        req.id = "r".to_string();
+        req.imp = vec![openrtb::Imp {
+            id: "imp1".to_string(),
+            native: Some(Default::default()),
+            ext: Some(serde_json::json!({"bidder":{"TagID":"T1"}})),
+            ..Default::default()
+        }];
+        let info = ExtraRequestInfo::default();
+        let (requests, errs) = adapter.make_requests(&req, &info);
+        assert!(errs.is_empty());
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].uri, "https://mobfoxpb.example/o/ortb");
+    }
+}

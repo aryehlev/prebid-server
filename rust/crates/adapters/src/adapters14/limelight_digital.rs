@@ -12,8 +12,22 @@ impl LimelightDigitalAdapter {
 struct ImpExtLimelightDigital {
     #[serde(default)]
     host: String,
-    #[serde(rename = "publisherId", default)]
+    #[serde(rename = "publisherId", default, deserialize_with = "de_publisher_id")]
     publisher_id: String,
+}
+
+fn de_publisher_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    let v = serde_json::Value::deserialize(deserializer)?;
+    match v {
+        serde_json::Value::String(s) => Ok(s),
+        serde_json::Value::Number(n) => Ok(n.to_string()),
+        serde_json::Value::Null => Ok(String::new()),
+        _ => Err(D::Error::custom("publisherId must be string or number")),
+    }
 }
 
 fn get_media_type_for_bid(imp_id: &str, imps: &[openrtb::Imp]) -> Result<BidType, BidderError> {
@@ -123,6 +137,41 @@ impl Bidder for LimelightDigitalAdapter {
             }
         }
 
+        if !errs.is_empty() && result.bids.is_empty() {
+            return Err(errs);
+        }
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn publisher_id_number_parses() {
+        let v: ImpExtLimelightDigital =
+            serde_json::from_str(r#"{"host":"ssp.example","publisherId":123}"#).unwrap();
+        assert_eq!(v.publisher_id, "123");
+    }
+
+    #[test]
+    fn make_requests_builds_url() {
+        let adapter = LimelightDigitalAdapter::new(
+            "https://{{.Host}}/pub/{{.PublisherID}}".to_string(),
+        );
+        let mut req = openrtb::BidRequest::default();
+        req.id = "r1".to_string();
+        req.imp = vec![openrtb::Imp {
+            id: "imp1".to_string(),
+            banner: Some(Default::default()),
+            ext: Some(serde_json::json!({"bidder":{"host":"ssp.example","publisherId":"42"}})),
+            ..Default::default()
+        }];
+        let info = ExtraRequestInfo::default();
+        let (requests, errs) = adapter.make_requests(&req, &info);
+        assert!(errs.is_empty());
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].uri, "https://ssp.example/pub/42");
     }
 }

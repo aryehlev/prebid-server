@@ -162,3 +162,45 @@ impl Bidder for AmxAdapter {
         Ok(result)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_req() -> openrtb::BidRequest {
+        openrtb::BidRequest {
+            id: "r".to_string(),
+            imp: vec![openrtb::Imp {
+                id: "i1".to_string(),
+                banner: Some(openrtb::Banner { w: Some(300), h: Some(250), ..Default::default() }),
+                ext: Some(serde_json::json!({"bidder": {"tagId": "pub1", "adUnitId": "unit1"}})),
+                ..Default::default()
+            }],
+            site: Some(openrtb::Site::default()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_make_requests_basic() {
+        let a = AmxAdapter::new("https://prebid.a-mo.net/a/c".to_string());
+        let (reqs, errs) = a.make_requests(&make_req(), &ExtraRequestInfo::default());
+        assert!(errs.is_empty());
+        assert_eq!(reqs.len(), 1);
+        assert!(reqs[0].uri.contains("v=pbs1.2"));
+        assert_eq!(reqs[0].headers.get("Content-Type").unwrap(), "application/json;charset=utf-8");
+        let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+        assert_eq!(body["imp"][0]["tagid"], "unit1");
+        assert_eq!(body["site"]["publisher"]["id"], "pub1");
+    }
+
+    #[test]
+    fn test_make_bids_basic() {
+        let a = AmxAdapter::new("https://x".to_string());
+        let body = br#"{"id":"r","seatbid":[{"bid":[{"id":"b1","impid":"i1","price":1.0}]}]}"#;
+        let resp = ResponseData::new(200, body.to_vec());
+        let result = a.make_bids(&make_req(), &RequestData::default(), &resp).unwrap();
+        assert_eq!(result.bids.len(), 1);
+        assert_eq!(result.bids[0].bid_type, BidType::Banner);
+    }
+}

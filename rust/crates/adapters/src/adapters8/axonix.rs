@@ -128,3 +128,32 @@ fn urlencoded(s: &str) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_make_requests_template_url() {
+        let adapter = AxonixAdapter::new("https://axonix.example/{{.AccountID}}/rtb".to_string());
+        let mut req = openrtb::BidRequest::default();
+        req.id = "r".to_string();
+        req.imp = vec![openrtb::Imp {
+            id: "imp1".to_string(),
+            banner: Some(Default::default()),
+            ext: Some(serde_json::json!({"bidder":{"supplyId":"abc"}})),
+            ..Default::default()
+        }];
+        let info = ExtraRequestInfo::default();
+        let (requests, errs) = adapter.make_requests(&req, &info);
+        assert!(errs.is_empty());
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].uri, "https://axonix.example/abc/rtb");
+    }
+
+    #[test]
+    fn test_format_price() {
+        assert_eq!(format_price(1.5), "1.5");
+        assert_eq!(format_price(2.0), "2");
+    }
+}

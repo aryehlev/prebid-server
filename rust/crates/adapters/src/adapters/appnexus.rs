@@ -367,3 +367,54 @@ impl Bidder for AppnexusAdapter {
         Ok(result)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_req() -> openrtb::BidRequest {
+        openrtb::BidRequest {
+            id: "r".to_string(),
+            imp: vec![openrtb::Imp {
+                id: "i1".to_string(),
+                banner: Some(openrtb::Banner {
+                    w: Some(300),
+                    h: Some(250),
+                    ..Default::default()
+                }),
+                ext: Some(serde_json::json!({
+                    "bidder": {"placement_id": 123, "member": "m1"}
+                })),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_make_requests_url_and_headers() {
+        let adapter = AppnexusAdapter::new("https://ib.adnxs.com/openrtb2".to_string());
+        let (reqs, _errs) = adapter.make_requests(&make_req(), &ExtraRequestInfo::default());
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].uri, "https://ib.adnxs.com/openrtb2?member_id=m1");
+        assert_eq!(
+            reqs[0].headers.get("Content-Type").unwrap(),
+            "application/json;charset=utf-8"
+        );
+        assert!(!reqs[0].body.is_empty());
+    }
+
+    #[test]
+    fn test_make_bids_basic() {
+        let adapter = AppnexusAdapter::new("https://ib.adnxs.com/openrtb2".to_string());
+        let body = br#"{"id":"r","seatbid":[{"bid":[{"id":"b1","impid":"i1","price":1.5,"crid":"c1","ext":{"appnexus":{"bid_ad_type":0}}}]}]}"#;
+        let resp = ResponseData::new(200, body.to_vec());
+        let result = adapter
+            .make_bids(&make_req(), &RequestData::default(), &resp)
+            .unwrap();
+        assert_eq!(result.bids.len(), 1);
+        assert_eq!(result.bids[0].bid.price, 1.5);
+        assert_eq!(result.bids[0].bid.impid, "i1");
+        assert_eq!(result.bids[0].bid.crid.as_deref(), Some("c1"));
+    }
+}

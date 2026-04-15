@@ -84,3 +84,31 @@ impl Bidder for EpomAdapter {
         Ok(result)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_make_requests_requires_ip() {
+        let adapter = EpomAdapter::new("https://epom.example/rtb".to_string());
+        let req = openrtb::BidRequest::default();
+        let info = ExtraRequestInfo::default();
+        let (requests, errs) = adapter.make_requests(&req, &info);
+        assert!(requests.is_empty());
+        assert_eq!(errs.len(), 1);
+    }
+
+    #[test]
+    fn test_make_requests_ok_with_ip() {
+        let adapter = EpomAdapter::new("https://epom.example/rtb".to_string());
+        let mut req = openrtb::BidRequest::default();
+        req.id = "r".to_string();
+        req.device = Some(openrtb::Device { ip: Some("1.2.3.4".to_string()), ..Default::default() });
+        req.imp = vec![openrtb::Imp { id: "imp1".to_string(), banner: Some(Default::default()), ..Default::default() }];
+        let info = ExtraRequestInfo::default();
+        let (requests, errs) = adapter.make_requests(&req, &info);
+        assert!(errs.is_empty());
+        assert_eq!(requests.len(), 1);
+    }
+}

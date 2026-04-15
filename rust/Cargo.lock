@@ -3139,10 +3139,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "once_cell",
  "openrtb",
  "openrtb-ext",
+ "pbs-config",
  "serde",
  "serde_json",
+ "serde_yaml",
  "thiserror 1.0.69",
  "tracing",
 ]

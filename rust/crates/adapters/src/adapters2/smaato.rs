@@ -361,3 +361,58 @@ impl Bidder for SmaatoAdapter {
         Ok(result)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_req() -> openrtb::BidRequest {
+        openrtb::BidRequest {
+            id: "r".to_string(),
+            imp: vec![openrtb::Imp {
+                id: "i1".to_string(),
+                banner: Some(openrtb::Banner {
+                    w: Some(300),
+                    h: Some(250),
+                    ..Default::default()
+                }),
+                ext: Some(serde_json::json!({
+                    "bidder": {"publisherId": "publisher1", "adspaceId": "adspace1"}
+                })),
+                ..Default::default()
+            }],
+            site: Some(openrtb::Site {
+                id: Some("s".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_smaato_url_and_headers() {
+        let adapter = SmaatoAdapter::new("https://prebid.ad.smaato.net/oapi/prebid".to_string());
+        let (reqs, errs) = adapter.make_requests(&make_req(), &ExtraRequestInfo::default());
+        assert!(errs.is_empty(), "errs: {:?}", errs);
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].uri, "https://prebid.ad.smaato.net/oapi/prebid");
+        assert_eq!(
+            reqs[0].headers.get("Content-Type").unwrap(),
+            "application/json;charset=utf-8"
+        );
+        assert!(!reqs[0].body.is_empty());
+    }
+
+    #[test]
+    fn test_smaato_make_bids() {
+        let adapter = SmaatoAdapter::new("https://prebid.ad.smaato.net/oapi/prebid".to_string());
+        let body = br#"{"id":"r","seatbid":[{"bid":[{"id":"b","impid":"i1","price":1.6,"crid":"c","adm":"<img/>"}]}]}"#;
+        let mut resp = ResponseData::new(200, body.to_vec());
+        resp.headers.insert("X-Smt-Adtype".to_string(), "Img".to_string());
+        let result = adapter
+            .make_bids(&make_req(), &RequestData::default(), &resp)
+            .unwrap();
+        assert_eq!(result.bids.len(), 1);
+        assert_eq!(result.bids[0].bid_type, BidType::Banner);
+    }
+}

@@ -607,3 +607,79 @@ mod tests {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// YAML-backed bidder info enrichment
+// ---------------------------------------------------------------------------
+//
+// The registry above only builds a `HashMap<String, Box<dyn Bidder>>` of
+// adapter instances. Bidder *metadata* (maintainer, capabilities, geoscope,
+// modifyingVastXmlAllowed, ...) lives in the YAML files under
+// `static/bidder-info/` and is exposed through
+// [`crate::bidder_info_runtime`]. Re-export it here so call sites that only
+// have a handle to the registry module can still reach the YAML data.
+
+pub use crate::bidder_info_runtime;
+
+/// Conservatively merge YAML-loaded bidder info into `adapter_map`.
+///
+/// For every entry already present in `adapter_map`, we look up the matching
+/// YAML record and copy across any fields that are currently unset on the
+/// registry side. This is intentionally a *fill*, not an overwrite: anything
+/// explicitly configured in code always wins.
+///
+/// The map type is `pbs_config::bidder_info::BidderInfos` (the canonical
+/// metadata map), because the adapter instance map
+/// (`HashMap<String, Box<dyn Bidder>>`) has no metadata fields to merge into.
+pub fn enrich_registry_with_yaml(adapter_map: &mut pbs_config::bidder_info::BidderInfos) {
+    let yaml = bidder_info_runtime::bidder_info_map();
+    for (name, yaml_info) in yaml.iter() {
+        let entry = adapter_map
+            .entry(name.clone())
+            .or_insert_with(pbs_config::BidderInfo::default);
+
+        // Conservative merge: only fill fields that are currently empty.
+        if entry.endpoint.is_empty() && !yaml_info.endpoint.is_empty() {
+            entry.endpoint = yaml_info.endpoint.clone();
+        }
+        if entry.alias_of.is_empty() && !yaml_info.alias_of.is_empty() {
+            entry.alias_of = yaml_info.alias_of.clone();
+        }
+        if entry.extra_info.is_empty() && !yaml_info.extra_info.is_empty() {
+            entry.extra_info = yaml_info.extra_info.clone();
+        }
+        if entry.maintainer.is_none() && yaml_info.maintainer.is_some() {
+            entry.maintainer = yaml_info.maintainer.clone();
+        }
+        if entry.capabilities.is_none() && yaml_info.capabilities.is_some() {
+            entry.capabilities = yaml_info.capabilities.clone();
+        }
+        if entry.gvl_vendor_id == 0 && yaml_info.gvl_vendor_id != 0 {
+            entry.gvl_vendor_id = yaml_info.gvl_vendor_id;
+        }
+        if !entry.modifying_vast_xml_allowed && yaml_info.modifying_vast_xml_allowed {
+            entry.modifying_vast_xml_allowed = true;
+        }
+        if entry.debug.is_none() && yaml_info.debug.is_some() {
+            entry.debug = yaml_info.debug.clone();
+        }
+        if entry.geoscope.is_empty() && !yaml_info.geoscope.is_empty() {
+            entry.geoscope = yaml_info.geoscope.clone();
+        }
+        if entry.user_sync.is_none() && yaml_info.user_sync.is_some() {
+            entry.user_sync = yaml_info.user_sync.clone();
+        }
+        if entry.openrtb.is_none() && yaml_info.openrtb.is_some() {
+            entry.openrtb = yaml_info.openrtb.clone();
+        }
+        if entry.endpoint_compression.is_empty() && !yaml_info.endpoint_compression.is_empty() {
+            entry.endpoint_compression = yaml_info.endpoint_compression.clone();
+        }
+        if entry.platform_id.is_empty() && !yaml_info.platform_id.is_empty() {
+            entry.platform_id = yaml_info.platform_id.clone();
+        }
+        if entry.app_secret.is_empty() && !yaml_info.app_secret.is_empty() {
+            entry.app_secret = yaml_info.app_secret.clone();
+        }
+    }
+}

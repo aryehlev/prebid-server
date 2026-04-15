@@ -90,3 +90,32 @@ impl Bidder for KargoAdapter {
         Ok(result)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_make_requests_basic() {
+        let adapter = KargoAdapter::new("https://krushmedia.example/rtb".to_string());
+        let mut req = openrtb::BidRequest::default();
+        req.id = "r".to_string();
+        req.imp = vec![openrtb::Imp {
+            id: "imp1".to_string(),
+            banner: Some(Default::default()),
+            ..Default::default()
+        }];
+        let info = ExtraRequestInfo::default();
+        let (requests, errs) = adapter.make_requests(&req, &info);
+        assert!(errs.is_empty());
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method, "POST");
+        assert!(requests[0].headers.is_empty());
+    }
+
+    #[test]
+    fn test_media_type_video() {
+        let ext = serde_json::json!({"mediaType": "video"});
+        assert_eq!(get_media_type_for_bid(Some(&ext)), BidType::Video);
+    }
+}

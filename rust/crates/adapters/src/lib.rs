@@ -17,6 +17,7 @@ pub mod adapters12;
 pub mod adapters13;
 pub mod adapters14;
 pub mod registry;
+pub mod bidder_info_runtime;
 
 /// RequestData packages together the fields needed to make an HTTP request to a bidder.
 #[derive(Debug, Clone, Default)]
