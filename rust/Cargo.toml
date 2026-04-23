@@ -1,0 +1,78 @@
+[workspace]
+members = [
+    "crates/openrtb",
+    "crates/openrtb-ext",
+    "crates/errortypes",
+    "crates/config",
+    "crates/util",
+    "crates/adapters",
+    "crates/currency",
+    "crates/metrics",
+    "crates/exchange",
+    "crates/endpoints",
+    "crates/server",
+    "crates/cache",
+    "crates/ortb",
+    "crates/privacy",
+    "crates/modules",
+    "crates/firstpartydata",
+    "crates/adservertargeting",
+    "crates/usersync",
+    "crates/injector",
+    "crates/logger",
+    "crates/macros",
+    "crates/rules",
+    "crates/gdpr",
+    "crates/privacysandbox",
+    "crates/floors",
+    "crates/dsa",
+    "crates/bidadjustment",
+    "crates/hooks",
+    "crates/experiment",
+    "crates/analytics",
+    "crates/stored_requests",
+    "crates/stored_responses",
+    "crates/account",
+    "crates/parity",
+    "crates/experimental-wasm",
+    "crates/experimental-simd-json",
+    "crates/experimental-otel",
+    "crates/experimental-ml",
+    "crates/experimental-fuzz",
+    "crates/experimental-quic",
+    "crates/benchmarks",
+    "crates/e2e-tests",
+]
+resolver = "2"
+
+[workspace.dependencies]
+axum = { version = "0.7", features = ["macros"] }
+tokio = { version = "1", features = ["full"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "compression-gzip", "trace", "timeout"] }
+reqwest = { version = "0.12", features = ["json", "gzip", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+config = "0.14"
+prometheus = { version = "0.13", features = ["process"] }
+moka = { version = "0.12", features = ["future"] }
+uuid = { version = "1", features = ["v4"] }
+jsonschema = "0.17"
+json-patch = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+thiserror = "1"
+anyhow = "1"
+bytes = "1"
+http = "1"
+chrono = { version = "0.4", features = ["serde"] }
+regex = "1"
+once_cell = "1"
+dashmap = "5"
+async-trait = "0.1"
+futures = "0.3"
+base64 = "0.22"
+flate2 = "1.0"
+rand = "0.8"
+toml = "0.8"

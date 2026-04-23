@@ -1,0 +1,138 @@
+use std::collections::HashMap;
+use crate::{Bidder, BidderError, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid, get_imp_ids};
+use openrtb_ext::{BidType, ExtBidPrebidVideo};
+use serde::{Deserialize, Serialize};
+
+pub struct FwsspAdapter {
+    pub endpoint: String,
+}
+
+impl FwsspAdapter {
+    pub fn new(endpoint: String) -> Self {
+        Self { endpoint }
+    }
+}
+
+/// FWSSP imp extension — matches openrtb_ext.ImpExtFWSSP in the Go codebase.
+#[derive(Debug, Default, Deserialize, Serialize)]
+struct ImpExtFwssp {
+    #[serde(rename = "custom_site_section_id", skip_serializing_if = "String::is_empty", default)]
+    custom_site_section_id: String,
+    #[serde(rename = "network_id", skip_serializing_if = "String::is_empty", default)]
+    network_id: String,
+    #[serde(rename = "profile_id", skip_serializing_if = "String::is_empty", default)]
+    profile_id: String,
+}
+
+impl Bidder for FwsspAdapter {
+    fn make_requests(
+        &self,
+        request: &openrtb::BidRequest,
+        _info: &ExtraRequestInfo,
+    ) -> (Vec<RequestData>, Vec<BidderError>) {
+        let mut req = request.clone();
+
+        for (i, imp) in req.imp.iter_mut().enumerate() {
+            let bidder_ext = imp.ext.as_ref()
+                .and_then(|e| e.get("bidder"))
+                .cloned();
+
+            let imp_ext: ImpExtFwssp = match bidder_ext {
+                Some(b) => match serde_json::from_value(b) {
+                    Ok(e) => e,
+                    Err(err) => {
+                        return (vec![], vec![BidderError::BadInput(format!(
+                            "Invalid imp.ext for impression index {}. Error Infomation: {}", i, err
+                        ))]);
+                    }
+                },
+                None => {
+                    return (vec![], vec![BidderError::BadInput(format!(
+                        "Invalid imp.ext for impression index {}. Error Infomation: missing bidder ext", i
+                    ))]);
+                }
+            };
+
+            imp.ext = match serde_json::to_value(&imp_ext) {
+                Ok(v) => Some(v),
+                Err(err) => {
+                    return (vec![], vec![BidderError::BadInput(format!(
+                        "Unable to transfer requestImpExt to Json fomat, {}", err
+                    ))]);
+                }
+            };
+        }
+
+        let body = match serde_json::to_vec(&req) {
+            Ok(b) => b,
+            Err(e) => {
+                return (vec![], vec![BidderError::BadInput(format!(
+                    "Unable to transfer request to Json fomat, {}", e
+                ))]);
+            }
+        };
+
+        let mut headers = HashMap::new();
+        headers.insert("Componentid".to_string(), "prebid-go".to_string());
+
+        (
+            vec![RequestData {
+                method: "POST".to_string(),
+                uri: self.endpoint.clone(),
+                body,
+                headers,
+                imp_ids: get_imp_ids(&req.imp),
+            }],
+            vec![],
+        )
+    }
+
+    fn make_bids(
+        &self,
+        internal: &openrtb::BidRequest,
+        _external: &RequestData,
+        response: &ResponseData,
+    ) -> Result<BidderResponse, Vec<BidderError>> {
+        if response.status_code == 204 || (response.status_code == 200 && response.body.is_empty()) {
+            return Ok(BidderResponse::new());
+        }
+
+        if response.status_code == 400 {
+            return Err(vec![BidderError::BadInput(format!(
+                "Unexpected status code: {}. Run with request.debug = 1 for more info",
+                response.status_code
+            ))]);
+        }
+        if response.status_code != 200 {
+            return Err(vec![BidderError::BadServerResponse(format!(
+                "Unexpected status code: {}. Run with request.debug = 1 for more info",
+                response.status_code
+            ))]);
+        }
+
+        let bid_response: openrtb::BidResponse = serde_json::from_slice(&response.body)
+            .map_err(|e| vec![BidderError::BadServerResponse(e.to_string())])?;
+
+        let mut result = BidderResponse::with_capacity(internal.imp.len());
+        // Set currency directly from response, matching Go: bidResponse.Currency = bidResp.Cur
+        result.currency = bid_response.cur.unwrap_or_default();
+
+        for seat_bid in bid_response.seatbid {
+            for bid in seat_bid.bid {
+                let mut bid_video = ExtBidPrebidVideo::default();
+                if let Some(cat) = &bid.cat {
+                    if let Some(first) = cat.first() {
+                        bid_video.primary_category = first.clone();
+                    }
+                }
+                // bid.dur is not present in the openrtb Bid struct; duration stays 0
+
+                let mut typed_bid = TypedBid::new(bid, BidType::Video);
+                typed_bid.bid_video = Some(bid_video);
+                result.bids.push(typed_bid);
+            }
+        }
+
+        Ok(result)
+    }
+}

@@ -1,0 +1,15 @@
+[package]
+name = "floors"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+once_cell = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true }
+moka = { workspace = true }
+chrono = { workspace = true }

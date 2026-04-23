@@ -1,0 +1,33 @@
+name: simple_banner
+description: "One imp with a banner format, stub backend echoes a canned bid."
+request:
+  id: "req-1"
+  imp:
+    - id: "imp-1"
+      banner:
+        format:
+          - w: 300
+            h: 250
+      mock_response:
+        id: "req-1"
+        seatbid:
+          - bid:
+              - id: "bid-1"
+                impid: "imp-1"
+                price: 1.5
+  site:
+    id: "site-1"
+    domain: "example.com"
+expected_response:
+  id: "req-1"
+  seatbid:
+    - bid:
+        - id: "bid-1"
+          impid: "imp-1"
+          price: 1.5
+expected_warnings: []
+setup:
+  stored_requests: {}
+  stored_imps: {}
+  accounts: {}
+  bid_responses: {}

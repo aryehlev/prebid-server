@@ -1,0 +1,34 @@
+[package]
+name = "prebid-server"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "prebid-server"
+path = "src/main.rs"
+
+[lib]
+name = "server"
+path = "src/lib.rs"
+
+[dependencies]
+tokio = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+
+# Internal workspace crates wired up by the router handlers.
+account = { path = "../account" }
+analytics = { path = "../analytics" }
+pbs-config = { path = "../config" }
+pbs-endpoints = { path = "../endpoints" }
+pbs-exchange = { path = "../exchange" }
+pbs-metrics = { path = "../metrics" }
+usersync = { path = "../usersync" }
+openrtb = { path = "../openrtb" }

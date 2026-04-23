@@ -1,0 +1,18 @@
+[package]
+name = "experimental-fuzz"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "EXPERIMENTAL: Property-based testing and mutation fuzzers for the Prebid request/response surface. Purpose: find edge cases in request parsing and validation."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+rand = { workspace = true }
+regex = { workspace = true }
+once_cell = { workspace = true }
+
+proptest = "1"
+arbitrary = { version = "1", features = ["derive"] }

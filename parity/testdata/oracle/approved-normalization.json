@@ -1,0 +1,32 @@
+{
+  "description": "Approved normalization sample: only warning-order and seatbid-order differences are normalized.",
+  "normalization_rules": [
+    {
+      "rule": "warning_array_order",
+      "description": "Warning arrays within ext.warnings and ext.prebid.warnings are sorted alphabetically.",
+      "example_before": {"appnexus": ["warn-b", "warn-a"]},
+      "example_after": {"appnexus": ["warn-a", "warn-b"]}
+    },
+    {
+      "rule": "seatbid_order",
+      "description": "SeatBid entries are sorted by seat name for order-independent comparison.",
+      "example_before": [{"seat": "rubicon"}, {"seat": "appnexus"}],
+      "example_after": [{"seat": "appnexus"}, {"seat": "rubicon"}]
+    },
+    {
+      "rule": "bid_order_within_seat",
+      "description": "Bids within each seatbid are sorted by impid then price.",
+      "example_before": [{"impid": "imp-2", "price": 1.0}, {"impid": "imp-1", "price": 2.0}],
+      "example_after": [{"impid": "imp-1", "price": 2.0}, {"impid": "imp-2", "price": 1.0}]
+    }
+  ],
+  "not_normalized": [
+    "bid prices",
+    "bid IDs",
+    "response status codes",
+    "ext field values",
+    "ad markup",
+    "currency values",
+    "error messages"
+  ]
+}

@@ -1,0 +1,21 @@
+[package]
+name = "experimental-wasm"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "EXPERIMENTAL: WASM plugin runtime for Prebid hooks using wasmtime."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+anyhow = { workspace = true }
+wasmtime = "25"
+wasmtime-wasi = "25"
+
+[dev-dependencies]
+wat = "1"

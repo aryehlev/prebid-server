@@ -1,0 +1,25 @@
+name: no_bid
+description: "Auction returns no bids; stub backend yields an empty seatbid list."
+request:
+  id: "req-2"
+  imp:
+    - id: "imp-2"
+      banner:
+        format:
+          - w: 728
+            h: 90
+      mock_response:
+        id: "req-2"
+        seatbid: []
+  site:
+    id: "site-1"
+    domain: "example.com"
+expected_response:
+  id: "req-2"
+  seatbid: []
+expected_warnings: []
+setup:
+  stored_requests: {}
+  stored_imps: {}
+  accounts: {}
+  bid_responses: {}
