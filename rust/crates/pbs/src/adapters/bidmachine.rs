@@ -45,10 +45,22 @@ impl Adapter {
                 return Err(bad());
             }
         }
-        let joined = path_join(&[uri.path(), path]);
+        // Go's `url.Parse("https://host")` has an empty `Path`; the `url` crate reports `/` for it.
+        // Use Go's view (nothing after the authority in the resolved text) for the join.
+        let go_path = match uri_string.split_once("://").map(|x| x.1) {
+            Some(rest) => rest.find(['/', '?', '#']).map_or("", |i| if rest[i..].starts_with('/') { uri.path() } else { "" }),
+            None => uri.path(),
+        };
+        let joined = path_join(&[go_path, path]);
         let joined = path_join(&[&joined, seller_id]);
         uri.set_path(&joined);
-        Ok(uri.to_string())
+        let mut out = uri.to_string();
+        // The `url` crate writes an empty http(s) path as `/`; Go's `URL.String()` leaves it empty
+        // (`https://host`). Only an empty path with no query or fragment is affected.
+        if joined.is_empty() && uri.query().is_none() && uri.fragment().is_none() && out.ends_with('/') {
+            out.pop();
+        }
+        Ok(out)
     }
 }
 
