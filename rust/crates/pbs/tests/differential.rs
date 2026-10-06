@@ -136,6 +136,19 @@ struct Rust {
     bids_errors: Vec<String>,
 }
 
+/// Mirrors Go's `adapterstest.getTestExtraRequestInfo`: custom rates in
+/// `request.ext.prebid.currency.rates` become the conversions.
+fn extra_request_info(request: &Value) -> ExtraRequestInfo {
+    let mut info = ExtraRequestInfo::default();
+    let rates = request.pointer("/ext/prebid/currency/rates").and_then(|r| {
+        serde_json::from_value::<std::collections::HashMap<String, std::collections::HashMap<String, f64>>>(r.clone()).ok()
+    });
+    if let Some(rates) = rates.filter(|r| !r.is_empty()) {
+        info.currency_conversions = pbs::currency::Conversions::new(rates);
+    }
+    info
+}
+
 fn run_rust(case: &Value) -> Rust {
     let mut out = Rust::default();
     let s = |k: &str| case[k].as_str().unwrap_or("").to_string();
@@ -158,14 +171,16 @@ fn run_rust(case: &Value) -> Rust {
         out.build_error = Some("request does not parse as BidRequest".into());
         return out;
     };
-    let made = catch_unwind(AssertUnwindSafe(|| bidder.make_requests(&request, &ExtraRequestInfo::default())));
+    let info = extra_request_info(&case["request"]);
+    let made = catch_unwind(AssertUnwindSafe(|| bidder.make_requests(&request, &info)));
     let Ok((requests, errs)) = made else {
         out.panicked = true;
         return out;
     };
     out.errors = errs.iter().map(ToString::to_string).collect();
     out.requests = requests;
-    if let (Some(resp), Some(first)) = (case.get("response").filter(|r| !r.is_null()), out.requests.first()) {
+    let idx = case["request_index"].as_u64().unwrap_or(0) as usize;
+    if let (Some(resp), Some(first)) = (case.get("response").filter(|r| !r.is_null()), out.requests.get(idx)) {
         let resp = ResponseData {
             status_code: resp["status"].as_u64().unwrap_or(0) as u16,
             body: resp["body"].as_str().unwrap_or("").as_bytes().to_vec(),
@@ -314,7 +329,7 @@ fn rust_adapters_match_go_v3_30_0() {
                     ok = false;
                 } else {
                     for (x, (bid, ty, seat)) in gb.iter().zip(&r.bids) {
-                        if !json_eq(&x["bid"], bid) {
+                        if !json_eq_masked(&x["bid"], bid) {
                             note("make_bids bid body differs");
                             ok = false;
                         }

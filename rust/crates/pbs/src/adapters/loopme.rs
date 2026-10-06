@@ -6,6 +6,7 @@ use crate::bidder::{
     BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid,
 };
 use crate::errortypes::BidderError;
+use crate::jsonutil;
 use crate::header::Header;
 use crate::ortb::openrtb2::{Bid, BidRequest, BidResponse, MarkupType};
 
@@ -74,7 +75,7 @@ impl Bidder for Adapter {
         if let Some(err) = check_response_status_code_for_errors(response_data) {
             return (None, vec![err]);
         }
-        let resp: BidResponse = match go_std_unmarshal(&response_data.body) {
+        let resp: BidResponse = match jsonutil::unmarshal_std(&response_data.body, "openrtb2.BidResponse") {
             Ok(r) => r,
             Err(e) => return (None, vec![e]),
         };
@@ -101,23 +102,3 @@ impl Bidder for Adapter {
     }
 }
 
-/// Go `encoding/json.Unmarshal` into `openrtb2.BidResponse` (this adapter does not use
-/// `jsonutil`): a top-level non-object value is `json: cannot unmarshal {kind} into Go value of
-/// type openrtb2.BidResponse`.
-fn go_std_unmarshal(data: &[u8]) -> Result<BidResponse, BidderError> {
-    let value: serde_json::Value = serde_json::from_slice(data)
-        .map_err(|e| BidderError::other(e.to_string()))?;
-    let kind = match &value {
-        serde_json::Value::Object(_) | serde_json::Value::Null => "",
-        serde_json::Value::String(_) => "string",
-        serde_json::Value::Number(_) => "number",
-        serde_json::Value::Bool(_) => "bool",
-        serde_json::Value::Array(_) => "array",
-    };
-    if !kind.is_empty() {
-        return Err(BidderError::other(format!(
-            "json: cannot unmarshal {kind} into Go value of type openrtb2.BidResponse"
-        )));
-    }
-    serde_json::from_value(value).map_err(|e| BidderError::other(e.to_string()))
-}

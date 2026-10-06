@@ -44,27 +44,6 @@ fn get_impression_ext(imp: &Imp) -> Result<ExtImpTradPlus, BidderError> {
     )
 }
 
-/// Go `encoding/json` wording for a non-object body (`json.Unmarshal` into `BidResponse`).
-fn std_json_unmarshal(body: &[u8]) -> Result<BidResponse, BidderError> {
-    let first = body.iter().copied().find(|b| !b" \t\r\n".contains(b));
-    let kind = match first {
-        Some(b'"') => Some("string"),
-        Some(b'[') => Some("array"),
-        Some(b't') | Some(b'f') => Some("bool"),
-        Some(b'0'..=b'9') | Some(b'-') => Some("number"),
-        _ => None,
-    };
-    if let Some(kind) = kind {
-        // only reached when the text is valid JSON of that kind; otherwise fall to serde below
-        if serde_json::from_slice::<serde_json::Value>(body).is_ok() {
-            return Err(BidderError::other(format!(
-                "json: cannot unmarshal {kind} into Go value of type openrtb2.BidResponse"
-            )));
-        }
-    }
-    jsonutil::unmarshal_any(body).map_err(|e| BidderError::other(e.to_string()))
-}
-
 impl Bidder for Adapter {
     fn make_requests(
         &self,
@@ -122,7 +101,7 @@ impl Bidder for Adapter {
                 ))],
             );
         }
-        let bid_resp = match std_json_unmarshal(&response_data.body) {
+        let bid_resp: BidResponse = match jsonutil::unmarshal_std(&response_data.body, "openrtb2.BidResponse") {
             Ok(r) => r,
             Err(e) => return (None, vec![e]),
         };

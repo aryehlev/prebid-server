@@ -54,6 +54,39 @@ pub fn unmarshal_any<T: DeserializeOwned>(data: &[u8]) -> Result<T, BidderError>
     Ok(value)
 }
 
+/// Go's standard library `encoding/json.Unmarshal(data, &v)` into a struct, for the few adapters
+/// (adverxo, loopme, nativo, resetdigital, tradplus, zentotem) that parse the buyer's response
+/// with it and not with `jsonutil`:
+/// - a literal `null` is valid and leaves the zero value;
+/// - another top-level value that is not an object is
+///   `json: cannot unmarshal {string|number|bool|array} into Go value of type {type_name}`;
+/// - anything else is decoded as in [`unmarshal_any`] (strict types, case-insensitive keys).
+pub fn unmarshal_std<T: DeserializeOwned>(data: &[u8], type_name: &str) -> Result<T, BidderError> {
+    let first = data.iter().copied().find(|b| !b" \t\r\n".contains(b));
+    let kind = match first {
+        Some(b'"') => Some("string"),
+        Some(b'[') => Some("array"),
+        Some(b't' | b'f') => Some("bool"),
+        Some(b'0'..=b'9' | b'-') => Some("number"),
+        _ => None,
+    };
+    // Only valid JSON of that kind gets the type message; invalid text is a syntax error.
+    if let Some(kind) = kind {
+        if serde_json::from_slice::<serde_json::Value>(data).is_ok() {
+            return Err(BidderError::other(format!(
+                "json: cannot unmarshal {kind} into Go value of type {type_name}"
+            )));
+        }
+    }
+    // `null` leaves the zero value (a struct whose fields default builds from `{}`).
+    if first == Some(b'n') && serde_json::from_slice::<serde_json::Value>(data).is_ok_and(|v| v.is_null()) {
+        if let Ok(v) = unmarshal_any::<T>(b"{}") {
+            return Ok(v);
+        }
+    }
+    unmarshal_any(data)
+}
+
 /// Kind of a Go field, which decides json-iterator's reason text.
 #[derive(Clone, Copy)]
 enum Kind {
@@ -147,5 +180,33 @@ mod tests {
     fn array_body_reports_the_bracket() {
         let err = unmarshal::<BidResponse>(b"[]").unwrap_err();
         assert_eq!(err.to_string(), "expect { or n, but found [");
+    }
+
+    #[test]
+    fn std_unmarshal_null_is_the_zero_value() {
+        let r: BidResponse = unmarshal_std(b"null", "openrtb2.BidResponse").unwrap();
+        assert_eq!(r, BidResponse::default());
+        let r: BidResponse = unmarshal_std(b"  null \n", "openrtb2.BidResponse").unwrap();
+        assert_eq!(r, BidResponse::default());
+    }
+
+    #[test]
+    fn std_unmarshal_names_the_json_kind() {
+        for (body, kind) in [(&b"[]"[..], "array"), (b"\"x\"", "string"), (b"12", "number"), (b"true", "bool")] {
+            let e = unmarshal_std::<BidResponse>(body, "openrtb2.BidResponse").unwrap_err().to_string();
+            assert_eq!(e, format!("json: cannot unmarshal {kind} into Go value of type openrtb2.BidResponse"));
+        }
+    }
+
+    #[test]
+    fn std_unmarshal_invalid_text_is_a_syntax_error_not_a_type_error() {
+        let e = unmarshal_std::<BidResponse>(b"[1,", "openrtb2.BidResponse").unwrap_err().to_string();
+        assert!(!e.starts_with("json: cannot unmarshal"), "{e}");
+    }
+
+    #[test]
+    fn std_unmarshal_decodes_an_object() {
+        let r: BidResponse = unmarshal_std(br#"{"id":"abc","cur":"EUR"}"#, "openrtb2.BidResponse").unwrap();
+        assert_eq!((r.id.as_str(), r.cur.as_str()), ("abc", "EUR"));
     }
 }

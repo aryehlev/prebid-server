@@ -128,7 +128,8 @@ impl Bidder for Adapter {
                     ));
                     continue;
                 }
-                Some(b) => match sonic_rs::from_value(b) {
+                // `Ext::decode` matches keys ignoring case and rejects an array for a struct, as Go does.
+                Some(b) => match Ext(b.clone()).decode() {
                     Ok(v) => v,
                     Err(e) => {
                         errs.push(BidderError::other(format!("failed unmarshalling bidder imp ext (err){e}")));

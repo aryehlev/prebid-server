@@ -136,11 +136,13 @@ fn validate_impression_and_set_ext(imp: &mut Imp) -> Result<i64, BidderError> {
     }
     imp.ext = Some(Ext::from_slice(ext_json.as_bytes()).map_err(|e| BidderError::other(e.to_string()))?);
 
-    // json.Number.Int64
-    aid_text.parse::<i64>().map_err(|_| {
+    // json.Number.Int64 on the original value: the marshal above wrote an empty Number as `0`,
+    // but `SourceId` itself is still empty and `Int64()` fails on it.
+    let original = ext.aid.0.as_str();
+    original.parse::<i64>().map_err(|_| {
         BidderError::bad_input(format!(
             "ignoring imp id={}, aid parsing err: strconv.ParseInt: parsing \"{}\": invalid syntax",
-            imp.id, aid_text
+            imp.id, original
         ))
     })
 }

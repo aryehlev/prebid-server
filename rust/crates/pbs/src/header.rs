@@ -47,6 +47,13 @@ impl Header {
         out
     }
 
+    /// Go `h[key] = values` / a `http.Header{...}` literal: the key is stored exactly as given,
+    /// without canonicalisation (`X-OpenRTB-Version` stays that way). `get`/`set` canonicalise,
+    /// so they do not see such a key, as in Go.
+    pub fn insert_raw(&mut self, key: &str, values: Vec<String>) {
+        self.0.insert(key.to_string(), values);
+    }
+
     /// Go `Header.Set`.
     pub fn set(&mut self, key: &str, value: impl Into<String>) {
         self.0.insert(Self::canonical_key(key), vec![value.into()]);

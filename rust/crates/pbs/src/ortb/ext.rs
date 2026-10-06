@@ -42,8 +42,20 @@ impl Ext {
     /// key order, so the first bad field is the one Go would report.
     pub fn decode<T: serde::de::DeserializeOwned>(&self) -> Result<T, DecodeError> {
         let text = self.0.to_string();
-        let mut de = serde_json::Deserializer::from_str(&text);
-        T::deserialize(crate::casefold::Fold(&mut de)).map_err(|e| DecodeError(strip_position(&e.to_string())))
+        let run = |text: &str| {
+            let mut de = serde_json::Deserializer::from_str(text);
+            T::deserialize(crate::casefold::Fold(&mut de))
+        };
+        // A literal `null` is valid for an object target in Go and leaves the zero value; serde
+        // rejects `null` for a struct. Read it as `{}`, the zero value of a struct whose fields
+        // default (the same rule as `jsonutil::unmarshal`). A struct with a required field keeps
+        // the original error.
+        if text == "null" {
+            if let Ok(v) = run("{}") {
+                return Ok(v);
+            }
+        }
+        run(&text).map_err(|e| DecodeError(strip_position(&e.to_string())))
     }
 
     /// Compact JSON text.

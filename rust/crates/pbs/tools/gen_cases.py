@@ -118,13 +118,22 @@ for name in bidder_names():
         if not isinstance(d, dict) or 'mockBidRequest' not in d:
             continue
         kind = f.split('/')[-2]
-        resp = None
         calls = d.get('httpCalls') or d.get('httpcalls') or []
-        if calls:
-            mr = calls[0].get('mockResponse') or {}
+        def to_resp(call):
+            mr = call.get('mockResponse') or {}
             body = mr.get('body')
-            resp = {'status': mr.get('status', 0), 'body': body if isinstance(body, str) else json.dumps(body) if body is not None else ''}
-        cases.append({**base_cfg, 'id': f'{name}|fixture|{kind}/{os.path.basename(f)}', 'request': d['mockBidRequest'], **({'response': resp} if resp else {})})
+            # A fixture body is a `json.RawMessage`: the adapter receives its JSON text, so the
+            # string `""` arrives as the two characters `""` (hence "found \"" in expected errors).
+            # An absent body is `null` (a nil slice, which kobler and huaweiads tell from empty).
+            return {'status': mr.get('status', 0), 'body': None if body is None else json.dumps(body, ensure_ascii=False, separators=(',', ':'))}
+        base_id = f'{name}|fixture|{kind}/{os.path.basename(f)}'
+        if not calls:
+            cases.append({**base_cfg, 'id': base_id, 'request': d['mockBidRequest']})
+        # One case per http call: `make_bids` runs against the request of the same index, as
+        # Go's fixture runner does (a multi-call fixture has one response per request).
+        for n, call in enumerate(calls):
+            cases.append({**base_cfg, 'id': base_id if n == 0 else f'{base_id}#{n}', 'request': d['mockBidRequest'],
+                          'response': to_resp(call), 'request_index': n})
         if first_exemplary is None and kind == 'exemplary':
             first_exemplary = d['mockBidRequest']
     if first_exemplary is None:

@@ -132,7 +132,8 @@ impl Bidder for Adapter {
         let mut headers = Header::new();
         headers.add("Accept", "application/json");
         headers.add("Content-Type", "application/json;charset=utf-8");
-        headers.add("X-OpenRTB-Version", "2.5");
+        // Go writes this key in a `http.Header{...}` literal, which is not canonicalised.
+        headers.insert_raw("X-OpenRTB-Version", vec!["2.5".to_string()]);
         let mut r = req.clone();
         for imp in &req.imp {
             let ext = match unmarshal_ext(imp) {

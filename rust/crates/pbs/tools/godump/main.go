@@ -18,12 +18,13 @@ import (
 	"github.com/prebid/openrtb/v20/openrtb2"
 	"github.com/prebid/prebid-server/v3/adapters"
 	"github.com/prebid/prebid-server/v3/config"
+	"github.com/prebid/prebid-server/v3/currency"
 	"github.com/prebid/prebid-server/v3/openrtb_ext"
 )
 
 type response struct {
-	Status int    `json:"status"`
-	Body   string `json:"body"`
+	Status int     `json:"status"`
+	Body   *string `json:"body"` // null means a nil body, as Go's fixture runner passes it
 }
 
 type testCase struct {
@@ -35,6 +36,9 @@ type testCase struct {
 	AppSecret  string          `json:"app_secret"`
 	Request    json.RawMessage `json:"request"`
 	Response   *response       `json:"response,omitempty"`
+	// RequestIndex picks which request MakeBids runs against (a fixture with several http calls
+	// has one response per request); default 0.
+	RequestIndex int `json:"request_index"`
 }
 
 type outRequest struct {
@@ -61,6 +65,23 @@ type result struct {
 	Currency    string       `json:"currency,omitempty"`
 	Bids        []outBid     `json:"bids"`
 	BidsErrors  []string     `json:"bids_errors"`
+}
+
+// extraRequestInfo mirrors adapterstest.getTestExtraRequestInfo: custom currency rates in
+// request.ext.prebid.currency.rates become the conversions; otherwise the info is empty.
+func extraRequestInfo(req *openrtb2.BidRequest) *adapters.ExtraRequestInfo {
+	var ext struct {
+		Prebid *struct {
+			Currency *openrtb_ext.ExtRequestCurrency `json:"currency"`
+		} `json:"prebid"`
+	}
+	if len(req.Ext) > 0 && json.Unmarshal(req.Ext, &ext) == nil && ext.Prebid != nil &&
+		ext.Prebid.Currency != nil && len(ext.Prebid.Currency.ConversionRates) > 0 &&
+		currency.ValidateCustomRates(ext.Prebid.Currency) == nil {
+		info := adapters.NewExtraRequestInfo(currency.NewRates(ext.Prebid.Currency.ConversionRates))
+		return &info
+	}
+	return &adapters.ExtraRequestInfo{}
 }
 
 func errStrings(errs []error) []string {
@@ -102,7 +123,7 @@ func run(c testCase) (res result) {
 		return
 	}
 
-	reqs, errs := bidder.MakeRequests(&req, &adapters.ExtraRequestInfo{})
+	reqs, errs := bidder.MakeRequests(&req, extraRequestInfo(&req))
 	res.Errors = errStrings(errs)
 	for _, r := range reqs {
 		if r == nil {
@@ -123,8 +144,12 @@ func run(c testCase) (res result) {
 		res.Requests = append(res.Requests, outRequest{Method: r.Method, URI: r.Uri, Headers: headers, Body: body, ImpIDs: r.ImpIDs})
 	}
 
-	if c.Response != nil && len(reqs) > 0 && reqs[0] != nil {
-		br, berrs := bidder.MakeBids(&req, reqs[0], &adapters.ResponseData{StatusCode: c.Response.Status, Body: []byte(c.Response.Body)})
+	if c.Response != nil && c.RequestIndex < len(reqs) && reqs[c.RequestIndex] != nil {
+		var body []byte
+		if c.Response.Body != nil {
+			body = []byte(*c.Response.Body)
+		}
+		br, berrs := bidder.MakeBids(&req, reqs[c.RequestIndex], &adapters.ResponseData{StatusCode: c.Response.Status, Body: body})
 		res.BidsErrors = errStrings(berrs)
 		if br != nil {
 			res.BidsPresent = true

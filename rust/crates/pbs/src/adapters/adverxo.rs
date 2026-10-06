@@ -3,6 +3,7 @@
 use crate::bid_types::BidType;
 use crate::bidder::{Bidder, BidderResponse, ExtraRequestInfo, RequestData, ResponseData, TypedBid};
 use crate::errortypes::BidderError;
+use crate::jsonutil;
 use crate::header::Header;
 use crate::macros::{EndpointTemplate, EndpointTemplateParams};
 use crate::ortb::openrtb2::{Bid, BidRequest, BidResponse, Imp, MarkupType};
@@ -151,10 +152,10 @@ impl Bidder for Adapter {
                 ))],
             );
         }
-        // Go uses encoding/json here (not jsonutil), so the error text is serde's.
-        let response: BidResponse = match serde_json::from_slice(&response_data.body) {
+        // Go parses this with encoding/json (not jsonutil).
+        let response: BidResponse = match jsonutil::unmarshal_std(&response_data.body, "openrtb2.BidResponse") {
             Ok(r) => r,
-            Err(e) => return (None, vec![BidderError::other(e.to_string())]),
+            Err(e) => return (None, vec![e]),
         };
         let mut bid_response = BidderResponse::with_bids_capacity(request.imp.len());
         bid_response.currency = response.cur.clone();
