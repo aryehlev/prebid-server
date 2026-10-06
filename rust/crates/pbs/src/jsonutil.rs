@@ -43,10 +43,15 @@ pub fn unmarshal<T: DeserializeOwned>(data: &[u8]) -> Result<T, BidderError> {
 pub fn unmarshal_any<T: DeserializeOwned>(data: &[u8]) -> Result<T, BidderError> {
     let _strict = crate::ortb::de::StrictScope::enter();
     let mut de = serde_json::Deserializer::from_slice(data);
-    serde_path_to_error::deserialize(&mut de).map_err(|e| {
+    // Go matches struct keys ignoring case; `Fold` does the same while streaming, so document
+    // order (which decides the first decode error) is kept.
+    let result = serde_path_to_error::deserialize(crate::casefold::Fold(&mut de));
+    let value = result.map_err(|e| {
         let msg = go_message(e.path().to_string().as_str(), e.inner()).unwrap_or_else(|| e.inner().to_string());
         BidderError::FailedToUnmarshal(msg)
-    })
+    })?;
+    de.end().map_err(|e| BidderError::FailedToUnmarshal(e.to_string()))?;
+    Ok(value)
 }
 
 /// Kind of a Go field, which decides json-iterator's reason text.

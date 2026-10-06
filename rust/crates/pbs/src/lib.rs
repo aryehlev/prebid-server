@@ -7,6 +7,7 @@ pub mod adapters;
 pub mod bid_types;
 pub mod bidder_info;
 pub mod bidder;
+pub mod casefold;
 pub mod config;
 pub mod currency;
 pub mod errortypes;
