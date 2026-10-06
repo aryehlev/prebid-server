@@ -240,7 +240,7 @@ fn read_gdpr(request: &BidRequest) -> (bool, String) {
 
 fn read_ad_formats(banner: &Banner) -> Option<Vec<Format>> {
     if !banner.format.is_empty() {
-        Some(banner.format.clone())
+        Some(banner.format.to_vec())
     } else if let (Some(w), Some(h)) = (banner.w, banner.h) {
         Some(vec![Format { w, h, ..Default::default() }])
     } else {

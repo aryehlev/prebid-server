@@ -109,8 +109,8 @@ pub struct Metric {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Banner {
-    #[serde(deserialize_with = "de::seq", skip_serializing_if = "Vec::is_empty")]
-    pub format: Vec<Format>,
+    #[serde(default, skip_serializing_if = "Formats::is_empty")]
+    pub format: Formats,
     #[serde(
         deserialize_with = "de::opt_int",
         skip_serializing_if = "Option::is_none"
@@ -158,6 +158,77 @@ pub struct Banner {
     pub vcm: Option<i8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ext: Option<Ext>,
+}
+
+/// `Banner.format`: a `Vec<Format>` that also knows whether Go would see it as nil.
+///
+/// Go tells a nil `Format` (absent or `null`) from an empty one (`[]`); `kidoz` and `bidmachine`
+/// report a different error for each. It derefs to the `Vec`, so `.is_empty()`, `.first()`,
+/// `.iter()` and indexing work as before. A `Formats` built in code (`vec.into()`) is not nil,
+/// as in Go; one deserialized from a missing key or `null` is, until it is given entries.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Formats {
+    items: Vec<Format>,
+    /// `true` when the JSON had an array here (even `[]`), or the value was set in code.
+    set: bool,
+}
+
+impl Formats {
+    /// For `skip_serializing_if`: Go's `omitempty` skips a nil and an empty slice alike.
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    /// Go `banner.Format == nil`.
+    pub fn is_nil(&self) -> bool {
+        !self.set && self.items.is_empty()
+    }
+}
+
+impl std::ops::Deref for Formats {
+    type Target = Vec<Format>;
+    fn deref(&self) -> &Vec<Format> {
+        &self.items
+    }
+}
+
+impl std::ops::DerefMut for Formats {
+    fn deref_mut(&mut self) -> &mut Vec<Format> {
+        // A mutation through the Vec (push, remove, clear) makes it a non-nil slice.
+        self.set = true;
+        &mut self.items
+    }
+}
+
+impl From<Vec<Format>> for Formats {
+    fn from(items: Vec<Format>) -> Self {
+        Self { items, set: true }
+    }
+}
+
+impl<'a> IntoIterator for &'a Formats {
+    type Item = &'a Format;
+    type IntoIter = std::slice::Iter<'a, Format>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.items.iter()
+    }
+}
+
+impl Serialize for Formats {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.items.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Formats {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // `null` is a nil slice; an array, even empty, is not.
+        let items = Option::<Vec<Format>>::deserialize(deserializer)?;
+        Ok(match items {
+            Some(items) => Self { items, set: true },
+            None => Self::default(),
+        })
+    }
 }
 
 /// Format (§3.2.10).

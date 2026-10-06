@@ -247,7 +247,7 @@ impl Bidder for Adapter {
                             bid.h = v.h.unwrap_or_default();
                         }
                     }
-                    out.bids.push(TypedBid::new(bid, bid_type.unwrap_or(BidType::Banner)));
+                    out.bids.push(TypedBid::new(bid, bid_type.unwrap_or(BidType::NoBidTypeAssigned)));
                 }
             }
         }

@@ -145,20 +145,10 @@ impl Bidder for Adapter {
         }
         for sb in bid_resp.seatbid {
             for bid in sb.bid {
-                // Go's `getMediaTypeForImp` returns "" for other mtypes; the typed `BidType`
-                // cannot hold that, so such a bid is reported instead of passed on untyped.
-                match get_media_type_for_imp(&bid) {
-                    Some(t) => bid_response.bids.push(TypedBid::new(bid, t)),
-                    None => {
-                        return (
-                            None,
-                            vec![BidderError::bad_server_response(format!(
-                                "Unsupported return mType: {}",
-                                bid.mtype.0
-                            ))],
-                        )
-                    }
-                }
+                // Go's `getMediaTypeForImp` returns "" for any other mtype and the bid is still
+                // returned, untyped (`BidType::Other`), with no error.
+                let t = get_media_type_for_imp(&bid).unwrap_or(BidType::Other);
+                bid_response.bids.push(TypedBid::new(bid, t));
             }
         }
         (Some(bid_response), vec![])

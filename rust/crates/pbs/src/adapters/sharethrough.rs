@@ -252,9 +252,11 @@ impl Bidder for Adapter {
             for bid in sb.bid {
                 match get_media_type_for_bid(&bid) {
                     Ok(t) => out.bids.push(TypedBid::new(bid, t)),
-                    // Go records the error and still appends the bid with an empty BidType;
-                    // `BidType` has no empty value, so the bid is dropped here.
-                    Err(e) => errors.push(e),
+                    // Go records the error and still appends the bid, with an empty `BidType`.
+                    Err(e) => {
+                        errors.push(e);
+                        out.bids.push(TypedBid::new(bid, BidType::Other));
+                    }
                 }
             }
         }

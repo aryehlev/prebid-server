@@ -52,10 +52,10 @@ impl Adapter {
     }
 }
 
-/// The typed `Banner.format` is a plain `Vec`, so Go's nil-vs-empty check cannot be told apart:
-/// an explicit `[]` reports as missing. See /tmp/pbs-needs-b05.md.
-fn format_present(_imp: &Imp) -> bool {
-    false
+/// Go `banner.Format != nil`: an explicit `[]` is present (and then "array is empty"), a missing
+/// or `null` format is not.
+fn format_present(imp: &Imp) -> bool {
+    imp.banner.as_ref().is_some_and(|b| !b.format.is_nil())
 }
 
 /// Go `path.Join`: joins non-empty elements and cleans the result; `""` when all are empty.

@@ -280,7 +280,7 @@ impl Bidder for Adapter {
             if let Some(banner) = imp.banner.as_mut() {
                 if banner.format.is_empty() {
                     if let (Some(w), Some(h)) = (banner.w, banner.h) {
-                        banner.format = vec![Format { w, h, ..Default::default() }];
+                        banner.format = vec![Format { w, h, ..Default::default() }].into();
                     }
                 }
                 if banner.format.len() == 1 {

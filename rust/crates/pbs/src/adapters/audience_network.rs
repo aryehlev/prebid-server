@@ -142,7 +142,8 @@ fn modify_imp(out: &mut Imp) -> Result<(), BidderError> {
         if instl == 1 {
             banner.w = Some(0);
             banner.h = Some(0);
-            banner.format = Vec::new();
+            // Go: `Banner.Format = nil`.
+            banner.format = Default::default();
             return Ok(());
         }
         if banner.h.is_none() {
@@ -161,7 +162,8 @@ fn modify_imp(out: &mut Imp) -> Result<(), BidderError> {
             return Err(BidderError::bad_input(format!("imp #{id}: only banner heights 50 and 250 are supported")));
         }
         banner.w = Some(-1);
-        banner.format = Vec::new();
+        // Go: `Banner.Format = nil`.
+            banner.format = Default::default();
     }
     Ok(())
 }

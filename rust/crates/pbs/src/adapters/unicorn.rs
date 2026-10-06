@@ -304,9 +304,8 @@ impl Bidder for Adapter {
         out.currency = response.cur.clone();
         for sb in response.seatbid {
             for bid in sb.bid {
-                // Go's zero `BidType` is "" for a non-banner imp; the type has no empty value, so
-                // such bids are typed banner (the only value Go ever assigns here).
-                let mut bid_type = BidType::Banner;
+                // Go's zero `BidType` is "" unless the bid's imp has a banner (`BidType::Other`).
+                let mut bid_type = BidType::Other;
                 for imp in &request.imp {
                     if imp.id == bid.impid && imp.banner.is_some() {
                         bid_type = BidType::Banner;

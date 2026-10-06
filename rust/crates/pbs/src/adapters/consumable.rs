@@ -156,7 +156,7 @@ impl Bidder for Adapter {
                     BidType::Audio => bid.mtype = MarkupType::AUDIO,
                     BidType::Video => bid.mtype = MarkupType::VIDEO,
                     BidType::Banner => bid.mtype = MarkupType::BANNER,
-                    BidType::Native | BidType::Other => {}
+                    BidType::Native | BidType::Other | BidType::NoBidTypeAssigned => {}
                 }
                 let mut typed = TypedBid::new(bid, bid_type);
                 typed.bid_video = bid_video;

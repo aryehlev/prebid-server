@@ -92,11 +92,13 @@ impl Bidder for Adapter {
                 continue;
             }
             if let Some(banner) = &impression.banner {
-                // Go tells a nil `format` ("banner format required") from an empty one
-                // ("banner format array is empty"); the typed Banner reads both as an empty Vec,
-                // so every empty format reports the nil message.
-                if banner.format.is_empty() {
+                // Go tells a nil `format` ("banner format required") from an empty one.
+                if banner.format.is_nil() {
                     errs.push(BidderError::bad_input("banner format required"));
+                    continue;
+                }
+                if banner.format.is_empty() {
+                    errs.push(BidderError::bad_input("banner format array is empty"));
                     continue;
                 }
             }

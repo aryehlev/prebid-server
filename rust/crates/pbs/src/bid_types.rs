@@ -16,6 +16,10 @@ pub enum BidType {
     /// sharethrough) leaves the zero value, and the exchange rejects it later. Written as `""`.
     #[serde(rename = "")]
     Other,
+    /// richaudience's `"no bidtype assigned"`: the only literal non-standard type any adapter
+    /// returns (Go casts a string to `BidType` without checking it).
+    #[serde(rename = "no bidtype assigned")]
+    NoBidTypeAssigned,
 }
 
 impl BidType {
@@ -26,6 +30,7 @@ impl BidType {
             Self::Audio => "audio",
             Self::Native => "native",
             Self::Other => "",
+            Self::NoBidTypeAssigned => "no bidtype assigned",
         }
     }
 

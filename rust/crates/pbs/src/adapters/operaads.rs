@@ -213,7 +213,7 @@ impl Bidder for Adapter {
                     let (id, t) = parse_origin_imp_id(&bid.impid);
                     bid.impid = id;
                     // Go keeps an unparsable type as the empty BidType; Banner is the closest here.
-                    bid_response.bids.push(TypedBid::new(bid, t.unwrap_or(BidType::Banner)));
+                    bid_response.bids.push(TypedBid::new(bid, t.unwrap_or(BidType::Other)));
                 }
             }
         }
