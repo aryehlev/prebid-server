@@ -11,6 +11,7 @@ members = [
     "crates/endpoints",
     "crates/server",
     "crates/cache",
+    "crates/pbs",
 ]
 resolver = "2"
 

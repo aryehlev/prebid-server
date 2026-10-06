@@ -1,0 +1,20 @@
+[package]
+name = "pbs"
+version = "0.1.0"
+edition = "2021"
+description = "Prebid Server v3.30.0 bidder adapters for the seller (typed, no re-marshalling)"
+
+[dependencies]
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = { version = "1", features = ["raw_value"] }
+sonic-rs = "0.5"
+thiserror = "1"
+http = "1"
+base64 = "0.22"
+regex = "1"
+url = "2"
+serde_yaml = "0.9"
+serde_path_to_error = "0.1"
+
+[dev-dependencies]
+pretty_assertions = "1"
