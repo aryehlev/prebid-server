@@ -71,6 +71,16 @@ where
     narrow(value)
 }
 
+/// `json.RawMessage` field where a literal `null` must survive: Go keeps the four bytes `null`
+/// (so `len(ext) > 0` holds and a later decode fails), where plain `Option<Ext>` reads `null` as
+/// absent. Absent still means `None`; `Some(Ext(null))` is written back as `null`.
+pub fn opt_ext_keep_null<'de, D>(deserializer: D) -> Result<Option<crate::ortb::Ext>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    crate::ortb::Ext::deserialize(deserializer).map(Some)
+}
+
 /// Pointer integer field (`*int8`, `*int64` in Go): `null` means `None`, `0` stays `Some(0)`.
 pub fn opt_int<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where

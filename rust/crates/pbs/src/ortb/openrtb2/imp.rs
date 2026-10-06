@@ -79,7 +79,12 @@ pub struct Imp {
     pub dt: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refresh: Option<Refresh>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    // Go keeps `"ext":null` as the bytes `null`; adapters branch on `len(imp.Ext) > 0`.
+    #[serde(
+        default,
+        deserialize_with = "de::opt_ext_keep_null",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub ext: Option<Ext>,
 }
 

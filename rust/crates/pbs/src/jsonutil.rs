@@ -23,6 +23,15 @@ pub fn unmarshal<T: DeserializeOwned>(data: &[u8]) -> Result<T, BidderError> {
             first as char
         )));
     }
+    // A literal `null` is valid for an object target in Go and leaves the zero value (the later
+    // checks, e.g. an empty `bidder`, are where it fails). serde rejects `null` for a struct, so
+    // read it as `{}`: that is the zero value for a struct whose fields all default. A struct with a
+    // required field cannot be built that way and keeps serde's error.
+    if first == b'n' && data.iter().all(|b| b" \t\r\n".contains(b) || b"null".contains(b)) {
+        if let Ok(v) = unmarshal_any::<T>(b"{}") {
+            return Ok(v);
+        }
+    }
     unmarshal_any(data)
 }
 
