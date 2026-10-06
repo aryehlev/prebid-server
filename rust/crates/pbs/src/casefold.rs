@@ -82,6 +82,10 @@ impl<'de, D: Deserializer<'de>> Deserializer<'de> for Fold<D> {
 }
 
 /// Wraps a visitor so the sequences and maps it is handed keep wrapping their children.
+///
+/// The second field is the declared field names when the visitor is a struct's. A derived struct
+/// visitor also accepts a JSON array (as a tuple), which Go's decoder rejects for a struct, so a
+/// sequence handed to a struct visitor is refused here.
 struct FoldVisitor<V>(V, Option<&'static [&'static str]>);
 
 impl<'de, V: Visitor<'de>> Visitor<'de> for FoldVisitor<V> {
@@ -114,6 +118,10 @@ impl<'de, V: Visitor<'de>> Visitor<'de> for FoldVisitor<V> {
     }
 
     fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<Self::Value, A::Error> {
+        if self.1.is_some() {
+            // json-iterator's wording for an array where an object (or null) is required.
+            return Err(de::Error::custom("expect { or n, but found ["));
+        }
         self.0.visit_seq(FoldSeq(seq))
     }
 
@@ -265,6 +273,27 @@ mod tests {
         assert_eq!(o.inner.iter().map(|i| i.some_name.as_str()).collect::<Vec<_>>(), ["a", "b"]);
         assert_eq!(o.extra.unwrap().some_name, "c");
         assert_eq!(o.free["KeepMe"].some_name, "d");
+    }
+
+    #[test]
+    fn a_json_array_is_not_a_struct() {
+        // serde would read `[]` as an empty tuple for a defaulted struct; Go rejects it.
+        let err = from_slice::<Roulax>(b"[]").unwrap_err().to_string();
+        assert!(err.starts_with("expect { or n, but found ["), "{err}");
+        // ...also nested one level down, where `ext.bidder` is the wrong shape.
+        #[derive(Deserialize, Debug)]
+        #[serde(default)]
+        struct Wrap {
+            #[allow(dead_code)]
+            bidder: Roulax,
+        }
+        impl Default for Wrap {
+            fn default() -> Self {
+                Wrap { bidder: Roulax::default() }
+            }
+        }
+        assert!(from_slice::<Wrap>(br#"{"bidder":[]}"#).is_err());
+        assert!(from_slice::<Wrap>(br#"{"bidder":{}}"#).is_ok());
     }
 
     #[test]

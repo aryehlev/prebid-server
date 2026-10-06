@@ -36,5 +36,5 @@ pub mod native1;
 pub mod openrtb2;
 pub mod openrtb3;
 
-pub use ext::Ext;
+pub use ext::{DecodeError, Ext};
 

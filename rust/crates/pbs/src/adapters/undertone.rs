@@ -111,7 +111,7 @@ fn get_imps_and_publisher_id(request: &BidRequest) -> (Vec<Imp>, i64, Vec<Bidder
 }
 
 /// Go's message for a non-object `imp.ext` (`expect { or n, but found X`).
-fn jsonutil_msg(ext: &Ext, err: sonic_rs::Error) -> String {
+fn jsonutil_msg(ext: &Ext, err: crate::ortb::DecodeError) -> String {
     use sonic_rs::JsonValueTrait;
     if !ext.0.is_object() {
         let text = ext.to_json();

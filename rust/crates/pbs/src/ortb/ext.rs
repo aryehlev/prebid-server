@@ -36,8 +36,14 @@ impl Ext {
     }
 
     /// Decodes the ext into a typed struct (Go `json.Unmarshal(ext, &target)`).
-    pub fn decode<T: serde::de::DeserializeOwned>(&self) -> sonic_rs::Result<T> {
-        sonic_rs::from_value(&self.0)
+    ///
+    /// Struct keys are matched ignoring case and an array is not read as a struct, as Go's
+    /// decoder does (see [`crate::casefold`]). The decode runs over the JSON text, which keeps the
+    /// key order, so the first bad field is the one Go would report.
+    pub fn decode<T: serde::de::DeserializeOwned>(&self) -> Result<T, DecodeError> {
+        let text = self.0.to_string();
+        let mut de = serde_json::Deserializer::from_str(&text);
+        T::deserialize(crate::casefold::Fold(&mut de)).map_err(|e| DecodeError(strip_position(&e.to_string())))
     }
 
     /// Compact JSON text.
@@ -47,6 +53,27 @@ impl Ext {
 
     pub fn into_inner(self) -> Value {
         self.0
+    }
+}
+
+/// Why an [`Ext::decode`] failed. Its text has no `at line N column M` suffix (serde_json adds
+/// one to every message, Go's decoder never does), so adapters can put it in user-facing errors.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodeError(String);
+
+impl fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for DecodeError {}
+
+/// Drops serde_json's trailing ` at line L column C`.
+fn strip_position(msg: &str) -> String {
+    match msg.rfind(" at line ") {
+        Some(i) if msg[i..].contains(" column ") => msg[..i].to_string(),
+        _ => msg.to_string(),
     }
 }
 

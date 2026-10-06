@@ -54,6 +54,76 @@ fn json_eq(a: &Value, b: &Value) -> bool {
     }
 }
 
+
+/// Values two separate runs can never agree on: unix timestamps and random numbers (long digit
+/// runs), UUIDs, and the machine's timezone offset (`tzo=`). Both sides are masked before comparing.
+fn mask_volatile(s: &str) -> String {
+    use std::sync::OnceLock;
+    static RES: OnceLock<[regex::Regex; 3]> = OnceLock::new();
+    let [uuid, tz, num] = RES.get_or_init(|| {
+        [
+            regex::Regex::new(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}").unwrap(),
+            regex::Regex::new(r"tzo=-?\d+").unwrap(),
+            regex::Regex::new(r"\d{9,}").unwrap(),
+        ]
+    });
+    let s = uuid.replace_all(s, "<uuid>");
+    let s = tz.replace_all(&s, "tzo=<tz>");
+    num.replace_all(&s, "<num>").into_owned()
+}
+
+/// JSON equality after masking volatile values in both (as text, so strings and numbers alike).
+fn json_eq_masked(a: &Value, b: &Value) -> bool {
+    json_eq(a, b) || mask_volatile(&canon(a)) == mask_volatile(&canon(b))
+}
+
+/// Key-order independent text of a JSON value.
+fn canon(v: &Value) -> String {
+    match v {
+        Value::Object(m) => {
+            let mut keys: Vec<_> = m.keys().collect();
+            keys.sort();
+            let parts: Vec<_> = keys.iter().map(|k| format!("{k:?}:{}", canon(&m[*k]))).collect();
+            format!("{{{}}}", parts.join(","))
+        }
+        Value::Array(a) => format!("[{}]", a.iter().map(canon).collect::<Vec<_>>().join(",")),
+        // Integral floats print as integers, as in `json_eq`.
+        Value::Number(n) => n.as_f64().map_or_else(|| n.to_string(), |f| if f.fract() == 0.0 && f.abs() < 1e15 { format!("{}", f as i64) } else { f.to_string() }),
+        other => other.to_string(),
+    }
+}
+
+/// How a Go request and a Rust request differ, by category (empty when they are the same).
+fn request_diffs(gq: &Value, rq: &RequestData) -> Vec<&'static str> {
+    let mut d = Vec::new();
+    if mask_volatile(gq["uri"].as_str().unwrap_or("")) != mask_volatile(&rq.uri) {
+        d.push("request uri differs");
+    }
+    if gq["method"].as_str().unwrap_or("") != rq.method {
+        d.push("request method differs");
+    }
+    let rbody: Value = serde_json::from_slice(&rq.body).unwrap_or(Value::Null);
+    if !json_eq_masked(&gq["body"], &rbody) {
+        d.push("request body differs");
+    }
+    let mut gids: Vec<&str> = gq["imp_ids"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+    let mut rids: Vec<&str> = rq.imp_ids.iter().map(String::as_str).collect();
+    gids.sort_unstable();
+    rids.sort_unstable();
+    if gids != rids {
+        d.push("request imp ids differ");
+    }
+    let gh: BTreeMap<String, Vec<String>> = gq["headers"]
+        .as_object()
+        .map(|o| o.iter().map(|(k, v)| (k.clone(), v.as_array().unwrap().iter().filter_map(|x| x.as_str().map(String::from)).collect())).collect())
+        .unwrap_or_default();
+    let rh: BTreeMap<String, Vec<String>> = rq.headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    if gh != rh {
+        d.push("request headers differ");
+    }
+    d
+}
+
 #[derive(Default)]
 struct Rust {
     panicked: bool,
@@ -192,36 +262,31 @@ fn rust_adapters_match_go_v3_30_0() {
             note("request count differs");
             ok = false;
         } else {
-            for (gq, rq) in g_reqs.iter().zip(&r.requests) {
-                if gq["uri"].as_str().unwrap_or("") != rq.uri {
-                    note("request uri differs");
-                    ok = false;
+            // Adapters that group imps iterate a Go map, so the order of the requests is random
+            // on the Go side. Go's own fixture runner matches without assuming order; so do we:
+            // every Go request must equal some unused Rust request.
+            let mut used = vec![false; r.requests.len()];
+            for gq in g_reqs {
+                let mut best: Option<(usize, Vec<&'static str>)> = None;
+                for (n, rq) in r.requests.iter().enumerate() {
+                    if used[n] {
+                        continue;
+                    }
+                    let diffs = request_diffs(gq, rq);
+                    if diffs.is_empty() {
+                        best = Some((n, diffs));
+                        break;
+                    }
+                    if best.as_ref().is_none_or(|(_, d)| diffs.len() < d.len()) {
+                        best = Some((n, diffs));
+                    }
                 }
-                if gq["method"].as_str().unwrap_or("") != rq.method {
-                    note("request method differs");
-                    ok = false;
-                }
-                let rbody: Value = serde_json::from_slice(&rq.body).unwrap_or(Value::Null);
-                if !json_eq(&gq["body"], &rbody) {
-                    note("request body differs");
-                    ok = false;
-                }
-                let mut gids: Vec<&str> = gq["imp_ids"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
-                let mut rids: Vec<&str> = rq.imp_ids.iter().map(String::as_str).collect();
-                gids.sort_unstable();
-                rids.sort_unstable();
-                if gids != rids {
-                    note("request imp ids differ");
-                    ok = false;
-                }
-                let gh: BTreeMap<String, Vec<String>> = gq["headers"]
-                    .as_object()
-                    .map(|o| o.iter().map(|(k, v)| (k.clone(), v.as_array().unwrap().iter().filter_map(|x| x.as_str().map(String::from)).collect())).collect())
-                    .unwrap_or_default();
-                let rh: BTreeMap<String, Vec<String>> = rq.headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-                if gh != rh {
-                    note("request headers differ");
-                    ok = false;
+                if let Some((n, diffs)) = best {
+                    used[n] = true;
+                    for d in diffs {
+                        note(d);
+                        ok = false;
+                    }
                 }
             }
         }
